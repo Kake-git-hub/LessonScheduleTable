@@ -129,6 +129,93 @@ const hasAvailability = (
   return (availability[key] ?? []).includes(slotKeyValue)
 }
 
+const countTeacherLoad = (assignments: Record<string, Assignment>, teacherId: string): number =>
+  Object.values(assignments).filter((assignment) => assignment.teacherId === teacherId).length
+
+const countStudentLoad = (assignments: Record<string, Assignment>, studentId: string): number =>
+  Object.values(assignments).filter((assignment) => assignment.studentIds.includes(studentId)).length
+
+const buildAutoAssignments = (
+  data: SessionData,
+  slots: string[],
+  onlyEmpty: boolean,
+): Record<string, Assignment> => {
+  const nextAssignments: Record<string, Assignment> = onlyEmpty ? { ...data.assignments } : {}
+
+  for (const slot of slots) {
+    if (onlyEmpty && nextAssignments[slot]) {
+      continue
+    }
+
+    let bestPlan: { score: number; assignment: Assignment } | null = null
+
+    const teachers = data.teachers.filter((teacher) =>
+      hasAvailability(data.availability, 'teacher', teacher.id, slot),
+    )
+
+    for (const teacher of teachers) {
+      const candidates = data.students.filter((student) => {
+        if (!hasAvailability(data.availability, 'student', student.id, slot)) {
+          return false
+        }
+        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') {
+          return false
+        }
+        return teacher.subjects.some((subject) => student.subjects.includes(subject))
+      })
+
+      if (candidates.length === 0) {
+        continue
+      }
+
+      const teacherLoad = countTeacherLoad(nextAssignments, teacher.id)
+      const oneStudentCombos = candidates.map((student) => [student])
+      const twoStudentCombos = candidates.flatMap((left, index) =>
+        candidates.slice(index + 1).map((right) => [left, right]),
+      )
+      const allCombos = [...oneStudentCombos, ...twoStudentCombos]
+
+      for (const combo of allCombos) {
+        const commonSubjects = teacher.subjects.filter((subject) =>
+          combo.every((student) => student.subjects.includes(subject)),
+        )
+
+        if (commonSubjects.length === 0) {
+          continue
+        }
+
+        const recommendScore = combo.reduce((score, student) => {
+          return score + (constraintFor(data.constraints, teacher.id, student.id) === 'recommended' ? 30 : 0)
+        }, 0)
+
+        const studentLoadPenalty = combo.reduce((score, student) => {
+          return score + countStudentLoad(nextAssignments, student.id) * 8
+        }, 0)
+
+        const groupBonus = combo.length === 2 ? 5 : 0
+        const score = 100 + recommendScore + groupBonus - teacherLoad * 6 - studentLoadPenalty
+
+        if (!bestPlan || score > bestPlan.score) {
+          bestPlan = {
+            score,
+            assignment: {
+              teacherId: teacher.id,
+              studentIds: combo.map((student) => student.id),
+              subject: commonSubjects[0],
+            },
+          }
+        }
+      }
+    }
+
+    if (bestPlan) {
+      nextAssignments[slot] = bestPlan.assignment
+    }
+  }
+
+  return nextAssignments
+}
+
 const HomePage = () => {
   const navigate = useNavigate()
   const [sessionId, setSessionId] = useState('main')
@@ -276,66 +363,20 @@ const AdminPage = () => {
       return
     }
 
-    const nextAssignments: Record<string, Assignment> = { ...data.assignments }
-
-    for (const slot of slotKeys) {
-      if (nextAssignments[slot]) {
-        continue
-      }
-
-      const teachers = data.teachers
-        .filter((teacher) => hasAvailability(data.availability, 'teacher', teacher.id, slot))
-        .sort((left, right) => {
-          const leftLoad = Object.values(nextAssignments).filter((a) => a.teacherId === left.id).length
-          const rightLoad = Object.values(nextAssignments).filter((a) => a.teacherId === right.id).length
-          return leftLoad - rightLoad
-        })
-
-      let picked: Assignment | null = null
-
-      for (const teacher of teachers) {
-        const candidateStudents = data.students
-          .filter((student) => hasAvailability(data.availability, 'student', student.id, slot))
-          .filter(
-            (student) =>
-              constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible' &&
-              teacher.subjects.some((subject) => student.subjects.includes(subject)),
-          )
-          .sort((left, right) => {
-            const leftScore = constraintFor(data.constraints, teacher.id, left.id) === 'recommended' ? 1 : 0
-            const rightScore = constraintFor(data.constraints, teacher.id, right.id) === 'recommended' ? 1 : 0
-            return rightScore - leftScore
-          })
-
-        if (candidateStudents.length === 0) {
-          continue
-        }
-
-        const studentIds = candidateStudents.slice(0, 2).map((student) => student.id)
-        const commonSubjects = teacher.subjects.filter((subject) =>
-          studentIds.every((studentId) =>
-            data.students.find((student) => student.id === studentId)?.subjects.includes(subject),
-          ),
-        )
-
-        if (commonSubjects.length === 0) {
-          continue
-        }
-
-        picked = {
-          teacherId: teacher.id,
-          studentIds,
-          subject: commonSubjects[0],
-        }
-        break
-      }
-
-      if (picked) {
-        nextAssignments[slot] = picked
-      }
-    }
+    const nextAssignments = buildAutoAssignments(data, slotKeys, true)
 
     await update((current) => ({ ...current, assignments: nextAssignments }))
+  }
+
+  const applyTemplateAndAutoAssign = async (): Promise<void> => {
+    const template = createTemplateSession()
+    const templateSlots = buildSlotKeys(template.settings)
+    const assignments = buildAutoAssignments(template, templateSlots, false)
+    const next: SessionData = {
+      ...template,
+      assignments,
+    }
+    await persist(next)
   }
 
   const setSlotTeacher = async (slot: string, teacherId: string): Promise<void> => {
@@ -751,10 +792,13 @@ const AdminPage = () => {
             <div className="row">
               <h3>コマ割り</h3>
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
-                自動提案
+                自動提案(未割当)
+              </button>
+              <button className="btn" type="button" onClick={() => void applyTemplateAndAutoAssign()}>
+                テストデータで自動提案
               </button>
             </div>
-            <p className="muted">不可ペアは選択不可。推奨ペアはラベル表示。先生1人 + 生徒1〜2人。</p>
+            <p className="muted">不可ペアは選択不可。推奨ペアを優先。先生1人 + 生徒1〜2人。</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
                 const assignment = data.assignments[slot]
