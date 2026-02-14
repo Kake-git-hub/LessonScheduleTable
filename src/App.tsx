@@ -37,6 +37,63 @@ const emptySession = (): SessionData => ({
   assignments: {},
 })
 
+const createTemplateSession = (): SessionData => {
+  const settings: SessionData['settings'] = {
+    name: '夏期講習テンプレート',
+    adminPassword: 'admin1234',
+    startDate: '2026-07-21',
+    endDate: '2026-07-31',
+    slotsPerDay: 5,
+    holidays: ['2026-07-26'],
+  }
+
+  const subjects = ['数学', '英語', '国語', '理科']
+
+  const teachers: Teacher[] = [
+    { id: 't001', name: '田中先生', subjects: ['数学', '理科'], memo: '中3理系担当' },
+    { id: 't002', name: '佐藤先生', subjects: ['英語', '国語'], memo: '文系担当' },
+    { id: 't003', name: '鈴木先生', subjects: ['数学', '英語'], memo: '高1〜高2担当' },
+  ]
+
+  const students: Student[] = [
+    { id: 's001', name: '青木 太郎', grade: '中3', subjects: ['数学', '英語'], memo: '受験対策' },
+    { id: 's002', name: '伊藤 花', grade: '中2', subjects: ['英語', '国語'], memo: '' },
+    { id: 's003', name: '上田 陽介', grade: '高1', subjects: ['数学', '理科'], memo: '' },
+    { id: 's004', name: '岡本 美咲', grade: '高2', subjects: ['英語', '数学'], memo: '' },
+    { id: 's005', name: '加藤 駿', grade: '中3', subjects: ['国語', '英語'], memo: '' },
+  ]
+
+  const constraints: PairConstraint[] = [
+    { id: 'c001', teacherId: 't001', studentId: 's002', type: 'incompatible' },
+    { id: 'c002', teacherId: 't002', studentId: 's003', type: 'incompatible' },
+    { id: 'c003', teacherId: 't001', studentId: 's003', type: 'recommended' },
+    { id: 'c004', teacherId: 't002', studentId: 's005', type: 'recommended' },
+    { id: 'c005', teacherId: 't003', studentId: 's004', type: 'recommended' },
+  ]
+
+  const slotKeys = buildSlotKeys(settings)
+  const availability: SessionData['availability'] = {
+    [personKey('teacher', 't001')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
+    [personKey('teacher', 't002')]: slotKeys.filter((slot) => /_(2|3|4)$/.test(slot)),
+    [personKey('teacher', 't003')]: slotKeys.filter((slot) => /_(3|4|5)$/.test(slot)),
+    [personKey('student', 's001')]: slotKeys.filter((slot) => /_(1|2|4)$/.test(slot)),
+    [personKey('student', 's002')]: slotKeys.filter((slot) => /_(2|3|5)$/.test(slot)),
+    [personKey('student', 's003')]: slotKeys.filter((slot) => /_(1|3|4)$/.test(slot)),
+    [personKey('student', 's004')]: slotKeys.filter((slot) => /_(2|4|5)$/.test(slot)),
+    [personKey('student', 's005')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
+  }
+
+  return {
+    settings,
+    subjects,
+    teachers,
+    students,
+    constraints,
+    availability,
+    assignments: {},
+  }
+}
+
 const useSessionData = (sessionId: string) => {
   const [data, setData] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -137,6 +194,11 @@ const AdminPage = () => {
 
   const createSession = async (): Promise<void> => {
     const seed = emptySession()
+    await saveSession(sessionId, seed)
+  }
+
+  const createTemplateSessionDoc = async (): Promise<void> => {
+    const seed = createTemplateSession()
     await saveSession(sessionId, seed)
   }
 
@@ -371,9 +433,14 @@ const AdminPage = () => {
       <div className="app-shell">
         <div className="panel">
           <h2>セッション: {sessionId}</h2>
-          <button className="btn" type="button" onClick={createSession}>
-            新規セッションを作成
-          </button>
+          <div className="row">
+            <button className="btn" type="button" onClick={createSession}>
+              空のセッションを作成
+            </button>
+            <button className="btn secondary" type="button" onClick={createTemplateSessionDoc}>
+              テンプレートで作成
+            </button>
+          </div>
           <p className="muted">作成後に管理パスワードや期間を変更してください。</p>
           <Link to="/">ホームに戻る</Link>
         </div>
@@ -411,6 +478,12 @@ const AdminPage = () => {
         <>
           <div className="panel">
             <h3>講習設定</h3>
+            <div className="row">
+              <button className="btn secondary" type="button" onClick={createTemplateSessionDoc}>
+                初期テンプレートを再投入
+              </button>
+              <span className="muted">現在のデータをテンプレートで上書きします。</span>
+            </div>
             <div className="row">
               <input
                 value={data.settings.name}
