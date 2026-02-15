@@ -445,6 +445,22 @@
   margin-top: 6px;
 }
 
+.student-select-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.student-select-row select {
+  width: 100%;
+}
+
+.student-remaining {
+  font-size: 0.8em;
+  color: #6b7280;
+  padding: 0 2px;
+}
+
 .subject-checkboxes {
   display: flex;
   flex-direction: column;

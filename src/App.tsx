@@ -372,18 +372,47 @@ const buildIncrementalAutoAssignments = (
         continue
       }
 
-      // Check students still exist
-      const validStudentIds = assignment.studentIds.filter((sid) => studentIds.has(sid))
-      const removedStudentIds = assignment.studentIds.filter((sid) => !studentIds.has(sid))
+      // Check teacher still has availability for this slot
+      if (!hasAvailability(data.availability, 'teacher', assignment.teacherId, slot)) {
+        const teacherName = data.teachers.find((t) => t.id === assignment.teacherId)?.name ?? '?'
+        const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
+        const replacement = data.teachers.find((t) => {
+          if (usedTeachers.has(t.id)) return false
+          if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
+          return t.subjects.includes(assignment.subject)
+        })
+        if (replacement) {
+          cleaned.push({ ...assignment, teacherId: replacement.id })
+          changeLog.push({ slot, action: '先生差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
+        } else {
+          changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
+        }
+        continue
+      }
+
+      // Check students still exist AND are available for this slot
+      const validStudentIds = assignment.studentIds.filter((sid) => {
+        if (!studentIds.has(sid)) return false
+        const student = data.students.find((s) => s.id === sid)
+        if (!student) return false
+        return isStudentAvailable(student, slot)
+      })
+      const removedStudentIds = assignment.studentIds.filter((sid) => !validStudentIds.includes(sid))
       for (const sid of removedStudentIds) {
-        changeLog.push({ slot, action: '生徒削除', detail: `生徒ID:${sid} を解除（削除済）` })
+        const student = data.students.find((s) => s.id === sid)
+        const studentName = student?.name ?? `ID:${sid}`
+        if (!studentIds.has(sid)) {
+          changeLog.push({ slot, action: '生徒削除', detail: `${studentName} を解除（削除済）` })
+        } else {
+          changeLog.push({ slot, action: '生徒解除', detail: `${studentName} を解除（予定変更のため）` })
+        }
       }
 
       if (validStudentIds.length > 0) {
         cleaned.push({ ...assignment, studentIds: validStudentIds })
       } else if (removedStudentIds.length > 0) {
         cleaned.push({ ...assignment, studentIds: [] })
-        changeLog.push({ slot, action: '生徒全員削除', detail: `先生のみ残留（生徒全員削除済）` })
+        changeLog.push({ slot, action: '生徒全員解除', detail: `先生のみ残留（予定変更のため）` })
       } else {
         cleaned.push(assignment)
       }
@@ -1761,34 +1790,30 @@ const AdminPage = () => {
                   }))
                 }}
               />
-            </div>
-            <div className="list">
-              <div className="muted">休日</div>
-              <div className="row" style={{ flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-                <input
-                  type="date"
-                  onChange={(e) => {
-                    const val = e.target.value
-                    if (val && !data.settings.holidays.includes(val)) {
-                      void update((current) => ({
-                        ...current,
-                        settings: { ...current.settings, holidays: [...current.settings.holidays, val].sort() },
-                      }))
-                    }
-                    e.target.value = ''
-                  }}
-                />
-                {data.settings.holidays.slice().sort().map((h) => (
-                  <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => {
+              <span className="muted" style={{ marginLeft: '4px' }}>休日:</span>
+              <input
+                type="date"
+                onChange={(e) => {
+                  const val = e.target.value
+                  if (val && !data.settings.holidays.includes(val)) {
                     void update((current) => ({
                       ...current,
-                      settings: { ...current.settings, holidays: current.settings.holidays.filter((d) => d !== h) },
+                      settings: { ...current.settings, holidays: [...current.settings.holidays, val].sort() },
                     }))
-                  }}>
-                    {h} ×
-                  </span>
-                ))}
-              </div>
+                  }
+                  e.target.value = ''
+                }}
+              />
+              {data.settings.holidays.slice().sort().map((h) => (
+                <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => {
+                  void update((current) => ({
+                    ...current,
+                    settings: { ...current.settings, holidays: current.settings.holidays.filter((d) => d !== h) },
+                  }))
+                }}>
+                  {h} ×
+                </span>
+              ))}
             </div>
           </div>
 
@@ -1818,7 +1843,7 @@ const AdminPage = () => {
             <h3>生徒一覧</h3>
             <p className="muted">希望コマ数・不可日は生徒本人が希望URLから入力します。</p>
             <table className="table">
-              <thead><tr><th>名前</th><th>学年</th><th>希望コマ数</th><th>不可日数</th><th>希望URL</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th><th>学年</th><th>提出データ</th><th>希望URL</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => (
                   <tr key={student.id}>
@@ -1830,11 +1855,25 @@ const AdminPage = () => {
                     </td>
                     <td>{student.grade}</td>
                     <td>
-                      {Object.entries(student.subjectSlots)
-                        .map(([subject, count]) => `${subject}:${count}`)
-                        .join(', ') || '-'}
+                      {student.submittedAt ? (
+                        <button className="btn secondary" type="button" style={{ fontSize: '0.85em' }} onClick={() => {
+                          const slots = Object.entries(student.subjectSlots)
+                            .filter(([, c]) => c > 0)
+                            .map(([subj, c]) => `  ${subj}: ${c}コマ`)
+                            .join('\n') || '  なし'
+                          const unavail = student.unavailableDates.length > 0
+                            ? student.unavailableDates.join(', ') : 'なし'
+                          const pref = (student.preferredSlots ?? []).length > 0
+                            ? (student.preferredSlots ?? []).map((s: string) => `${s}限`).join(', ') : 'なし'
+                          const time = new Date(student.submittedAt).toLocaleString('ja-JP')
+                          alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可日: ${unavail}\n\n希望時限: ${pref}`)
+                        }}>
+                          確認
+                        </button>
+                      ) : (
+                        <span className="badge warn" style={{ fontSize: '11px' }}>未提出</span>
+                      )}
                     </td>
-                    <td>{student.unavailableDates.length}日</td>
                     <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
                     <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/student/${student.id}`)}>URLコピー</button></td>
                   </tr>
@@ -1955,9 +1994,18 @@ const AdminPage = () => {
 
                                 {[0, 1].map((pos) => {
                                   const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
+                                  const selectedStudent = data.students.find((s) => s.id === assignment.studentIds[pos])
+                                  const selectedRemaining = selectedStudent
+                                    ? Object.entries(selectedStudent.subjectSlots)
+                                        .map(([subj, desired]) => {
+                                          const assigned = countStudentSubjectLoad(data.assignments, selectedStudent.id, subj)
+                                          return `${subj}:残${Math.max(0, desired - assigned)}`
+                                        })
+                                        .join(' ')
+                                    : ''
                                   return (
+                                    <div key={pos} className="student-select-row">
                                     <select
-                                      key={pos}
                                       value={assignment.studentIds[pos] ?? ''}
                                       onChange={(e) => {
                                         const selectedId = e.target.value
@@ -2005,22 +2053,18 @@ const AdminPage = () => {
                                         )
                                         const isSelectedInOtherPosition = student.id === otherStudentId
                                         const disabled = usedInOther || isSelectedInOtherPosition
-                                        const subjectRemaining = Object.entries(student.subjectSlots)
-                                          .map(([subj, desired]) => {
-                                            const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
-                                            return `${subj}:残${Math.max(0, desired - assigned)}`
-                                          })
-                                          .join(' ')
                                         const tagLabel = isIncompatible ? ' ⚠不可' : isRecommended ? ' ★推奨' : ''
                                         const statusLabel = usedInOther ? ' (他ペア)' : ''
 
                                         return (
                                           <option key={student.id} value={student.id} disabled={disabled}>
-                                            {student.name} {subjectRemaining}{tagLabel}{statusLabel}
+                                            {student.name}{tagLabel}{statusLabel}
                                           </option>
                                         )
                                       })}
                                     </select>
+                                    {selectedStudent && <div className="student-remaining">{selectedRemaining || '残コマなし'}</div>}
+                                    </div>
                                   )
                                 })}
                               </>
