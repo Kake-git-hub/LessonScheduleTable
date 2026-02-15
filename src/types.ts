@@ -29,6 +29,13 @@ export type PairConstraint = {
   type: ConstraintType
 }
 
+export type GradeConstraint = {
+  id: string
+  teacherId: string
+  grade: string
+  type: ConstraintType
+}
+
 export type Assignment = {
   teacherId: string
   studentIds: string[]
@@ -61,6 +68,7 @@ export type SessionData = {
   teachers: Teacher[]
   students: Student[]
   constraints: PairConstraint[]
+  gradeConstraints: GradeConstraint[]
   availability: Record<string, string[]>
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
