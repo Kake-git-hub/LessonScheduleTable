@@ -388,7 +388,6 @@ const buildIncrementalAutoAssignments = (
 
       const candidates = data.students.filter((student) => {
         if (usedStudentIdsInSlot.has(student.id)) return false
-        if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
@@ -441,7 +440,6 @@ const buildIncrementalAutoAssignments = (
 
       const candidates = data.students.filter((student) => {
         if (usedStudentIdsInSlot.has(student.id)) return false
-        if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
@@ -498,8 +496,8 @@ const buildIncrementalAutoAssignments = (
           const assignedDates = countStudentAssignedDates(result, st.id)
           studentScore -= assignedDates * 5
 
-          // Bonus for preferred slots
-          if ((st.preferredSlots ?? []).includes(slot)) {
+          // Bonus for preferred slots (slot number match)
+          if ((st.preferredSlots ?? []).includes(String(currentSlotNum))) {
             studentScore += 15
           }
         }
@@ -1336,6 +1334,98 @@ const AdminPage = () => {
     URL.revokeObjectURL(url)
   }
 
+  /** Export schedule to Excel: all dates (including holidays) as columns, slots as rows */
+  const exportScheduleExcel = (): void => {
+    if (!data) return
+    const { startDate, endDate, slotsPerDay, holidays } = data.settings
+    if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
+
+    const holidaySet = new Set(holidays)
+    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+
+    // Build all dates in range (including holidays)
+    const allDates: string[] = []
+    const start = new Date(`${startDate}T00:00:00`)
+    const end = new Date(`${endDate}T00:00:00`)
+    for (let cursor = new Date(start); cursor <= end; cursor = new Date(cursor.getTime() + 86400000)) {
+      const y = cursor.getFullYear()
+      const m = String(cursor.getMonth() + 1).padStart(2, '0')
+      const d = String(cursor.getDate()).padStart(2, '0')
+      allDates.push(`${y}-${m}-${d}`)
+    }
+
+    // Header row 1: date labels (MM/DD(曜))
+    const header1: string[] = ['']
+    for (const date of allDates) {
+      const [, mm, dd] = date.split('-')
+      const dow = new Date(`${date}T00:00:00`).getDay()
+      header1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dow]})`)
+    }
+
+    // Build data rows: one row per slot number
+    const rows: (string | null)[][] = []
+    for (let s = 1; s <= slotsPerDay; s++) {
+      const row: (string | null)[] = [`${s}限`]
+      for (const date of allDates) {
+        if (holidaySet.has(date)) {
+          row.push('///') // Will be styled as diagonal
+          continue
+        }
+        const slotKey = `${date}_${s}`
+        const slotAssignments = data.assignments[slotKey] ?? []
+        if (slotAssignments.length === 0) {
+          row.push('')
+          continue
+        }
+        const cellParts = slotAssignments.map((a) => {
+          const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
+          const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join(',')
+          const regular = a.isRegular ? '[通常]' : ''
+          return `${regular}${tName}:${sNames}(${a.subject})`
+        })
+        row.push(cellParts.join('\n'))
+      }
+      rows.push(row)
+    }
+
+    const aoa = [header1, ...rows]
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+    // Column widths
+    ws['!cols'] = [{ wch: 6 }, ...allDates.map(() => ({ wch: 20 }))]
+
+    // Apply diagonal fill to holiday cells
+    for (let s = 0; s < slotsPerDay; s++) {
+      for (let c = 0; c < allDates.length; c++) {
+        if (holidaySet.has(allDates[c])) {
+          const cellAddr = XLSX.utils.encode_cell({ r: s + 1, c: c + 1 })
+          if (!ws[cellAddr]) ws[cellAddr] = { v: '', t: 's' }
+          ws[cellAddr].s = {
+            fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
+            font: { color: { rgb: '999999' } },
+          }
+        }
+      }
+    }
+
+    // Also style holiday header cells
+    for (let c = 0; c < allDates.length; c++) {
+      if (holidaySet.has(allDates[c])) {
+        const cellAddr = XLSX.utils.encode_cell({ r: 0, c: c + 1 })
+        if (ws[cellAddr]) {
+          ws[cellAddr].s = {
+            fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
+            font: { color: { rgb: '999999' } },
+          }
+        }
+      }
+    }
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'コマ割り')
+    XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
+  }
+
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
     await update((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
@@ -1633,6 +1723,9 @@ const AdminPage = () => {
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案
+              </button>
+              <button className="btn" type="button" onClick={exportScheduleExcel}>
+                Excel出力
               </button>
               {lastChangeLog.length > 0 && (
                 <button className="btn" type="button" onClick={downloadChangeLog}>
@@ -2158,46 +2251,28 @@ const StudentInputPage = ({
       <div className="student-form-section">
         <h3>希望時限</h3>
         <p className="muted">希望する時限をタップして選択してください（任意）。選択しない場合は全時限が対象です。</p>
-        <div className="preferred-slots-grid">
-          <table className="teacher-table">
-            <thead>
-              <tr>
-                <th className="date-header">日付</th>
-                {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
-                  <th key={i}>{i + 1}限</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {dates.filter((date) => !unavailableDates.has(date)).map((date) => (
-                <tr key={date}>
-                  <td className="date-cell">{date}</td>
-                  {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
-                    const slotNum = i + 1
-                    const slotKey = `${date}_${slotNum}`
-                    const isOn = preferredSlots.has(slotKey)
-                    return (
-                      <td key={slotNum}>
-                        <button
-                          className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
-                          onClick={() => {
-                            setPreferredSlots((prev) => {
-                              const next = new Set(prev)
-                              if (next.has(slotKey)) { next.delete(slotKey) } else { next.add(slotKey) }
-                              return next
-                            })
-                          }}
-                          type="button"
-                        >
-                          {isOn ? '○' : ''}
-                        </button>
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="preferred-slots-buttons" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+            const slotNum = String(i + 1)
+            const isOn = preferredSlots.has(slotNum)
+            return (
+              <button
+                key={slotNum}
+                className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
+                style={{ minWidth: '60px', padding: '12px 16px', fontSize: '16px' }}
+                onClick={() => {
+                  setPreferredSlots((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(slotNum)) { next.delete(slotNum) } else { next.add(slotNum) }
+                    return next
+                  })
+                }}
+                type="button"
+              >
+                {i + 1}限{isOn ? ' ○' : ''}
+              </button>
+            )
+          })}
         </div>
       </div>
 
