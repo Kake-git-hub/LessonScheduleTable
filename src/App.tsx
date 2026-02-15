@@ -448,13 +448,18 @@ const buildIncrementalAutoAssignments = (
   for (let i = 0; i < totalDates; i++) dateIndexMap.set(allDatesInOrder[i], i)
 
   for (const slot of slots) {
-    if (result[slot] && result[slot].length > 0) continue
-
     const currentDate = slot.split('_')[0]
     const currentSlotNum = getSlotNumber(slot)
-    const slotAssignments: Assignment[] = []
-    const usedTeacherIdsInSlot = new Set<string>()
-    const usedStudentIdsInSlot = new Set<string>()
+
+    // Initialize from existing assignments (allow adding more pairs to a slot)
+    const existingAssignments = result[slot] ?? []
+    const slotAssignments: Assignment[] = [...existingAssignments]
+    const usedTeacherIdsInSlot = new Set<string>(existingAssignments.map((a) => a.teacherId))
+    const usedStudentIdsInSlot = new Set<string>(existingAssignments.flatMap((a) => a.studentIds))
+    // Skip slots where all assignments are regular lessons (protected)
+    if (existingAssignments.length > 0 && existingAssignments.every((a) => a.isRegular)) {
+      continue
+    }
 
     // First-half bias: earlier dates get a small bonus (max +10 for first date, 0 for last)
     const dateIdx = dateIndexMap.get(currentDate) ?? 0
@@ -575,9 +580,10 @@ const buildIncrementalAutoAssignments = (
       }
     }
 
-    if (slotAssignments.length > 0) {
+    if (slotAssignments.length > existingAssignments.length) {
       result[slot] = slotAssignments
-      for (const a of slotAssignments) {
+      // Only log newly added assignments
+      for (const a of slotAssignments.slice(existingAssignments.length)) {
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
         const sNames = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?').join(', ')
         changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames} (${a.subject})` })
@@ -1428,7 +1434,7 @@ const AdminPage = () => {
     URL.revokeObjectURL(url)
   }
 
-  /** Export schedule to Excel: all dates (including holidays) as columns, slots as rows */
+  /** Export schedule to Excel: weekly sheets (Mon–Sun), A3 portrait layout */
   const exportScheduleExcel = (): void => {
     if (!data) return
     const { startDate, endDate, slotsPerDay, holidays } = data.settings
@@ -1437,7 +1443,7 @@ const AdminPage = () => {
     const holidaySet = new Set(holidays)
     const dayNames = ['日', '月', '火', '水', '木', '金', '土']
 
-    // Build all dates in range (including holidays)
+    // Build all dates in range
     const allDates: string[] = []
     const start = new Date(`${startDate}T00:00:00`)
     const end = new Date(`${endDate}T00:00:00`)
@@ -1448,75 +1454,136 @@ const AdminPage = () => {
       allDates.push(`${y}-${m}-${d}`)
     }
 
-    // Header row 1: date labels (MM/DD(曜))
-    const header1: string[] = ['']
+    // Group dates into weeks (Mon–Sun)
+    const weeks: string[][] = []
+    let currentWeek: string[] = []
     for (const date of allDates) {
-      const [, mm, dd] = date.split('-')
       const dow = new Date(`${date}T00:00:00`).getDay()
-      header1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dow]})`)
-    }
-
-    // Build data rows: one row per slot number
-    const rows: (string | null)[][] = []
-    for (let s = 1; s <= slotsPerDay; s++) {
-      const row: (string | null)[] = [`${s}限`]
-      for (const date of allDates) {
-        if (holidaySet.has(date)) {
-          row.push('///') // Will be styled as diagonal
-          continue
-        }
-        const slotKey = `${date}_${s}`
-        const slotAssignments = data.assignments[slotKey] ?? []
-        if (slotAssignments.length === 0) {
-          row.push('')
-          continue
-        }
-        const cellParts = slotAssignments.map((a) => {
-          const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
-          const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join(',')
-          const regular = a.isRegular ? '[通常]' : ''
-          return `${regular}${tName}:${sNames}(${a.subject})`
-        })
-        row.push(cellParts.join('\n'))
+      // Start new week on Monday (dow=1), or if first date and it's not Monday, pad the beginning
+      if (dow === 1 && currentWeek.length > 0) {
+        weeks.push(currentWeek)
+        currentWeek = []
       }
-      rows.push(row)
+      currentWeek.push(date)
     }
+    if (currentWeek.length > 0) weeks.push(currentWeek)
 
-    const aoa = [header1, ...rows]
-    const ws = XLSX.utils.aoa_to_sheet(aoa)
-
-    // Column widths
-    ws['!cols'] = [{ wch: 6 }, ...allDates.map(() => ({ wch: 20 }))]
-
-    // Apply diagonal fill to holiday cells
-    for (let s = 0; s < slotsPerDay; s++) {
-      for (let c = 0; c < allDates.length; c++) {
-        if (holidaySet.has(allDates[c])) {
-          const cellAddr = XLSX.utils.encode_cell({ r: s + 1, c: c + 1 })
-          if (!ws[cellAddr]) ws[cellAddr] = { v: '', t: 's' }
-          ws[cellAddr].s = {
-            fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
-            font: { color: { rgb: '999999' } },
-          }
-        }
-      }
-    }
-
-    // Also style holiday header cells
-    for (let c = 0; c < allDates.length; c++) {
-      if (holidaySet.has(allDates[c])) {
-        const cellAddr = XLSX.utils.encode_cell({ r: 0, c: c + 1 })
-        if (ws[cellAddr]) {
-          ws[cellAddr].s = {
-            fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
-            font: { color: { rgb: '999999' } },
-          }
-        }
-      }
+    // Build cell text for a slot assignment
+    const buildCellText = (slotKey: string): string => {
+      const slotAssignments = data.assignments[slotKey] ?? []
+      if (slotAssignments.length === 0) return ''
+      return slotAssignments.map((a) => {
+        const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
+        const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join('\n')
+        const regular = a.isRegular ? '[通常]\n' : ''
+        return `${regular}${tName}\n${sNames}\n(${a.subject})`
+      }).join('\n---\n')
     }
 
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'コマ割り')
+
+    for (let wi = 0; wi < weeks.length; wi++) {
+      const weekDates = weeks[wi]
+      const firstDate = weekDates[0]
+      const lastDate = weekDates[weekDates.length - 1]
+      const [, fm, fd] = firstDate.split('-')
+      const [, lm, ld] = lastDate.split('-')
+
+      // Pad to full Mon–Sun week
+      const fullWeek: (string | null)[] = []
+      const firstDow = new Date(`${firstDate}T00:00:00`).getDay()
+      // Monday=1, pad from Monday to firstDow
+      const startPad = firstDow === 0 ? 6 : firstDow - 1 // Mon=0 pad, Tue=1 pad, ..., Sun=6 pad
+      for (let p = 0; p < startPad; p++) fullWeek.push(null)
+      for (const d of weekDates) fullWeek.push(d)
+      while (fullWeek.length < 7) fullWeek.push(null)
+
+      // Header row: day labels
+      const header: string[] = ['']
+      const dowOrder = [1, 2, 3, 4, 5, 6, 0] // Mon–Sun
+      for (let i = 0; i < 7; i++) {
+        const date = fullWeek[i]
+        if (!date) {
+          header.push(`${dayNames[dowOrder[i]]}`)
+        } else {
+          const [, mm, dd] = date.split('-')
+          header.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`)
+        }
+      }
+
+      // Data rows
+      const rows: string[][] = []
+      for (let s = 1; s <= slotsPerDay; s++) {
+        const row: string[] = [`${s}限`]
+        for (let i = 0; i < 7; i++) {
+          const date = fullWeek[i]
+          if (!date) {
+            row.push('')
+          } else if (holidaySet.has(date)) {
+            row.push('///')
+          } else {
+            row.push(buildCellText(`${date}_${s}`))
+          }
+        }
+        rows.push(row)
+      }
+
+      const aoa = [header, ...rows]
+      const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+      // Column widths: A3 portrait ~297mm print width, minus margins → ~265mm usable
+      // 1 narrow label col + 7 equal date cols
+      // wch=5 for label, wch=36 for each date column (fits A3 portrait with 7 days)
+      ws['!cols'] = [{ wch: 5 }, ...Array(7).fill({ wch: 36 })]
+
+      // Row heights: header=25, data rows=tall for content
+      ws['!rows'] = [{ hpt: 25 }]
+      for (let s = 0; s < slotsPerDay; s++) {
+        ws['!rows'].push({ hpt: 120 }) // Tall rows for multi-line content
+      }
+
+      // Wrap text for all data cells
+      for (let r = 0; r <= slotsPerDay; r++) {
+        for (let c = 0; c <= 7; c++) {
+          const cellAddr = XLSX.utils.encode_cell({ r, c })
+          if (ws[cellAddr]) {
+            ws[cellAddr].s = {
+              alignment: { wrapText: true, vertical: 'top' },
+              border: {
+                top: { style: 'thin' }, bottom: { style: 'thin' },
+                left: { style: 'thin' }, right: { style: 'thin' },
+              },
+            }
+            // Header row: center + bold
+            if (r === 0) {
+              ws[cellAddr].s.alignment = { horizontal: 'center', vertical: 'center' }
+              ws[cellAddr].s.font = { bold: true, sz: 11 }
+            }
+          }
+        }
+      }
+
+      // Holiday cell styling
+      for (let s = 0; s <= slotsPerDay; s++) {
+        for (let i = 0; i < 7; i++) {
+          const date = fullWeek[i]
+          if (date && holidaySet.has(date)) {
+            const cellAddr = XLSX.utils.encode_cell({ r: s, c: i + 1 })
+            if (ws[cellAddr]) {
+              ws[cellAddr].s = {
+                ...ws[cellAddr].s,
+                fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
+                font: { color: { rgb: '999999' } },
+              }
+            }
+          }
+        }
+      }
+
+      const sheetName = `${Number(fm)}/${Number(fd)}-${Number(lm)}/${Number(ld)}`
+      XLSX.utils.book_append_sheet(wb, ws, sheetName)
+    }
+
     XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
   }
 
