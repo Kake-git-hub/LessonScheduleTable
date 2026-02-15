@@ -195,6 +195,12 @@
   z-index: 10;
 }
 
+.teacher-table th:focus-visible,
+.teacher-table td:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+}
+
 .teacher-table .date-header {
   position: sticky;
   left: 0;
@@ -231,6 +237,11 @@
 
 .teacher-slot-btn:active {
   transform: scale(0.95);
+}
+
+.teacher-slot-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 /* Student Form Layout */
@@ -313,6 +324,11 @@
   transform: scale(0.98);
 }
 
+.date-checkbox-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
 .checkbox-icon {
   width: 24px;
   height: 24px;
@@ -379,6 +395,11 @@
 
 .submit-btn:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.submit-btn:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
 }
 
 .success-message {

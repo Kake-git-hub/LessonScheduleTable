@@ -1237,7 +1237,7 @@ const getDatesInRange = (settings: SessionData['settings']): string[] => {
   const holidaySet = new Set(settings.holidays)
   const dates: string[] = []
 
-  for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+  for (let cursor = new Date(start); cursor <= end; ) {
     const y = cursor.getFullYear()
     const m = String(cursor.getMonth() + 1).padStart(2, '0')
     const d = String(cursor.getDate()).padStart(2, '0')
@@ -1245,6 +1245,7 @@ const getDatesInRange = (settings: SessionData['settings']): string[] => {
     if (!holidaySet.has(iso)) {
       dates.push(iso)
     }
+    cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)
   }
 
   return dates
@@ -1429,10 +1430,10 @@ const StudentInputPage = ({
   }
 
   const handleSubjectSlotsChange = (subject: string, value: string) => {
-    const numValue = Number.parseInt(value, 10)
+    const numValue = Number(value)
     setSubjectSlots((prev) => ({
       ...prev,
-      [subject]: Number.isNaN(numValue) ? 0 : numValue,
+      [subject]: Number.isNaN(numValue) || numValue < 0 ? 0 : Math.floor(numValue),
     }))
   }
 
@@ -1577,10 +1578,27 @@ const AvailabilityPage = () => {
   }
 
   if (personType === 'teacher') {
-    return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
+    // Runtime type check for Teacher
+    if ('subjects' in currentPerson && Array.isArray(currentPerson.subjects)) {
+      return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
+    }
+  } else if (personType === 'student') {
+    // Runtime type check for Student
+    if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
+      return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
+    }
   }
 
-  return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
+  // Fallback if person type doesn't match
+  return (
+    <div className="app-shell">
+      <div className="panel">
+        入力対象の種別が正しくありません。管理者にURLを確認してください。
+        <br />
+        <Link to="/">ホームに戻る</Link>
+      </div>
+    </div>
+  )
 }
 
 const BootPage = () => {
