@@ -982,9 +982,9 @@ const AdminPage = () => {
               {studentSubjects.length > 0 && (
                 <span>
                   {studentSubjects.map((s) => (
-                    <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setStudentSubjects(studentSubjects.filter((x) => x !== s))}>
-                      {s} ×
-                    </span>
+                    <button type="button" key={s} className="badge ok" style={{ cursor: 'pointer', border: 'none', background: 'none', padding: 0 }} onClick={() => setStudentSubjects(studentSubjects.filter((x) => x !== s))}>
+                      <span className="badge ok">{s} ×</span>
+                    </button>
                   ))}
                 </span>
               )}
@@ -1070,7 +1070,7 @@ const AdminPage = () => {
                 value={constraintGrade}
                 onChange={(e) => setConstraintGrade(e.target.value)}
               >
-                <option value="">担当不可学年</option>
+                <option value="">学年を選択</option>
                 {GRADE_OPTIONS.map((grade) => (
                   <option key={grade} value={grade}>
                     {grade}
