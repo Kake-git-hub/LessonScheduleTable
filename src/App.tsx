@@ -626,7 +626,6 @@ const HomePage = () => {
   const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [masterSaving, setMasterSaving] = useState(false)
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -663,12 +662,7 @@ const HomePage = () => {
     if (!masterData) return
     const next = updater(masterData)
     setMasterData(next)
-    setMasterSaving(true)
-    try {
-      await saveMasterData(next)
-    } finally {
-      setMasterSaving(false)
-    }
+    await saveMasterData(next)
   }
 
   const addTeacher = async (): Promise<void> => {
@@ -1015,14 +1009,6 @@ const HomePage = () => {
           </div>
         ) : (
           <>
-            {masterSaving ? (
-              <div className="panel" style={{ textAlign: 'center', padding: '12px' }}>
-                <div className="loading-container">
-                  <div className="loading-spinner" />
-                  <div className="loading-text">管理データを保存中...</div>
-                </div>
-              </div>
-            ) : (<>
             {/* --- Session management --- */}
             <div className="panel">
               <h3>新規セッション追加</h3>
@@ -1228,7 +1214,6 @@ const HomePage = () => {
                     </tbody>
                   </table>
                 </div>
-            </>)}
           </>
         )}
       </div>
@@ -2088,8 +2073,6 @@ const TeacherInputPage = ({
     const key = personKey('teacher', teacher.id)
     return new Set(data.availability[key] ?? [])
   })
-  const [submitting, setSubmitting] = useState(false)
-
   const toggleSlot = (date: string, slotNum: number) => {
     const slotKey = `${date}_${slotNum}`
     setLocalAvailability((prev) => {
@@ -2104,7 +2087,6 @@ const TeacherInputPage = ({
   }
 
   const handleSubmit = () => {
-    setSubmitting(true)
     const key = personKey('teacher', teacher.id)
     const next: SessionData = {
       ...data,
@@ -2167,10 +2149,9 @@ const TeacherInputPage = ({
         <button
           className="submit-btn"
           onClick={handleSubmit}
-          disabled={submitting}
           type="button"
         >
-          {submitting ? '送信中...' : '送信'}
+          送信
         </button>
       </div>
     </div>
@@ -2198,7 +2179,6 @@ const StudentInputPage = ({
   const [preferredSlots, setPreferredSlots] = useState<Set<string>>(
     new Set(student.preferredSlots ?? []),
   )
-  const [submitting, setSubmitting] = useState(false)
 
   const toggleDate = (date: string) => {
     const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
@@ -2232,7 +2212,6 @@ const StudentInputPage = ({
   }
 
   const handleSubmit = () => {
-    setSubmitting(true)
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
       .map(([subject]) => subject)
@@ -2384,10 +2363,9 @@ const StudentInputPage = ({
         <button
           className="submit-btn"
           onClick={handleSubmit}
-          disabled={submitting}
           type="button"
         >
-          {submitting ? '送信中...' : '送信'}
+          送信
         </button>
       </div>
     </div>
