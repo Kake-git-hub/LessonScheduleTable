@@ -1226,6 +1226,312 @@ const AdminPage = () => {
   )
 }
 
+// Helper: Get dates in range excluding holidays
+const getDatesInRange = (settings: SessionData['settings']): string[] => {
+  if (!settings.startDate || !settings.endDate) {
+    return []
+  }
+
+  const start = new Date(`${settings.startDate}T00:00:00`)
+  const end = new Date(`${settings.endDate}T00:00:00`)
+  const holidaySet = new Set(settings.holidays)
+  const dates: string[] = []
+
+  for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    const y = cursor.getFullYear()
+    const m = String(cursor.getMonth() + 1).padStart(2, '0')
+    const d = String(cursor.getDate()).padStart(2, '0')
+    const iso = `${y}-${m}-${d}`
+    if (!holidaySet.has(iso)) {
+      dates.push(iso)
+    }
+  }
+
+  return dates
+}
+
+// Helper: Check if date has regular lesson for student
+const hasRegularLessonOnDate = (
+  date: string,
+  studentId: string,
+  regularLessons: RegularLesson[],
+): { hasLesson: boolean; lessonInfo?: string } => {
+  const dateObj = new Date(`${date}T00:00:00`)
+  const dayOfWeek = dateObj.getDay()
+
+  const lesson = regularLessons.find(
+    (lesson) => lesson.dayOfWeek === dayOfWeek && lesson.studentIds.includes(studentId),
+  )
+
+  if (lesson) {
+    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+    return {
+      hasLesson: true,
+      lessonInfo: `${lesson.subject} ${dayNames[dayOfWeek]}曜${lesson.slotNumber}限`,
+    }
+  }
+
+  return { hasLesson: false }
+}
+
+// Teacher Input Component
+const TeacherInputPage = ({
+  sessionId,
+  data,
+  teacher,
+}: {
+  sessionId: string
+  data: SessionData
+  teacher: Teacher
+}) => {
+  const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
+    const key = personKey('teacher', teacher.id)
+    return new Set(data.availability[key] ?? [])
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+
+  const toggleSlot = (date: string, slotNum: number) => {
+    const slotKey = `${date}_${slotNum}`
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (next.has(slotKey)) {
+        next.delete(slotKey)
+      } else {
+        next.add(slotKey)
+      }
+      return next
+    })
+  }
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    try {
+      const key = personKey('teacher', teacher.id)
+      const next: SessionData = {
+        ...data,
+        availability: {
+          ...data.availability,
+          [key]: Array.from(localAvailability),
+        },
+      }
+      await saveSession(sessionId, next)
+      setSubmitted(true)
+      setTimeout(() => setSubmitted(false), 3000)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="availability-container">
+      <div className="availability-header">
+        <h2>{data.settings.name} - 先生希望入力</h2>
+        <p>
+          対象: <strong>{teacher.name}</strong>
+        </p>
+        <p className="muted">出席可能なコマをタップして選択してください。</p>
+      </div>
+
+      <div className="teacher-table-wrapper">
+        <table className="teacher-table">
+          <thead>
+            <tr>
+              <th className="date-header">日付</th>
+              {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
+                <th key={i}>{i + 1}限</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((date) => (
+              <tr key={date}>
+                <td className="date-cell">{date}</td>
+                {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+                  const slotNum = i + 1
+                  const slotKey = `${date}_${slotNum}`
+                  const isOn = localAvailability.has(slotKey)
+                  return (
+                    <td key={slotNum}>
+                      <button
+                        className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
+                        onClick={() => toggleSlot(date, slotNum)}
+                        type="button"
+                      >
+                        {isOn ? '○' : ''}
+                      </button>
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="submit-section">
+        <button
+          className="submit-btn"
+          onClick={handleSubmit}
+          disabled={submitting}
+          type="button"
+        >
+          {submitting ? '送信中...' : '送信'}
+        </button>
+        {submitted && <p className="success-message">送信しました！</p>}
+      </div>
+    </div>
+  )
+}
+
+// Student Input Component
+const StudentInputPage = ({
+  sessionId,
+  data,
+  student,
+}: {
+  sessionId: string
+  data: SessionData
+  student: Student
+}) => {
+  const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
+    student.subjectSlots ?? {},
+  )
+  const [unavailableDates, setUnavailableDates] = useState<Set<string>>(
+    new Set(student.unavailableDates ?? []),
+  )
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+
+  const toggleDate = (date: string) => {
+    const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
+
+    if (regularCheck.hasLesson && !unavailableDates.has(date)) {
+      const confirmed = window.confirm(
+        `この日は通常授業（${regularCheck.lessonInfo}）がありますが、出席不可としますか？`,
+      )
+      if (!confirmed) {
+        return
+      }
+    }
+
+    setUnavailableDates((prev) => {
+      const next = new Set(prev)
+      if (next.has(date)) {
+        next.delete(date)
+      } else {
+        next.add(date)
+      }
+      return next
+    })
+  }
+
+  const handleSubjectSlotsChange = (subject: string, value: string) => {
+    const numValue = Number.parseInt(value, 10)
+    setSubjectSlots((prev) => ({
+      ...prev,
+      [subject]: Number.isNaN(numValue) ? 0 : numValue,
+    }))
+  }
+
+  const handleSubmit = async () => {
+    setSubmitting(true)
+    try {
+      const updatedStudents = data.students.map((s) =>
+        s.id === student.id
+          ? {
+              ...s,
+              subjectSlots,
+              unavailableDates: Array.from(unavailableDates),
+              submittedAt: Date.now(),
+            }
+          : s,
+      )
+
+      const next: SessionData = {
+        ...data,
+        students: updatedStudents,
+      }
+      await saveSession(sessionId, next)
+      setSubmitted(true)
+      setTimeout(() => setSubmitted(false), 3000)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="availability-container">
+      <div className="availability-header">
+        <h2>{data.settings.name} - 生徒希望入力</h2>
+        <p>
+          対象: <strong>{student.name}</strong>
+        </p>
+      </div>
+
+      <div className="student-form-section">
+        <h3>希望科目のコマ数</h3>
+        <p className="muted">各科目について、希望するコマ数を入力してください。</p>
+        <div className="subject-slots-form">
+          {student.subjects.map((subject) => (
+            <div key={subject} className="form-row">
+              <label htmlFor={`subject-${subject}`}>{subject}:</label>
+              <input
+                id={`subject-${subject}`}
+                type="number"
+                min="0"
+                value={subjectSlots[subject] ?? 0}
+                onChange={(e) => handleSubjectSlotsChange(subject, e.target.value)}
+              />
+              <span className="form-unit">コマ</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="student-form-section">
+        <h3>出席不可日</h3>
+        <p className="muted">出席できない日をタップして選択してください。</p>
+        <div className="date-checkboxes">
+          {dates.map((date) => {
+            const isUnavailable = unavailableDates.has(date)
+            const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
+            return (
+              <div key={date} className="date-checkbox-item">
+                <button
+                  className={`date-checkbox-btn ${isUnavailable ? 'checked' : ''}`}
+                  onClick={() => toggleDate(date)}
+                  type="button"
+                >
+                  <span className="checkbox-icon">{isUnavailable ? '✓' : ''}</span>
+                  <span className="date-label">{date}</span>
+                  {regularCheck.hasLesson && (
+                    <span className="regular-lesson-badge">通常授業</span>
+                  )}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="submit-section">
+        <button
+          className="submit-btn"
+          onClick={handleSubmit}
+          disabled={submitting}
+          type="button"
+        >
+          {submitting ? '送信中...' : '送信'}
+        </button>
+        {submitted && <p className="success-message">送信しました！</p>}
+      </div>
+    </div>
+  )
+}
+
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
   const [data, setData] = useState<SessionData | null>(null)
@@ -1240,8 +1546,6 @@ const AvailabilityPage = () => {
     return () => unsub()
   }, [sessionId])
 
-  const slotKeys = useMemo(() => (data ? buildSlotKeys(data.settings) : []), [data])
-
   const currentPerson = useMemo(() => {
     if (!data) {
       return null
@@ -1251,33 +1555,6 @@ const AvailabilityPage = () => {
     }
     return data.students.find((student) => student.id === personId) ?? null
   }, [data, personId, personType])
-
-  const selected =
-    data?.availability[personKey(personType as PersonType, personId)] ?? []
-
-  const toggle = async (slot: string): Promise<void> => {
-    if (!data || !personId) {
-      return
-    }
-    const key = personKey(personType as PersonType, personId)
-    const set = new Set(data.availability[key] ?? [])
-    if (set.has(slot)) {
-      set.delete(slot)
-    } else {
-      set.add(slot)
-    }
-
-    const next: SessionData = {
-      ...data,
-      availability: {
-        ...data.availability,
-        [key]: Array.from(set),
-      },
-    }
-
-    setData(next)
-    await saveSession(sessionId, next)
-  }
 
   if (loading) {
     return (
@@ -1291,44 +1568,19 @@ const AvailabilityPage = () => {
     return (
       <div className="app-shell">
         <div className="panel">
-          入力対象が見つかりません。管理者にURLを確認してください。<br />
+          入力対象が見つかりません。管理者にURLを確認してください。
+          <br />
           <Link to="/">ホームに戻る</Link>
         </div>
       </div>
     )
   }
 
-  return (
-    <div className="app-shell">
-      <div className="panel">
-        <h2>
-          {data.settings.name} - {personType === 'teacher' ? '先生' : '生徒'}希望入力
-        </h2>
-        <p>
-          対象: <strong>{currentPerson.name}</strong>
-        </p>
-        <p className="muted">参加できるコマをONにしてください。</p>
-      </div>
+  if (personType === 'teacher') {
+    return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
+  }
 
-      <div className="panel">
-        <div className="availability-grid">
-          {slotKeys.map((slot) => {
-            const on = selected.includes(slot)
-            return (
-              <button
-                className={`slot-toggle ${on ? 'on' : ''}`}
-                key={slot}
-                onClick={() => void toggle(slot)}
-                type="button"
-              >
-                {slotLabel(slot)}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
+  return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
 }
 
 const BootPage = () => {
