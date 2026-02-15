@@ -101,19 +101,24 @@
   background: #fff;
 }
 
-.slot-card-regular {
-  border-color: #93c5fd;
-  background: #eff6ff;
-}
-
 .regular-badge {
   background: #3b82f6;
   color: #fff;
   font-size: 0.75em;
-  margin-left: 6px;
+  margin-bottom: 4px;
   padding: 2px 6px;
   border-radius: 4px;
-  vertical-align: middle;
+  display: inline-block;
+}
+
+.assignment-block-regular {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.assignment-block-incompatible {
+  border-color: #fca5a5;
+  background: #fef2f2;
 }
 
 .slot-title {

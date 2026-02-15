@@ -1977,13 +1977,10 @@ const AdminPage = () => {
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
-                const isRegularSlot = slotAssignments.some((a) => a.isRegular)
-
                 return (
-                  <div className={`slot-card${isRegularSlot ? ' slot-card-regular' : ''}`} key={slot}>
+                  <div className="slot-card" key={slot}>
                     <div className="slot-title">
                       {slotLabel(slot)}
-                      {isRegularSlot && <span className="badge regular-badge">通常授業</span>}
                     </div>
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
@@ -1999,8 +1996,15 @@ const AdminPage = () => {
                             )
                           : []
 
+                        const isIncompatiblePair = assignment.teacherId && selectedStudents.some((s) => {
+                          const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
+                          const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade)
+                          return pt === 'incompatible' || gt === 'incompatible'
+                        })
+
                         return (
-                          <div key={idx} className="assignment-block">
+                          <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}>
+                            {assignment.isRegular && <span className="badge regular-badge">通常授業</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
