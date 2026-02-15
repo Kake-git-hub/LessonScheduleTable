@@ -521,15 +521,6 @@ const HomePage = () => {
                   ロック
                 </button>
               </div>
-              <div className="row" style={{ marginBottom: 8 }}>
-                <input
-                  type="password"
-                  value={adminPassword}
-                  onChange={(e) => setAdminPassword(e.target.value)}
-                  placeholder="管理者パスワード（共通運用を想定）"
-                />
-                <span className="muted">このパスワードでAdminに入ります</span>
-              </div>
               <table className="table">
                 <thead>
                   <tr>
@@ -968,17 +959,6 @@ const AdminPage = () => {
                 placeholder="講習名"
               />
               <input
-                type="password"
-                value={data.settings.adminPassword}
-                onChange={(e) => {
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, adminPassword: e.target.value },
-                  }))
-                }}
-                placeholder="管理者パスワード"
-              />
-              <input
                 type="date"
                 value={data.settings.startDate}
                 onChange={(e) => {
@@ -1015,17 +995,32 @@ const AdminPage = () => {
               />
             </div>
             <div className="list">
-              <div className="muted">休日(YYYY-MM-DDを改行orカンマ区切り)</div>
-              <textarea
-                value={data.settings.holidays.join('\n')}
-                onChange={(e) => {
-                  const holidays = parseList(e.target.value)
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, holidays },
-                  }))
-                }}
-              />
+              <div className="muted">休日</div>
+              <div className="row" style={{ flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                <input
+                  type="date"
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val && !data.settings.holidays.includes(val)) {
+                      void update((current) => ({
+                        ...current,
+                        settings: { ...current.settings, holidays: [...current.settings.holidays, val].sort() },
+                      }))
+                    }
+                    e.target.value = ''
+                  }}
+                />
+                {data.settings.holidays.slice().sort().map((h) => (
+                  <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => {
+                    void update((current) => ({
+                      ...current,
+                      settings: { ...current.settings, holidays: current.settings.holidays.filter((d) => d !== h) },
+                    }))
+                  }}>
+                    {h} ×
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1124,22 +1119,25 @@ const AdminPage = () => {
                   <option key={g} value={g}>{g}</option>
                 ))}
               </select>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                {data.subjects.map((subject) => (
-                  <label key={subject} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <input
-                      type="checkbox"
-                      checked={studentSubjects.includes(subject)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setStudentSubjects((prev) => [...prev, subject])
-                        } else {
-                          setStudentSubjects((prev) => prev.filter((s) => s !== subject))
-                        }
-                      }}
-                    />
-                    {subject}
-                  </label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const val = e.target.value
+                    if (val && !studentSubjects.includes(val)) {
+                      setStudentSubjects((prev) => [...prev, val])
+                    }
+                  }}
+                >
+                  <option value="">科目を追加</option>
+                  {data.subjects.filter((s) => !studentSubjects.includes(s)).map((subject) => (
+                    <option key={subject} value={subject}>{subject}</option>
+                  ))}
+                </select>
+                {studentSubjects.map((s) => (
+                  <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setStudentSubjects((prev) => prev.filter((x) => x !== s))}>
+                    {s} ×
+                  </span>
                 ))}
               </div>
               <input
@@ -1409,6 +1407,32 @@ const AdminPage = () => {
           <div className="panel">
             <div className="row">
               <h3>コマ割り</h3>
+              {(() => {
+                const studentsWithRemaining = data.students
+                  .map((student) => {
+                    const remaining = Object.entries(student.subjectSlots)
+                      .map(([subj, desired]) => {
+                        const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
+                        return { subj, rem: Math.max(0, desired - assigned) }
+                      })
+                      .filter((r) => r.rem > 0)
+                    if (remaining.length === 0) return null
+                    return { name: student.name, remaining }
+                  })
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[] }[]
+
+                const tooltipText = studentsWithRemaining
+                  .map((s) => `${s.name}: ${s.remaining.map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
+                  .join('\n')
+
+                return studentsWithRemaining.length > 0 ? (
+                  <span className="badge warn" title={tooltipText} style={{ cursor: 'help' }}>
+                    残コマあり: {studentsWithRemaining.length}名
+                  </span>
+                ) : (
+                  <span className="badge ok">全員割当完了</span>
+                )
+              })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案(未割当)
               </button>
