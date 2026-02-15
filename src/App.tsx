@@ -1545,7 +1545,7 @@ const StudentInputPage = ({
         <h3>希望科目のコマ数</h3>
         <p className="muted">各科目について、希望するコマ数を入力してください。</p>
         <div className="subject-slots-form">
-          {Array.from(selectedSubjects).map((subject) => (
+          {data.subjects.filter((s) => selectedSubjects.has(s)).map((subject) => (
             <div key={subject} className="form-row">
               <label htmlFor={`subject-${subject}`}>{subject}:</label>
               <input
