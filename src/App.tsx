@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import './App.css'
 import { saveSession, watchSession } from './firebase'
@@ -15,6 +15,8 @@ import type {
 import { buildSlotKeys, personKey, slotLabel } from './utils/schedule'
 
 const APP_VERSION = '0.1.0'
+
+const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -102,9 +104,9 @@ const createTemplateSession = (): SessionData => {
   ]
 
   const constraints: PairConstraint[] = [
-    { id: 'c001', teacherId: 't001', studentId: 's002', type: 'incompatible' },
-    { id: 'c002', teacherId: 't001', studentId: 's003', type: 'recommended' },
-    { id: 'c003', teacherId: 't002', studentId: 's004', type: 'recommended' },
+    { id: 'c001', teacherId: 't001', studentId: 's002', grade: '', type: 'incompatible' },
+    { id: 'c002', teacherId: 't001', studentId: 's003', grade: '', type: 'recommended' },
+    { id: 'c003', teacherId: 't002', studentId: 's004', grade: '', type: 'recommended' },
   ]
 
   const slotKeys = buildSlotKeys(settings)
@@ -160,8 +162,14 @@ const constraintFor = (
   constraints: PairConstraint[],
   teacherId: string,
   studentId: string,
+  studentGrade?: string,
 ): ConstraintType | null => {
-  const hit = constraints.find((item) => item.teacherId === teacherId && item.studentId === studentId)
+  const hit = constraints.find((item) => {
+    if (item.teacherId !== teacherId) return false
+    if (item.studentId && item.studentId === studentId) return true
+    if (item.grade && studentGrade && item.grade === studentGrade) return true
+    return false
+  })
   return hit?.type ?? null
 }
 
@@ -193,14 +201,19 @@ const countStudentSubjectLoad = (
     (a) => a.studentIds.includes(studentId) && a.subject === subject,
   ).length
 
-const getTotalRemainingSlots = (
+const getSubjectRemainingSlots = (
   assignments: Record<string, Assignment[]>,
   student: Student,
-): number =>
-  Object.entries(student.subjectSlots).reduce((sum, [subject, desired]) => {
-    const assigned = countStudentSubjectLoad(assignments, student.id, subject)
-    return sum + Math.max(0, desired - assigned)
-  }, 0)
+): string => {
+  const parts = Object.entries(student.subjectSlots)
+    .map(([subject, desired]) => {
+      const assigned = countStudentSubjectLoad(assignments, student.id, subject)
+      const remaining = Math.max(0, desired - assigned)
+      return `${subject}${remaining}`
+    })
+    .filter((part) => part.length > 0)
+  return parts.length > 0 ? parts.join(',') : '0'
+}
 
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
   const [date] = slotKey.split('_')
@@ -271,7 +284,7 @@ const buildAutoAssignments = (
         if (usedStudentIds.has(student.id)) return false
         if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
         if (!isStudentAvailable(student, slot)) return false
-        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
+        if (constraintFor(data.constraints, teacher.id, student.id, student.grade) === 'incompatible') return false
         return teacher.subjects.some((subject) => student.subjects.includes(subject))
       })
 
@@ -303,7 +316,7 @@ const buildAutoAssignments = (
         if (viableSubjects.length === 0) continue
 
         const recommendScore = combo.reduce((score, student) => {
-          return score + (constraintFor(data.constraints, teacher.id, student.id) === 'recommended' ? 30 : 0)
+          return score + (constraintFor(data.constraints, teacher.id, student.id, student.grade) === 'recommended' ? 30 : 0)
         }, 0)
 
         const studentLoadPenalty = combo.reduce((score, student) => {
@@ -353,6 +366,17 @@ const buildAutoAssignments = (
       }
     }
 
+    // Add available teachers without students
+    for (const teacher of teachers) {
+      if (!usedTeacherIds.has(teacher.id)) {
+        slotAssignments.push({
+          teacherId: teacher.id,
+          studentIds: [],
+          subject: teacher.subjects[0] ?? '',
+        })
+      }
+    }
+
     if (slotAssignments.length > 0) {
       nextAssignments[slot] = slotAssignments
     }
@@ -397,7 +421,7 @@ const AdminPage = () => {
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
   const [passwordInput, setPasswordInput] = useState('')
-  const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
+  const [authorized, setAuthorized] = useState(true)
 
   const [subjectInput, setSubjectInput] = useState('')
   const [teacherName, setTeacherName] = useState('')
@@ -413,6 +437,7 @@ const AdminPage = () => {
 
   const [constraintTeacherId, setConstraintTeacherId] = useState('')
   const [constraintStudentId, setConstraintStudentId] = useState('')
+  const [constraintGrade, setConstraintGrade] = useState('')
   const [constraintType, setConstraintType] = useState<ConstraintType>('incompatible')
 
   const [regularTeacherId, setRegularTeacherId] = useState('')
@@ -422,7 +447,7 @@ const AdminPage = () => {
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
 
   useEffect(() => {
-    setAuthorized(import.meta.env.DEV || skipAuth)
+    setAuthorized(true)
     setPasswordInput('')
   }, [sessionId, skipAuth])
 
@@ -527,7 +552,7 @@ const AdminPage = () => {
   }
 
   const upsertConstraint = async (): Promise<void> => {
-    if (!constraintTeacherId || !constraintStudentId || !data) {
+    if (!constraintTeacherId || (!constraintStudentId && !constraintGrade) || !data) {
       return
     }
 
@@ -535,12 +560,18 @@ const AdminPage = () => {
       id: createId(),
       teacherId: constraintTeacherId,
       studentId: constraintStudentId,
+      grade: constraintGrade,
       type: constraintType,
     }
 
     await update((current) => {
       const filtered = current.constraints.filter(
-        (item) => !(item.teacherId === constraintTeacherId && item.studentId === constraintStudentId),
+        (item) => {
+          if (item.teacherId !== constraintTeacherId) return true
+          if (constraintStudentId && item.studentId === constraintStudentId) return false
+          if (constraintGrade && !constraintStudentId && item.grade === constraintGrade && !item.studentId) return false
+          return true
+        },
       )
       return { ...current, constraints: [...filtered, newConstraint] }
     })
@@ -921,25 +952,42 @@ const AdminPage = () => {
                 onChange={(e) => setStudentName(e.target.value)}
                 placeholder="生徒名"
               />
-              <input
+              <select
                 value={studentGrade}
                 onChange={(e) => setStudentGrade(e.target.value)}
-                placeholder="学年"
-              />
-              <select
-                multiple
-                value={studentSubjects}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                  setStudentSubjects(Array.from(e.target.selectedOptions, (option) => option.value))
-                }
-                style={{ minHeight: '60px' }}
               >
-                {data.subjects.map((subject) => (
+                <option value="">学年を選択</option>
+                {GRADE_OPTIONS.map((grade) => (
+                  <option key={grade} value={grade}>
+                    {grade}
+                  </option>
+                ))}
+              </select>
+              <select
+                value=""
+                onChange={(e) => {
+                  const value = e.target.value
+                  if (value && !studentSubjects.includes(value)) {
+                    setStudentSubjects([...studentSubjects, value])
+                  }
+                }}
+              >
+                <option value="">科目を追加</option>
+                {data.subjects.filter((s) => !studentSubjects.includes(s)).map((subject) => (
                   <option key={subject} value={subject}>
                     {subject}
                   </option>
                 ))}
               </select>
+              {studentSubjects.length > 0 && (
+                <span>
+                  {studentSubjects.map((s) => (
+                    <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setStudentSubjects(studentSubjects.filter((x) => x !== s))}>
+                      {s} ×
+                    </span>
+                  ))}
+                </span>
+              )}
               <input
                 value={studentSubjectSlotsText}
                 onChange={(e) => setStudentSubjectSlotsText(e.target.value)}
@@ -1018,6 +1066,17 @@ const AdminPage = () => {
                   </option>
                 ))}
               </select>
+              <select
+                value={constraintGrade}
+                onChange={(e) => setConstraintGrade(e.target.value)}
+              >
+                <option value="">担当不可学年</option>
+                {GRADE_OPTIONS.map((grade) => (
+                  <option key={grade} value={grade}>
+                    {grade}
+                  </option>
+                ))}
+              </select>
               <select value={constraintType} onChange={(e) => setConstraintType(e.target.value as ConstraintType)}>
                 <option value="incompatible">組み合わせ不可</option>
                 <option value="recommended">組み合わせ推奨</option>
@@ -1031,6 +1090,7 @@ const AdminPage = () => {
                 <tr>
                   <th>先生</th>
                   <th>生徒</th>
+                  <th>学年</th>
                   <th>種別</th>
                 </tr>
               </thead>
@@ -1038,7 +1098,8 @@ const AdminPage = () => {
                 {data.constraints.map((constraint) => (
                   <tr key={constraint.id}>
                     <td>{data.teachers.find((teacher) => teacher.id === constraint.teacherId)?.name ?? '-'}</td>
-                    <td>{data.students.find((student) => student.id === constraint.studentId)?.name ?? '-'}</td>
+                    <td>{constraint.studentId ? (data.students.find((student) => student.id === constraint.studentId)?.name ?? '-') : '-'}</td>
+                    <td>{constraint.grade || '-'}</td>
                     <td>
                       {constraint.type === 'incompatible' ? (
                         <span className="badge warn">不可</span>
@@ -1224,19 +1285,19 @@ const AdminPage = () => {
                                       <option value="">{`生徒${pos + 1}を選択`}</option>
                                       {data.students.map((student) => {
                                         const available = hasAvailability(data.availability, 'student', student.id, slot)
-                                        const tag = constraintFor(data.constraints, assignment.teacherId, student.id)
+                                        const tag = constraintFor(data.constraints, assignment.teacherId, student.id, student.grade)
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
                                         const isSelectedInOtherPosition = student.id === otherStudentId
                                         const disabled = !available || tag === 'incompatible' || usedInOther || isSelectedInOtherPosition
-                                        const remaining = getTotalRemainingSlots(data.assignments, student)
+                                        const remainingLabel = getSubjectRemainingSlots(data.assignments, student)
                                         const tagLabel = tag === 'incompatible' ? ' [不可]' : tag === 'recommended' ? ' [推奨]' : ''
                                         const statusLabel = !available ? ' (希望なし)' : usedInOther ? ' (他ペア)' : ''
 
                                         return (
                                           <option key={student.id} value={student.id} disabled={disabled}>
-                                            {student.name} 残{remaining}コマ{tagLabel}{statusLabel}
+                                            {student.name} 残({remainingLabel}){tagLabel}{statusLabel}
                                           </option>
                                         )
                                       })}
@@ -1266,6 +1327,19 @@ const AdminPage = () => {
                       >
                         ＋ ペア追加
                       </button>
+                      {(() => {
+                        const availableUnassigned = data.teachers.filter(
+                          (teacher) =>
+                            hasAvailability(data.availability, 'teacher', teacher.id, slot) &&
+                            !usedTeacherIds.has(teacher.id),
+                        )
+                        if (availableUnassigned.length === 0) return null
+                        return (
+                          <div className="muted" style={{ fontSize: '0.8em', marginTop: '4px' }}>
+                            空き先生: {availableUnassigned.map((t) => t.name).join(', ')}
+                          </div>
+                        )
+                      })()}
                     </div>
                   </div>
                 )

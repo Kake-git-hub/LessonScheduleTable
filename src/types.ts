@@ -26,6 +26,7 @@ export type PairConstraint = {
   id: string
   teacherId: string
   studentId: string
+  grade: string
   type: ConstraintType
 }
 
