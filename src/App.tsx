@@ -135,6 +135,7 @@ const countTeacherLoad = (assignments: Record<string, Assignment>, teacherId: st
 const countStudentLoad = (assignments: Record<string, Assignment>, studentId: string): number =>
   Object.values(assignments).filter((assignment) => assignment.studentIds.includes(studentId)).length
 
+// 割り当てルールの詳細は lessonscheduleのルール.md を参照
 const buildAutoAssignments = (
   data: SessionData,
   slots: string[],
@@ -149,13 +150,30 @@ const buildAutoAssignments = (
 
     let bestPlan: { score: number; assignment: Assignment } | null = null
 
+    // このスロットで既に割り当て済みの先生と生徒を追跡（二重割り当て防止）
+    const assignedTeachers = new Set<string>()
+    const assignedStudents = new Set<string>()
+    if (nextAssignments[slot]) {
+      assignedTeachers.add(nextAssignments[slot].teacherId)
+      nextAssignments[slot].studentIds.forEach((id) => assignedStudents.add(id))
+    }
+
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
     )
 
     for (const teacher of teachers) {
+      // 既にこのスロットに割り当て済みの先生はスキップ（二重割り当て防止）
+      if (assignedTeachers.has(teacher.id)) {
+        continue
+      }
+
       const candidates = data.students.filter((student) => {
         if (!hasAvailability(data.availability, 'student', student.id, slot)) {
+          return false
+        }
+        // 既にこのスロットに割り当て済みの生徒は除外（二重割り当て防止）
+        if (assignedStudents.has(student.id)) {
           return false
         }
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') {
