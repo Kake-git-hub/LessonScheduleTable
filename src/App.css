@@ -1,3 +1,13 @@
+.version-badge {
+  position: fixed;
+  top: 4px;
+  right: 8px;
+  font-size: 10px;
+  color: #9ca3af;
+  pointer-events: none;
+  z-index: 1000;
+}
+
 .app-shell {
   max-width: 1200px;
   margin: 0 auto;

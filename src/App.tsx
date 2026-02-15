@@ -14,6 +14,8 @@ import type {
 } from './types'
 import { buildSlotKeys, personKey, slotLabel } from './utils/schedule'
 
+const APP_VERSION = '0.1.0'
+
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().slice(0, 8)
@@ -374,6 +376,12 @@ const HomePage = () => {
   const navigate = useNavigate()
   const [sessionId, setSessionId] = useState('main')
 
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      navigate('/boot', { replace: true })
+    }
+  }, [navigate])
+
   return (
     <div className="app-shell">
       <div className="panel">
@@ -398,7 +406,7 @@ const AdminPage = () => {
   const { sessionId = 'main' } = useParams()
   const { data, setData, loading } = useSessionData(sessionId)
   const [passwordInput, setPasswordInput] = useState('')
-  const [authorized, setAuthorized] = useState(false)
+  const [authorized, setAuthorized] = useState(import.meta.env.DEV)
 
   const [subjectInput, setSubjectInput] = useState('')
   const [teacherName, setTeacherName] = useState('')
@@ -423,7 +431,7 @@ const AdminPage = () => {
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
 
   useEffect(() => {
-    setAuthorized(false)
+    setAuthorized(import.meta.env.DEV)
     setPasswordInput('')
   }, [sessionId])
 
@@ -1326,9 +1334,9 @@ const TeacherInputPage = ({
           [key]: Array.from(localAvailability),
         },
       }
-      await saveSession(sessionId, next)
+      void saveSession(sessionId, next)
       navigate(`/complete/${sessionId}`)
-    } finally {
+    } catch {
       setSubmitting(false)
     }
   }
@@ -1462,9 +1470,9 @@ const StudentInputPage = ({
         ...data,
         students: updatedStudents,
       }
-      await saveSession(sessionId, next)
+      void saveSession(sessionId, next)
       navigate(`/complete/${sessionId}`)
-    } finally {
+    } catch {
       setSubmitting(false)
     }
   }
@@ -1610,10 +1618,8 @@ const BootPage = () => {
   const navigate = useNavigate()
 
   useEffect(() => {
-    void (async () => {
-      await saveSession('main', createTemplateSession())
-      navigate('/admin/main', { replace: true })
-    })()
+    void saveSession('main', createTemplateSession())
+    navigate('/admin/main', { replace: true })
   }, [navigate])
 
   return (
@@ -1641,13 +1647,16 @@ const CompletionPage = () => {
 
 function App() {
   return (
-    <Routes>
-      <Route path="/" element={<HomePage />} />
-      <Route path="/boot" element={<BootPage />} />
-      <Route path="/admin/:sessionId" element={<AdminPage />} />
-      <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
-      <Route path="/complete/:sessionId" element={<CompletionPage />} />
-    </Routes>
+    <>
+      <div className="version-badge">v{APP_VERSION}</div>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/boot" element={<BootPage />} />
+        <Route path="/admin/:sessionId" element={<AdminPage />} />
+        <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
+        <Route path="/complete/:sessionId" element={<CompletionPage />} />
+      </Routes>
+    </>
   )
 }
 
