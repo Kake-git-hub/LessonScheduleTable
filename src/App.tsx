@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import './App.css'
-import { saveSession, watchSession } from './firebase'
+import { loadSession, saveSession, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -218,6 +218,12 @@ const getSlotNumber = (slotKey: string): number => {
   return Number.parseInt(slot, 10)
 }
 
+const ADMIN_PASSWORD_STORAGE_KEY = 'lst_admin_password_v1'
+const readSavedAdminPassword = (): string => localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY) ?? 'admin1234'
+const saveAdminPassword = (password: string): void => {
+  localStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password)
+}
+
 const findRegularLessonForSlot = (
   regularLessons: RegularLesson[],
   slotKey: string,
@@ -363,7 +369,13 @@ const buildAutoAssignments = (
 
 const HomePage = () => {
   const navigate = useNavigate()
-  const [sessionId, setSessionId] = useState('main')
+  const [unlocked, setUnlocked] = useState(false)
+  const [adminPassword, setAdminPassword] = useState(readSavedAdminPassword())
+  const [sessions, setSessions] = useState<{ id: string; name: string; createdAt: number; updatedAt: number }[]>([])
+  const [newYear, setNewYear] = useState(String(new Date().getFullYear()))
+  const [newTerm, setNewTerm] = useState<'spring' | 'summer' | 'winter'>('summer')
+  const [newSessionId, setNewSessionId] = useState('')
+  const [newSessionName, setNewSessionName] = useState('')
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -371,21 +383,176 @@ const HomePage = () => {
     }
   }, [navigate])
 
+  useEffect(() => {
+    const year = Number.parseInt(newYear, 10)
+    const safeYear = Number.isNaN(year) ? new Date().getFullYear() : year
+    const label = newTerm === 'spring' ? '春期講習' : newTerm === 'summer' ? '夏期講習' : '冬期講習'
+    const idTerm = newTerm === 'spring' ? 'spring' : newTerm === 'summer' ? 'summer' : 'winter'
+    setNewSessionId(`${safeYear}-${idTerm}`)
+    setNewSessionName(`${safeYear} ${label}`)
+  }, [newTerm, newYear])
+
+  useEffect(() => {
+    if (!unlocked) {
+      return
+    }
+
+    const unsub = watchSessionsList((items) => setSessions(items))
+    return () => unsub()
+  }, [unlocked])
+
+  const ensureDevSession = async (): Promise<void> => {
+    const id = 'dev'
+    const existing = await loadSession(id)
+    if (existing) {
+      return
+    }
+    const seed = createTemplateSession()
+    seed.settings.name = '開発用セッション'
+    seed.settings.adminPassword = adminPassword
+    await saveSession(id, seed)
+  }
+
+  const onUnlock = async (): Promise<void> => {
+    saveAdminPassword(adminPassword)
+    setUnlocked(true)
+    await ensureDevSession()
+  }
+
+  const onCreateSession = async (): Promise<void> => {
+    const id = newSessionId.trim()
+    if (!id) {
+      return
+    }
+    if (sessions.some((s) => s.id === id)) {
+      alert('同じセッションIDが既に存在します。別のIDにしてください。')
+      return
+    }
+
+    const seed = emptySession()
+    seed.settings.name = newSessionName.trim() || id
+    seed.settings.adminPassword = adminPassword
+    await saveSession(id, seed)
+  }
+
+  const openAdmin = (sessionId: string): void => {
+    saveAdminPassword(adminPassword)
+    navigate(`/admin/${sessionId}`)
+  }
+
+  const formatDate = (ms: number): string => {
+    if (!ms) {
+      return '-'
+    }
+    const d = new Date(ms)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${y}-${m}-${day} ${hh}:${mm}`
+  }
+
   return (
     <div className="app-shell">
       <div className="panel">
         <h2>講習コマ割りアプリ</h2>
-        <p className="muted">管理画面と希望入力URLを分けて運用できます。</p>
-        <div className="row">
-          <input value={sessionId} onChange={(e) => setSessionId(e.target.value.trim())} />
-          <button
-            className="btn"
-            onClick={() => navigate(`/admin/${sessionId || 'main'}`)}
-            type="button"
-          >
-            管理画面を開く
-          </button>
-        </div>
+        <p className="muted">セッション（講習ごと）にデータを分けて管理します。</p>
+
+        {!unlocked ? (
+          <>
+            <h3>管理者パスワード</h3>
+            <div className="row">
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="管理者パスワード"
+              />
+              <button className="btn" type="button" onClick={() => void onUnlock()}>
+                続行
+              </button>
+            </div>
+            <p className="muted">現在は初期値を保存済みのため、入力不要で続行できます。</p>
+          </>
+        ) : (
+          <>
+            <div className="panel">
+              <h3>新規セッション追加</h3>
+              <div className="row">
+                <input
+                  value={newYear}
+                  onChange={(e) => setNewYear(e.target.value)}
+                  placeholder="西暦"
+                  style={{ width: 120 }}
+                />
+                <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
+                  <option value="spring">春期講習</option>
+                  <option value="summer">夏期講習</option>
+                  <option value="winter">冬期講習</option>
+                </select>
+                <input
+                  value={newSessionId}
+                  onChange={(e) => setNewSessionId(e.target.value)}
+                  placeholder="sessionId (例: 2026-summer)"
+                />
+                <input
+                  value={newSessionName}
+                  onChange={(e) => setNewSessionName(e.target.value)}
+                  placeholder="表示名 (例: 2026 夏期講習)"
+                />
+                <button className="btn" type="button" onClick={() => void onCreateSession()}>
+                  追加
+                </button>
+              </div>
+            </div>
+
+            <div className="panel">
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <h3>セッション一覧（新しい順）</h3>
+                <button className="btn secondary" type="button" onClick={() => setUnlocked(false)}>
+                  ロック
+                </button>
+              </div>
+              <div className="row" style={{ marginBottom: 8 }}>
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="管理者パスワード（共通運用を想定）"
+                />
+                <span className="muted">このパスワードでAdminに入ります</span>
+              </div>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>セッションID</th>
+                    <th>名称</th>
+                    <th>作成</th>
+                    <th>更新</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((s) => (
+                    <tr key={s.id}>
+                      <td>{s.id}</td>
+                      <td>{s.name}</td>
+                      <td>{formatDate(s.createdAt)}</td>
+                      <td>{formatDate(s.updatedAt)}</td>
+                      <td>
+                        <button className="btn" type="button" onClick={() => openAdmin(s.id)}>
+                          管理
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted">※先生・生徒の希望入力URLは各セッションのAdmin画面から配布します。</p>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
@@ -396,7 +563,6 @@ const AdminPage = () => {
   const location = useLocation()
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
-  const [passwordInput, setPasswordInput] = useState('')
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
 
   const [subjectInput, setSubjectInput] = useState('')
@@ -423,7 +589,6 @@ const AdminPage = () => {
 
   useEffect(() => {
     setAuthorized(import.meta.env.DEV || skipAuth)
-    setPasswordInput('')
   }, [sessionId, skipAuth])
 
   const slotKeys = useMemo(() => (data ? buildSlotKeys(data.settings) : []), [data])
@@ -450,12 +615,17 @@ const AdminPage = () => {
     await saveSession(sessionId, seed)
   }
 
-  const login = (): void => {
+  useEffect(() => {
     if (!data) {
       return
     }
-    setAuthorized(passwordInput === data.settings.adminPassword)
-  }
+    if (import.meta.env.DEV || skipAuth) {
+      setAuthorized(true)
+      return
+    }
+    const password = readSavedAdminPassword()
+    setAuthorized(password === data.settings.adminPassword)
+  }, [data, skipAuth])
 
   const parseList = (text: string): string[] =>
     text
@@ -738,19 +908,11 @@ const AdminPage = () => {
 
       {!authorized ? (
         <div className="panel">
-          <h3>管理者パスワード</h3>
-          <div className="row">
-            <input
-              type="password"
-              value={passwordInput}
-              onChange={(e) => setPasswordInput(e.target.value)}
-              placeholder="パスワード"
-            />
-            <button className="btn" type="button" onClick={login}>
-              ログイン
-            </button>
-          </div>
-          <p className="muted">初期値は admin1234 です。ログイン後に必ず変更してください。</p>
+          <h3>管理者パスワードが一致しません</h3>
+          <p className="muted">
+            トップ画面で管理者パスワードを入力し「続行」してから、もう一度このセッションを開いてください。
+          </p>
+          <Link to="/">トップへ戻る</Link>
         </div>
       ) : (
         <>

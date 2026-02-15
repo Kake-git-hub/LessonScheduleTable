@@ -51,6 +51,8 @@ export type SessionSettings = {
   endDate: string
   slotsPerDay: number
   holidays: string[]
+  createdAt?: number
+  updatedAt?: number
 }
 
 export type SessionData = {

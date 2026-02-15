@@ -1,9 +1,12 @@
 import { initializeApp } from 'firebase/app'
 import {
+  collection,
   doc,
   getDoc,
   getFirestore,
   onSnapshot,
+  orderBy,
+  query,
   setDoc,
   type Unsubscribe,
 } from 'firebase/firestore'
@@ -24,6 +27,33 @@ const db = getFirestore(app)
 
 const sessionRef = (sessionId: string) => doc(db, 'sessions', sessionId)
 
+export type SessionListItem = {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
+export const watchSessionsList = (
+  callback: (items: SessionListItem[]) => void,
+): Unsubscribe => {
+  const q = query(collection(db, 'sessions'), orderBy('settings.createdAt', 'desc'))
+  return onSnapshot(q, (snapshot) => {
+    const items = snapshot.docs.map((docSnap) => {
+      const data = docSnap.data() as SessionData
+      const createdAt = data.settings.createdAt ?? 0
+      const updatedAt = data.settings.updatedAt ?? createdAt
+      return {
+        id: docSnap.id,
+        name: data.settings.name,
+        createdAt,
+        updatedAt,
+      }
+    })
+    callback(items)
+  })
+}
+
 export const watchSession = (
   sessionId: string,
   callback: (value: SessionData | null) => void,
@@ -38,5 +68,15 @@ export const loadSession = async (sessionId: string): Promise<SessionData | null
 }
 
 export const saveSession = async (sessionId: string, data: SessionData): Promise<void> => {
-  await setDoc(sessionRef(sessionId), data)
+  const now = Date.now()
+  const createdAt = data.settings.createdAt ?? now
+  const next: SessionData = {
+    ...data,
+    settings: {
+      ...data.settings,
+      createdAt,
+      updatedAt: now,
+    },
+  }
+  await setDoc(sessionRef(sessionId), next)
 }
