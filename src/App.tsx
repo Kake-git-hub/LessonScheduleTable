@@ -508,12 +508,32 @@ const HomePage = () => {
 
   // --- Excel (operates on master data) ---
   const downloadTemplate = (): void => {
+    // Include sample test data so users can see the expected format
+    const sampleTeachers = [
+      ['田中先生', '数,英', '数学メイン'],
+      ['佐藤先生', '英,数', '英語メイン'],
+    ]
+    const sampleStudents = [
+      ['青木 太郎', '中3'],
+      ['伊藤 花', '中2'],
+      ['上田 陽介', '高1'],
+    ]
+    const sampleConstraints = [
+      ['田中先生', '伊藤 花', '不可'],
+      ['田中先生', '上田 陽介', '推奨'],
+    ]
+    const sampleGradeConstraints = [
+      ['佐藤先生', '高1', '推奨'],
+    ]
+    const sampleRegularLessons = [
+      ['田中先生', '青木 太郎', '', '数', '月', '1'],
+    ]
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ']]), '先生')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年']]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒名', '種別(不可/推奨)']]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '学年', '種別(不可/推奨)']]), '学年制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号']]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ'], ...sampleTeachers]), '先生')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年'], ...sampleStudents]), '生徒')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒名', '種別(不可/推奨)'], ...sampleConstraints]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '学年', '種別(不可/推奨)'], ...sampleGradeConstraints]), '学年制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -784,7 +804,7 @@ const HomePage = () => {
                   <h3>管理データ — Excel</h3>
                   <div className="row">
                     <button className="btn" type="button" onClick={downloadTemplate}>テンプレートExcel出力</button>
-                    <button className="btn" type="button" onClick={exportData}>データExcel出力</button>
+                    <button className="btn" type="button" onClick={exportData}>現状データエクセル出力</button>
                     <button className="btn secondary" type="button" onClick={() => fileInputRef.current?.click()}>Excel取り込み</button>
                     <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
                       onChange={(e) => { const file = e.target.files?.[0]; if (file) void handleFileImport(file); e.target.value = '' }} />
@@ -991,23 +1011,26 @@ const AdminPage = () => {
     setAuthorized(password === data.settings.adminPassword)
   }, [data, skipAuth])
 
-  const syncFromMaster = async (): Promise<void> => {
-    const master = await loadMasterData()
-    if (!master || !data) return
-    const ok = window.confirm('マスターデータを反映します。先生・制約・通常授業は上書き、生徒は希望データを維持して更新されます。\n\nよろしいですか？')
-    if (!ok) return
-    await update((current) => {
+  // Auto-sync master data on session open
+  const masterSyncedRef = useRef(false)
+  useEffect(() => {
+    if (!data || !authorized || masterSyncedRef.current) return
+    masterSyncedRef.current = true
+    void (async () => {
+      const master = await loadMasterData()
+      if (!master) return
       const mergedStudents = master.students.map((ms) => {
-        const existing = current.students.find((s) => s.id === ms.id)
+        const existing = data.students.find((s) => s.id === ms.id)
         if (existing) {
           return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, submittedAt: existing.submittedAt }
         }
         return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], submittedAt: 0 }
       })
-      return { ...current, teachers: master.teachers, students: mergedStudents, constraints: master.constraints, gradeConstraints: master.gradeConstraints, regularLessons: master.regularLessons }
-    })
-    alert('マスターデータを反映しました。')
-  }
+      const next: SessionData = { ...data, teachers: master.teachers, students: mergedStudents, constraints: master.constraints, gradeConstraints: master.gradeConstraints, regularLessons: master.regularLessons }
+      setData(next)
+      await saveSession(sessionId, next)
+    })()
+  }, [data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) {
@@ -1180,10 +1203,6 @@ const AdminPage = () => {
               <button className="btn secondary" type="button" onClick={createTemplateSessionDoc}>
                 初期テンプレートを再投入
               </button>
-              <button className="btn" type="button" onClick={() => void syncFromMaster()}>
-                マスターデータ反映
-              </button>
-              <span className="muted">トップ画面の管理データをこのセッションに反映します。</span>
             </div>
             <div className="row">
               <input
