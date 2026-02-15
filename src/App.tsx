@@ -1228,8 +1228,8 @@ const AdminPage = () => {
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
-                                        const isOtherInPair = student.id === otherStudentId
-                                        const disabled = !available || tag === 'incompatible' || usedInOther || isOtherInPair
+                                        const isSelectedInOtherPosition = student.id === otherStudentId
+                                        const disabled = !available || tag === 'incompatible' || usedInOther || isSelectedInOtherPosition
                                         const remaining = getTotalRemainingSlots(data.assignments, student)
                                         const tagLabel = tag === 'incompatible' ? ' [不可]' : tag === 'recommended' ? ' [推奨]' : ''
                                         const statusLabel = !available ? ' (希望なし)' : usedInOther ? ' (他ペア)' : ''
