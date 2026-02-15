@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
 import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import './App.css'
-import { loadSession, saveSession, watchSession } from './firebase'
+import { saveSession, watchSession } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -44,9 +44,9 @@ const createTemplateSession = (): SessionData => {
     name: '夏期講習テンプレート',
     adminPassword: 'admin1234',
     startDate: '2026-07-21',
-    endDate: '2026-07-31',
+    endDate: '2026-07-25',
     slotsPerDay: 5,
-    holidays: ['2026-07-26'],
+    holidays: [],
   }
 
   const subjects = ['数学', '英語', '国語', '理科']
@@ -84,7 +84,7 @@ const createTemplateSession = (): SessionData => {
       grade: '高1',
       subjects: ['数学', '理科'],
       subjectSlots: { 数学: 3, 理科: 3 },
-      unavailableDates: ['2026-07-22', '2026-07-29'],
+      unavailableDates: ['2026-07-22'],
       memo: '',
       submittedAt: Date.now() - 2000,
     },
@@ -104,7 +104,7 @@ const createTemplateSession = (): SessionData => {
       grade: '中3',
       subjects: ['国語', '英語'],
       subjectSlots: { 国語: 3, 英語: 2 },
-      unavailableDates: ['2026-07-28'],
+      unavailableDates: [],
       memo: '',
       submittedAt: Date.now(),
     },
@@ -407,7 +407,7 @@ const AdminPage = () => {
 
   const [studentName, setStudentName] = useState('')
   const [studentGrade, setStudentGrade] = useState('')
-  const [studentSubjectsText, setStudentSubjectsText] = useState('')
+  const [studentSubjects, setStudentSubjects] = useState<string[]>([])
   const [studentSubjectSlotsText, setStudentSubjectSlotsText] = useState('')
   const [studentUnavailableDatesText, setStudentUnavailableDatesText] = useState('')
   const [studentMemo, setStudentMemo] = useState('')
@@ -511,7 +511,7 @@ const AdminPage = () => {
       id: createId(),
       name: studentName.trim(),
       grade: studentGrade.trim(),
-      subjects: parseList(studentSubjectsText),
+      subjects: studentSubjects,
       subjectSlots,
       unavailableDates,
       memo: studentMemo.trim(),
@@ -521,7 +521,7 @@ const AdminPage = () => {
     await update((current) => ({ ...current, students: [...current.students, student] }))
     setStudentName('')
     setStudentGrade('')
-    setStudentSubjectsText('')
+    setStudentSubjects([])
     setStudentSubjectSlotsText('')
     setStudentUnavailableDatesText('')
     setStudentMemo('')
@@ -913,11 +913,20 @@ const AdminPage = () => {
                 onChange={(e) => setStudentGrade(e.target.value)}
                 placeholder="学年"
               />
-              <input
-                value={studentSubjectsText}
-                onChange={(e) => setStudentSubjectsText(e.target.value)}
-                placeholder="受講科目(カンマ区切り)"
-              />
+              <select
+                multiple
+                value={studentSubjects}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setStudentSubjects(Array.from(e.target.selectedOptions, (option) => option.value))
+                }
+                style={{ minHeight: '60px' }}
+              >
+                {data.subjects.map((subject) => (
+                  <option key={subject} value={subject}>
+                    {subject}
+                  </option>
+                ))}
+              </select>
               <input
                 value={studentSubjectSlotsText}
                 onChange={(e) => setStudentSubjectSlotsText(e.target.value)}
@@ -1285,13 +1294,13 @@ const TeacherInputPage = ({
   data: SessionData
   teacher: Teacher
 }) => {
+  const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey('teacher', teacher.id)
     return new Set(data.availability[key] ?? [])
   })
   const [submitting, setSubmitting] = useState(false)
-  const [submitted, setSubmitted] = useState(false)
 
   const toggleSlot = (date: string, slotNum: number) => {
     const slotKey = `${date}_${slotNum}`
@@ -1318,8 +1327,7 @@ const TeacherInputPage = ({
         },
       }
       await saveSession(sessionId, next)
-      setSubmitted(true)
-      setTimeout(() => setSubmitted(false), 3000)
+      navigate(`/complete/${sessionId}`)
     } finally {
       setSubmitting(false)
     }
@@ -1380,7 +1388,6 @@ const TeacherInputPage = ({
         >
           {submitting ? '送信中...' : '送信'}
         </button>
-        {submitted && <p className="success-message">送信しました！</p>}
       </div>
     </div>
   )
@@ -1396,6 +1403,7 @@ const StudentInputPage = ({
   data: SessionData
   student: Student
 }) => {
+  const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
@@ -1404,7 +1412,6 @@ const StudentInputPage = ({
     new Set(student.unavailableDates ?? []),
   )
   const [submitting, setSubmitting] = useState(false)
-  const [submitted, setSubmitted] = useState(false)
 
   const toggleDate = (date: string) => {
     const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
@@ -1456,8 +1463,7 @@ const StudentInputPage = ({
         students: updatedStudents,
       }
       await saveSession(sessionId, next)
-      setSubmitted(true)
-      setTimeout(() => setSubmitted(false), 3000)
+      navigate(`/complete/${sessionId}`)
     } finally {
       setSubmitting(false)
     }
@@ -1527,7 +1533,6 @@ const StudentInputPage = ({
         >
           {submitting ? '送信中...' : '送信'}
         </button>
-        {submitted && <p className="success-message">送信しました！</p>}
       </div>
     </div>
   )
@@ -1606,10 +1611,7 @@ const BootPage = () => {
 
   useEffect(() => {
     void (async () => {
-      const existing = await loadSession('main')
-      if (!existing) {
-        await saveSession('main', emptySession())
-      }
+      await saveSession('main', createTemplateSession())
       navigate('/admin/main', { replace: true })
     })()
   }, [navigate])
@@ -1621,6 +1623,24 @@ const BootPage = () => {
   )
 }
 
+const CompletionPage = () => {
+  const { sessionId = 'main' } = useParams()
+
+  return (
+    <div className="app-shell">
+      <div className="panel">
+        <h2>入力完了</h2>
+        <p>データの送信が完了しました。ありがとうございます。</p>
+        <div className="row">
+          <Link to={`/admin/${sessionId}`}>
+            <button className="btn" type="button">設定に戻る</button>
+          </Link>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   return (
     <Routes>
@@ -1628,6 +1648,7 @@ function App() {
       <Route path="/boot" element={<BootPage />} />
       <Route path="/admin/:sessionId" element={<AdminPage />} />
       <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
+      <Route path="/complete/:sessionId" element={<CompletionPage />} />
     </Routes>
   )
 }
