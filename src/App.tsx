@@ -218,7 +218,8 @@ const isStudentAvailable = (student: Student, slotKey: string): boolean => {
 
 const getSlotDayOfWeek = (slotKey: string): number => {
   const [date] = slotKey.split('_')
-  return new Date(`${date}T00:00:00`).getDay()
+  const [year, month, day] = date.split('-').map(Number)
+  return new Date(year, month - 1, day).getDay()
 }
 
 const getSlotNumber = (slotKey: string): number => {
@@ -547,7 +548,13 @@ const AdminPage = () => {
   }
 
   const addRegularLesson = async (): Promise<void> => {
-    if (!regularTeacherId || regularStudentIds.length === 0 || !regularSubject || !regularDayOfWeek || !regularSlotNumber) {
+    if (
+      !regularTeacherId ||
+      regularStudentIds.length === 0 ||
+      !regularSubject ||
+      !regularDayOfWeek ||
+      !regularSlotNumber
+    ) {
       return
     }
 
