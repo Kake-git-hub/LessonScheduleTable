@@ -200,6 +200,30 @@ const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[]
 const countTeacherLoad = (assignments: Record<string, Assignment[]>, teacherId: string): number =>
   allAssignments(assignments).filter((a) => a.teacherId === teacherId).length
 
+/** Collect unique dates a teacher is already assigned to */
+const getTeacherAssignedDates = (assignments: Record<string, Assignment[]>, teacherId: string): Set<string> => {
+  const dates = new Set<string>()
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slotAssignments.some((a) => a.teacherId === teacherId)) {
+      dates.add(slot.split('_')[0])
+    }
+  }
+  return dates
+}
+
+/** Get subjects a teacher teaches on a specific date */
+const getTeacherSubjectsOnDate = (assignments: Record<string, Assignment[]>, teacherId: string, date: string): Set<string> => {
+  const subjects = new Set<string>()
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slot.startsWith(`${date}_`)) {
+      for (const a of slotAssignments) {
+        if (a.teacherId === teacherId) subjects.add(a.subject)
+      }
+    }
+  }
+  return subjects
+}
+
 const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
   allAssignments(assignments).filter((a) => a.studentIds.includes(studentId)).length
 
@@ -263,16 +287,27 @@ const buildIncrementalAutoAssignments = (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
-  // Phase 1: Clean up existing assignments — handle deleted teachers/students
+  // Phase 1: Clean up existing assignments — handle deleted teachers/students (skip regular lessons)
   for (const slot of slots) {
     const existing = data.assignments[slot]
     if (!existing || existing.length === 0) continue
 
+    // Preserve regular lesson assignments as-is
+    if (existing.every((a) => a.isRegular)) {
+      result[slot] = [...existing]
+      continue
+    }
+
     const cleaned: Assignment[] = []
     for (const assignment of existing) {
+      // Keep regular assignments untouched
+      if (assignment.isRegular) {
+        cleaned.push(assignment)
+        continue
+      }
+
       // Check teacher still exists
       if (!teacherIds.has(assignment.teacherId)) {
-        // Teacher deleted — try to find replacement
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
@@ -298,7 +333,6 @@ const buildIncrementalAutoAssignments = (
       if (validStudentIds.length > 0) {
         cleaned.push({ ...assignment, studentIds: validStudentIds })
       } else if (removedStudentIds.length > 0) {
-        // All students removed, keep the teacher slot but empty students
         cleaned.push({ ...assignment, studentIds: [] })
         changeLog.push({ slot, action: '生徒全員削除', detail: `先生のみ残留（生徒全員削除済）` })
       } else {
@@ -311,86 +345,73 @@ const buildIncrementalAutoAssignments = (
     }
   }
 
-  // Phase 2: Fill empty student positions and unassigned slots using the regular algorithm
-  // Collect which students still need slots
-  const studentsNeedingSlots = data.students.filter((s) => {
-    const totalRequested = Object.values(s.subjectSlots).reduce((sum, c) => sum + c, 0)
-    const totalAssigned = countStudentLoad(result, s.id)
-    return totalAssigned < totalRequested
-  })
+  // Phase 2: Fill empty student positions in existing non-regular assignments
+  for (const slot of slots) {
+    if (!result[slot] || result[slot].length === 0) continue
+    const slotAssignments = result[slot]
+    for (let idx = 0; idx < slotAssignments.length; idx++) {
+      const assignment = slotAssignments[idx]
+      if (assignment.isRegular) continue
+      if (assignment.studentIds.length >= 2) continue
+      if (!assignment.teacherId) continue
 
-  if (studentsNeedingSlots.length === 0 && Object.keys(result).length === Object.keys(data.assignments).length) {
-    return { assignments: result, changeLog }
+      const teacher = data.teachers.find((t) => t.id === assignment.teacherId)
+      if (!teacher) continue
+
+      const usedStudentIdsInSlot = new Set(slotAssignments.flatMap((a) => a.studentIds))
+
+      const candidates = data.students.filter((student) => {
+        if (usedStudentIdsInSlot.has(student.id)) return false
+        if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
+        if (!isStudentAvailable(student, slot)) return false
+        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
+        if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
+        if (!student.subjects.includes(assignment.subject)) return false
+        const requested = student.subjectSlots[assignment.subject] ?? 0
+        const allocated = countStudentSubjectLoad(result, student.id, assignment.subject)
+        return allocated < requested
+      })
+
+      if (candidates.length > 0 && assignment.studentIds.length < 2) {
+        const best = candidates.sort((a, b) => {
+          const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
+          const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
+          return bRem - aRem
+        })[0]
+        assignment.studentIds = [...assignment.studentIds, best.id]
+        changeLog.push({ slot, action: '生徒追加', detail: `${best.name} を追加` })
+      }
+    }
   }
 
-  // Use full algorithm but with existing assignments as base (onlyEmpty=true behavior)
+  // Phase 3: Fill empty slots — minimize teacher attendance dates, group subjects
   for (const slot of slots) {
-    if (result[slot] && result[slot].length > 0) {
-      // Try to fill empty student positions in existing assignments
-      const slotAssignments = result[slot]
-      for (let idx = 0; idx < slotAssignments.length; idx++) {
-        const assignment = slotAssignments[idx]
-        if (assignment.studentIds.length >= 2) continue
-        if (!assignment.teacherId) continue
+    if (result[slot] && result[slot].length > 0) continue
 
-        const teacher = data.teachers.find((t) => t.id === assignment.teacherId)
-        if (!teacher) continue
-
-        const usedStudentIdsInSlot = new Set(slotAssignments.flatMap((a) => a.studentIds))
-
-        const candidates = data.students.filter((student) => {
-          if (usedStudentIdsInSlot.has(student.id)) return false
-          if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
-          if (!isStudentAvailable(student, slot)) return false
-          if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-          if (!student.subjects.includes(assignment.subject)) return false
-          const requested = student.subjectSlots[assignment.subject] ?? 0
-          const allocated = countStudentSubjectLoad(result, student.id, assignment.subject)
-          return allocated < requested
-        })
-
-        if (candidates.length > 0 && assignment.studentIds.length < 2) {
-          const best = candidates.sort((a, b) => {
-            const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
-            const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
-            return bRem - aRem
-          })[0]
-          assignment.studentIds = [...assignment.studentIds, best.id]
-          changeLog.push({ slot, action: '生徒追加', detail: `${best.name} を追加` })
-        }
-      }
-      continue
-    }
-
-    // Slot is completely empty — run the regular algorithm for this slot
-    const regularLesson = findRegularLessonForSlot(data.regularLessons, slot)
-    if (regularLesson) {
-      result[slot] = [{
-        teacherId: regularLesson.teacherId,
-        studentIds: regularLesson.studentIds,
-        subject: regularLesson.subject,
-      }]
-      changeLog.push({ slot, action: '通常授業', detail: '通常授業により割当' })
-      continue
-    }
-
+    const currentDate = slot.split('_')[0]
     const slotAssignments: Assignment[] = []
-    const usedTeacherIds = new Set<string>(Object.values(result).flat().filter((_a) => {
-      // Teachers already used in this specific slot from other processing
-      return false
-    }).map((a) => a.teacherId))
-    const usedStudentIds = new Set<string>()
+    const usedTeacherIdsInSlot = new Set<string>()
+    const usedStudentIdsInSlot = new Set<string>()
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
     )
 
-    for (const teacher of teachers) {
-      if (usedTeacherIds.has(teacher.id)) continue
+    // Sort teachers: prefer those already assigned on this date (minimize attendance days)
+    const sortedTeachers = [...teachers].sort((a, b) => {
+      const aDates = getTeacherAssignedDates(result, a.id)
+      const bDates = getTeacherAssignedDates(result, b.id)
+      const aOnDate = aDates.has(currentDate) ? 0 : 1
+      const bOnDate = bDates.has(currentDate) ? 0 : 1
+      if (aOnDate !== bOnDate) return aOnDate - bOnDate
+      return aDates.size - bDates.size
+    })
+
+    for (const teacher of sortedTeachers) {
+      if (usedTeacherIdsInSlot.has(teacher.id)) continue
 
       const candidates = data.students.filter((student) => {
-        if (usedStudentIds.has(student.id)) return false
+        if (usedStudentIdsInSlot.has(student.id)) return false
         if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
@@ -400,8 +421,12 @@ const buildIncrementalAutoAssignments = (
 
       if (candidates.length === 0) continue
 
-      let bestPlan: { score: number; assignment: Assignment } | null = null
+      const teacherDates = getTeacherAssignedDates(result, teacher.id)
+      const isExistingDate = teacherDates.has(currentDate)
+      const subjectsOnDate = getTeacherSubjectsOnDate(result, teacher.id, currentDate)
       const teacherLoad = countTeacherLoad(result, teacher.id)
+
+      let bestPlan: { score: number; assignment: Assignment } | null = null
 
       for (const combo of [...candidates.map((s) => [s]), ...candidates.flatMap((l, i) => candidates.slice(i + 1).map((r) => [l, r]))]) {
         const commonSubjects = teacher.subjects.filter((subject) =>
@@ -418,21 +443,30 @@ const buildIncrementalAutoAssignments = (
         )
         if (viableSubjects.length === 0) continue
 
+        // Pick best subject: prefer one already taught on this date, then alphabetical
+        const bestSubject = viableSubjects.sort((sa, sb) => {
+          const aMatch = subjectsOnDate.has(sa) ? 0 : 1
+          const bMatch = subjectsOnDate.has(sb) ? 0 : 1
+          return aMatch - bMatch
+        })[0]
+
         const score = 100 +
+          (isExistingDate ? 50 : -30) +  // Heavy preference for reusing existing dates
+          (subjectsOnDate.has(bestSubject) ? 20 : 0) +  // Prefer same subject grouping on same day
           combo.reduce((s, st) => s + (constraintFor(data.constraints, teacher.id, st.id) === 'recommended' ? 30 : 0), 0) +
           (combo.length === 2 ? 5 : 0) -
-          teacherLoad * 6 -
+          teacherLoad * 2 -
           combo.reduce((s, st) => s + countStudentLoad(result, st.id) * 8, 0)
 
         if (!bestPlan || score > bestPlan.score) {
-          bestPlan = { score, assignment: { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: viableSubjects[0] } }
+          bestPlan = { score, assignment: { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: bestSubject } }
         }
       }
 
       if (bestPlan) {
         slotAssignments.push(bestPlan.assignment)
-        usedTeacherIds.add(teacher.id)
-        for (const sid of bestPlan.assignment.studentIds) usedStudentIds.add(sid)
+        usedTeacherIdsInSlot.add(teacher.id)
+        for (const sid of bestPlan.assignment.studentIds) usedStudentIdsInSlot.add(sid)
       }
     }
 
@@ -1173,6 +1207,47 @@ const AdminPage = () => {
     })()
   }, [data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-fill regular lessons when date range or regular lessons change
+  const regularFillSigRef = useRef('')
+  useEffect(() => {
+    if (!data || !authorized || slotKeys.length === 0) return
+    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}`
+    if (sig === regularFillSigRef.current) return
+    regularFillSigRef.current = sig
+
+    let changed = false
+    const nextAssignments = { ...data.assignments }
+
+    for (const slot of slotKeys) {
+      const rl = findRegularLessonForSlot(data.regularLessons, slot)
+      if (!rl) continue
+
+      const existing = nextAssignments[slot]
+      // Don't overwrite manual (non-regular) assignments
+      if (existing && existing.some((a) => !a.isRegular)) continue
+      // Skip if already correctly filled
+      if (
+        existing?.length === 1 &&
+        existing[0].isRegular &&
+        existing[0].teacherId === rl.teacherId &&
+        existing[0].subject === rl.subject &&
+        JSON.stringify(existing[0].studentIds) === JSON.stringify(rl.studentIds)
+      ) continue
+
+      nextAssignments[slot] = [{
+        teacherId: rl.teacherId,
+        studentIds: rl.studentIds,
+        subject: rl.subject,
+        isRegular: true,
+      }]
+      changed = true
+    }
+
+    if (changed) {
+      void persist({ ...data, assignments: nextAssignments })
+    }
+  }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
     const { assignments: nextAssignments, changeLog } = buildIncrementalAutoAssignments(data, slotKeys)
@@ -1187,7 +1262,7 @@ const AdminPage = () => {
 
   const downloadChangeLog = (): void => {
     if (lastChangeLog.length === 0) {
-      alert('変更履歴がありません。先に「自動提案(未割当)」を実行してください。')
+      alert('変更履歴がありません。先に「自動提案」を実行してください。')
       return
     }
     const lines = [
@@ -1512,15 +1587,19 @@ const AdminPage = () => {
                 </button>
               )}
             </div>
-            <p className="muted">制約不可は警告付きで手動割当可。推奨ペアを優先。先生1人 + 生徒1〜2人。同じコマに複数ペア可。</p>
+            <p className="muted">通常授業は日付確定時に自動配置（青枠）。特別講習は自動提案で割当。先生1人 + 生徒1〜2人。</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
+                const isRegularSlot = slotAssignments.some((a) => a.isRegular)
 
                 return (
-                  <div className="slot-card" key={slot}>
-                    <div className="slot-title">{slotLabel(slot)}</div>
+                  <div className={`slot-card${isRegularSlot ? ' slot-card-regular' : ''}`} key={slot}>
+                    <div className="slot-title">
+                      {slotLabel(slot)}
+                      {isRegularSlot && <span className="badge regular-badge">通常授業</span>}
+                    </div>
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
                         const selectedTeacher = data.teachers.find((t) => t.id === assignment.teacherId)

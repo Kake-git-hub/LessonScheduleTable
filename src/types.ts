@@ -40,6 +40,7 @@ export type Assignment = {
   teacherId: string
   studentIds: string[]
   subject: string
+  isRegular?: boolean
 }
 
 export type RegularLesson = {
