@@ -16,9 +16,11 @@ import type {
 } from './types'
 import { buildSlotKeys, personKey, slotLabel } from './utils/schedule'
 
-const APP_VERSION = '0.2.0'
+const APP_VERSION = '0.3.0'
 
 const GRADE_OPTIONS = ['小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
+
+const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT']
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -36,7 +38,7 @@ const emptySession = (): SessionData => ({
     slotsPerDay: 5,
     holidays: [],
   },
-  subjects: ['数学', '英語'],
+  subjects: FIXED_SUBJECTS,
   teachers: [],
   students: [],
   constraints: [],
@@ -56,11 +58,11 @@ const createTemplateSession = (): SessionData => {
     holidays: [],
   }
 
-  const subjects = ['数学', '英語']
+  const subjects = FIXED_SUBJECTS
 
   const teachers: Teacher[] = [
-    { id: 't001', name: '田中先生', subjects: ['数学', '英語'], memo: '数学メイン' },
-    { id: 't002', name: '佐藤先生', subjects: ['英語', '数学'], memo: '英語メイン' },
+    { id: 't001', name: '田中先生', subjects: ['数', '英'], memo: '数学メイン' },
+    { id: 't002', name: '佐藤先生', subjects: ['英', '数'], memo: '英語メイン' },
   ]
 
   const students: Student[] = [
@@ -68,8 +70,8 @@ const createTemplateSession = (): SessionData => {
       id: 's001',
       name: '青木 太郎',
       grade: '中3',
-      subjects: ['数学', '英語'],
-      subjectSlots: { 数学: 3, 英語: 2 },
+      subjects: ['数', '英'],
+      subjectSlots: { 数: 3, 英: 2 },
       unavailableDates: ['2026-07-23'],
       memo: '受験対策',
       submittedAt: Date.now() - 4000,
@@ -78,8 +80,8 @@ const createTemplateSession = (): SessionData => {
       id: 's002',
       name: '伊藤 花',
       grade: '中2',
-      subjects: ['英語'],
-      subjectSlots: { 英語: 3 },
+      subjects: ['英'],
+      subjectSlots: { 英: 3 },
       unavailableDates: [],
       memo: '',
       submittedAt: Date.now() - 3000,
@@ -88,8 +90,8 @@ const createTemplateSession = (): SessionData => {
       id: 's003',
       name: '上田 陽介',
       grade: '高1',
-      subjects: ['数学'],
-      subjectSlots: { 数学: 3 },
+      subjects: ['数'],
+      subjectSlots: { 数: 3 },
       unavailableDates: ['2026-07-22'],
       memo: '',
       submittedAt: Date.now() - 2000,
@@ -98,8 +100,8 @@ const createTemplateSession = (): SessionData => {
       id: 's004',
       name: '岡本 美咲',
       grade: '高2',
-      subjects: ['英語', '数学'],
-      subjectSlots: { 英語: 2, 数学: 2 },
+      subjects: ['英', '数'],
+      subjectSlots: { 英: 2, 数: 2 },
       unavailableDates: [],
       memo: '',
       submittedAt: Date.now() - 1000,
@@ -127,7 +129,7 @@ const createTemplateSession = (): SessionData => {
       id: 'r001',
       teacherId: 't001',
       studentIds: ['s001'],
-      subject: '数学',
+      subject: '数',
       dayOfWeek: 1,
       slotNumber: 1,
     },
@@ -564,9 +566,8 @@ const AdminPage = () => {
   const { data, setData, loading } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
 
-  const [subjectInput, setSubjectInput] = useState('')
   const [teacherName, setTeacherName] = useState('')
-  const [teacherSubjectsText, setTeacherSubjectsText] = useState('')
+  const [teacherSubjects, setTeacherSubjects] = useState<string[]>([])
   const [teacherMemo, setTeacherMemo] = useState('')
 
   const [studentName, setStudentName] = useState('')
@@ -627,12 +628,6 @@ const AdminPage = () => {
     setAuthorized(password === data.settings.adminPassword)
   }, [data, skipAuth])
 
-  const parseList = (text: string): string[] =>
-    text
-      .split(/[、,\n]/)
-      .map((item) => item.trim())
-      .filter(Boolean)
-
   const addTeacher = async (): Promise<void> => {
     if (!teacherName.trim()) {
       return
@@ -640,13 +635,13 @@ const AdminPage = () => {
     const teacher: Teacher = {
       id: createId(),
       name: teacherName.trim(),
-      subjects: parseList(teacherSubjectsText),
+      subjects: teacherSubjects,
       memo: teacherMemo.trim(),
     }
 
     await update((current) => ({ ...current, teachers: [...current.teachers, teacher] }))
     setTeacherName('')
-    setTeacherSubjectsText('')
+    setTeacherSubjects([])
     setTeacherMemo('')
   }
 
@@ -775,16 +770,17 @@ const AdminPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const downloadTemplate = (): void => {
-    const teacherSheet = [['名前', '担当科目(カンマ区切り)', 'メモ']]
+    const teacherSheet = [['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ']]
     const studentSheet = [['名前', '学年']]
+    const constraintSheet = [['先生名', '生徒名', '種別(不可/推奨)']]
+    const gradeConstraintSheet = [['先生名', '学年', '種別(不可/推奨)']]
+    const regularLessonSheet = [['先生名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号']]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(teacherSheet), '先生')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(studentSheet), '生徒')
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.aoa_to_sheet([['科目名'], ...((data?.subjects ?? []).map((s) => [s]))]),
-      '科目マスター',
-    )
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(constraintSheet), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(gradeConstraintSheet), '学年制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(regularLessonSheet), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -794,10 +790,28 @@ const AdminPage = () => {
     const studentRows = data.students.map((s) => [
       s.name,
       s.grade,
-      s.subjects.join(', '),
       Object.entries(s.subjectSlots).map(([k, v]) => `${k}:${v}`).join(', '),
       s.unavailableDates.join(', '),
       s.memo,
+    ])
+    const constraintRows = data.constraints.map((c) => [
+      data.teachers.find((t) => t.id === c.teacherId)?.name ?? c.teacherId,
+      data.students.find((s) => s.id === c.studentId)?.name ?? c.studentId,
+      c.type === 'incompatible' ? '不可' : '推奨',
+    ])
+    const gradeConstraintRows = (data.gradeConstraints ?? []).map((gc) => [
+      data.teachers.find((t) => t.id === gc.teacherId)?.name ?? gc.teacherId,
+      gc.grade,
+      gc.type === 'incompatible' ? '不可' : '推奨',
+    ])
+    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+    const regularLessonRows = data.regularLessons.map((l) => [
+      data.teachers.find((t) => t.id === l.teacherId)?.name ?? l.teacherId,
+      ...l.studentIds.map((id) => data.students.find((s) => s.id === id)?.name ?? id),
+      ...(l.studentIds.length === 1 ? [''] : []),
+      l.subject,
+      dayNames[l.dayOfWeek] ?? '',
+      l.slotNumber,
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(
@@ -807,13 +821,23 @@ const AdminPage = () => {
     )
     XLSX.utils.book_append_sheet(
       wb,
-      XLSX.utils.aoa_to_sheet([['名前', '学年', '科目', '希望コマ数', '不可日', 'メモ'], ...studentRows]),
+      XLSX.utils.aoa_to_sheet([['名前', '学年', '希望コマ数', '不可日', 'メモ'], ...studentRows]),
       '生徒',
     )
     XLSX.utils.book_append_sheet(
       wb,
-      XLSX.utils.aoa_to_sheet([['科目名'], ...data.subjects.map((s) => [s])]),
-      '科目マスター',
+      XLSX.utils.aoa_to_sheet([['先生名', '生徒名', '種別'], ...constraintRows]),
+      '制約',
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['先生名', '学年', '種別'], ...gradeConstraintRows]),
+      '学年制約',
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['先生名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]),
+      '通常授業',
     )
     XLSX.writeFile(wb, `${data.settings.name}_データ.xlsx`)
   }
@@ -823,20 +847,24 @@ const AdminPage = () => {
     const buf = await file.arrayBuffer()
     const wb = XLSX.read(buf, { type: 'array' })
 
-    let importedTeachers: Teacher[] = []
-    let importedStudents: Student[] = []
-    let importedSubjects: string[] = [...data.subjects]
+    const importedTeachers: Teacher[] = []
+    const importedStudents: Student[] = []
+    const importedConstraints: PairConstraint[] = []
+    const importedGradeConstraints: GradeConstraint[] = []
+    const importedRegularLessons: RegularLesson[] = []
 
-    // Subject master sheet
-    const subjectWs = wb.Sheets['科目マスター']
-    if (subjectWs) {
-      const rows = XLSX.utils.sheet_to_json(subjectWs, { header: 1 }) as unknown as unknown[][]
-      for (let i = 1; i < rows.length; i++) {
-        const name = String(rows[i]?.[0] ?? '').trim()
-        if (name && !importedSubjects.includes(name)) {
-          importedSubjects.push(name)
-        }
-      }
+    // Helper: find teacher/student by name (existing + newly imported)
+    const findTeacherId = (name: string): string | null => {
+      const existing = data.teachers.find((t) => t.name === name)
+      if (existing) return existing.id
+      const imported = importedTeachers.find((t) => t.name === name)
+      return imported?.id ?? null
+    }
+    const findStudentId = (name: string): string | null => {
+      const existing = data.students.find((s) => s.name === name)
+      if (existing) return existing.id
+      const imported = importedStudents.find((s) => s.name === name)
+      return imported?.id ?? null
     }
 
     // Teacher sheet
@@ -850,9 +878,8 @@ const AdminPage = () => {
         const subjects = String(row?.[1] ?? '')
           .split(/[、,]/)
           .map((s) => s.trim())
-          .filter(Boolean)
+          .filter((s) => FIXED_SUBJECTS.includes(s))
         const memo = String(row?.[2] ?? '').trim()
-        // Skip if already registered with same name
         if (data.teachers.some((t) => t.name === name)) continue
         importedTeachers.push({ id: createId(), name, subjects, memo })
       }
@@ -881,10 +908,72 @@ const AdminPage = () => {
       }
     }
 
+    // Constraint sheet
+    const constraintWs = wb.Sheets['制約']
+    if (constraintWs) {
+      const rows = XLSX.utils.sheet_to_json(constraintWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const teacherName = String(row?.[0] ?? '').trim()
+        const studentName = String(row?.[1] ?? '').trim()
+        const typeStr = String(row?.[2] ?? '').trim()
+        const teacherId = findTeacherId(teacherName)
+        const studentId = findStudentId(studentName)
+        if (!teacherId || !studentId) continue
+        const type: ConstraintType = typeStr === '推奨' ? 'recommended' : 'incompatible'
+        // Skip duplicates
+        if (data.constraints.some((c) => c.teacherId === teacherId && c.studentId === studentId)) continue
+        importedConstraints.push({ id: createId(), teacherId, studentId, type })
+      }
+    }
+
+    // Grade constraint sheet
+    const gradeConstraintWs = wb.Sheets['学年制約']
+    if (gradeConstraintWs) {
+      const rows = XLSX.utils.sheet_to_json(gradeConstraintWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const teacherName = String(row?.[0] ?? '').trim()
+        const grade = String(row?.[1] ?? '').trim()
+        const typeStr = String(row?.[2] ?? '').trim()
+        const teacherId = findTeacherId(teacherName)
+        if (!teacherId || !grade) continue
+        const type: ConstraintType = typeStr === '推奨' ? 'recommended' : 'incompatible'
+        const gc = data.gradeConstraints ?? []
+        if (gc.some((c) => c.teacherId === teacherId && c.grade === grade)) continue
+        importedGradeConstraints.push({ id: createId(), teacherId, grade, type })
+      }
+    }
+
+    // Regular lesson sheet
+    const dayNameMap: Record<string, number> = { '日': 0, '月': 1, '火': 2, '水': 3, '木': 4, '金': 5, '土': 6 }
+    const regularWs = wb.Sheets['通常授業']
+    if (regularWs) {
+      const rows = XLSX.utils.sheet_to_json(regularWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const tName = String(row?.[0] ?? '').trim()
+        const s1Name = String(row?.[1] ?? '').trim()
+        const s2Name = String(row?.[2] ?? '').trim()
+        const subject = String(row?.[3] ?? '').trim()
+        const dayStr = String(row?.[4] ?? '').trim()
+        const slotNum = Number(row?.[5])
+        const teacherId = findTeacherId(tName)
+        if (!teacherId || !subject) continue
+        const studentIds = [findStudentId(s1Name), findStudentId(s2Name)].filter(Boolean) as string[]
+        if (studentIds.length === 0) continue
+        const dayOfWeek = dayNameMap[dayStr]
+        if (dayOfWeek === undefined || Number.isNaN(slotNum) || slotNum < 1) continue
+        importedRegularLessons.push({ id: createId(), teacherId, studentIds, subject, dayOfWeek, slotNumber: slotNum })
+      }
+    }
+
     const added: string[] = []
     if (importedTeachers.length) added.push(`先生${importedTeachers.length}名`)
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
-    if (importedSubjects.length > data.subjects.length) added.push(`科目${importedSubjects.length - data.subjects.length}件`)
+    if (importedConstraints.length) added.push(`制約${importedConstraints.length}件`)
+    if (importedGradeConstraints.length) added.push(`学年制約${importedGradeConstraints.length}件`)
+    if (importedRegularLessons.length) added.push(`通常授業${importedRegularLessons.length}件`)
 
     if (added.length === 0) {
       alert('新規データがありませんでした（同名は重複スキップ）。')
@@ -896,9 +985,11 @@ const AdminPage = () => {
 
     await update((current) => ({
       ...current,
-      subjects: importedSubjects,
       teachers: [...current.teachers, ...importedTeachers],
       students: [...current.students, ...importedStudents],
+      constraints: [...current.constraints, ...importedConstraints],
+      gradeConstraints: [...(current.gradeConstraints ?? []), ...importedGradeConstraints],
+      regularLessons: [...current.regularLessons, ...importedRegularLessons],
     }))
 
     alert('取り込み完了！')
@@ -1156,38 +1247,6 @@ const AdminPage = () => {
           </div>
 
           <div className="panel">
-            <h3>科目マスター</h3>
-            <div className="row">
-              <input
-                value={subjectInput}
-                onChange={(e) => setSubjectInput(e.target.value)}
-                placeholder="例: 国語"
-              />
-              <button
-                className="btn"
-                type="button"
-                onClick={() => {
-                  const value = subjectInput.trim()
-                  if (!value || data.subjects.includes(value)) {
-                    return
-                  }
-                  void update((current) => ({ ...current, subjects: [...current.subjects, value] }))
-                  setSubjectInput('')
-                }}
-              >
-                追加
-              </button>
-            </div>
-            <div className="row">
-              {data.subjects.map((subject) => (
-                <span key={subject} className="badge ok">
-                  {subject}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel">
             <h3>先生登録</h3>
             <div className="row">
               <input
@@ -1195,11 +1254,20 @@ const AdminPage = () => {
                 onChange={(e) => setTeacherName(e.target.value)}
                 placeholder="先生名"
               />
-              <input
-                value={teacherSubjectsText}
-                onChange={(e) => setTeacherSubjectsText(e.target.value)}
-                placeholder="担当科目(カンマ区切り)"
-              />
+              <select
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v && !teacherSubjects.includes(v)) {
+                    setTeacherSubjects((prev) => [...prev, v])
+                  }
+                  e.target.value = ''
+                }}
+              >
+                <option value="">担当科目を追加</option>
+                {FIXED_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
               <input
                 value={teacherMemo}
                 onChange={(e) => setTeacherMemo(e.target.value)}
@@ -1208,6 +1276,13 @@ const AdminPage = () => {
               <button className="btn" type="button" onClick={() => void addTeacher()}>
                 追加
               </button>
+            </div>
+            <div className="row">
+              {teacherSubjects.map((s) => (
+                <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setTeacherSubjects((prev) => prev.filter((x) => x !== s))}>
+                  {s} ×
+                </span>
+              ))}
             </div>
             <table className="table">
               <thead>
@@ -1260,7 +1335,6 @@ const AdminPage = () => {
                 <tr>
                   <th>名前</th>
                   <th>学年</th>
-                  <th>科目</th>
                   <th>希望コマ数</th>
                   <th>不可日数</th>
                   <th>メモ</th>
@@ -1272,7 +1346,6 @@ const AdminPage = () => {
                   <tr key={student.id}>
                     <td>{student.name}</td>
                     <td>{student.grade}</td>
-                    <td>{student.subjects.join(', ')}</td>
                     <td>
                       {Object.entries(student.subjectSlots)
                         .map(([subject, count]) => `${subject}:${count}`)
@@ -1444,7 +1517,7 @@ const AdminPage = () => {
                 onChange={(e) => setRegularSubject(e.target.value)}
               >
                 <option value="">科目を選択</option>
-                {data.subjects.map((subject) => (
+                {FIXED_SUBJECTS.map((subject) => (
                   <option key={subject} value={subject}>{subject}</option>
                 ))}
               </select>
@@ -1883,9 +1956,6 @@ const StudentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
-  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(
-    new Set(student.subjects ?? []),
-  )
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -1893,18 +1963,6 @@ const StudentInputPage = ({
     new Set(student.unavailableDates ?? []),
   )
   const [submitting, setSubmitting] = useState(false)
-
-  const toggleSubject = (subject: string) => {
-    setSelectedSubjects((prev) => {
-      const next = new Set(prev)
-      if (next.has(subject)) {
-        next.delete(subject)
-      } else {
-        next.add(subject)
-      }
-      return next
-    })
-  }
 
   const toggleDate = (date: string) => {
     const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
@@ -1939,7 +1997,9 @@ const StudentInputPage = ({
 
   const handleSubmit = () => {
     setSubmitting(true)
-    const subjects = Array.from(selectedSubjects)
+    const subjects = Object.entries(subjectSlots)
+      .filter(([, count]) => count > 0)
+      .map(([subject]) => subject)
     const updatedStudents = data.students.map((s) =>
       s.id === student.id
         ? {
@@ -1970,27 +2030,10 @@ const StudentInputPage = ({
       </div>
 
       <div className="student-form-section">
-        <h3>希望科目</h3>
-        <p className="muted">受講を希望する科目を選択してください。</p>
-        <div className="subject-checkboxes">
-          {data.subjects.map((subject) => (
-            <label className="row" key={subject}>
-              <input
-                type="checkbox"
-                checked={selectedSubjects.has(subject)}
-                onChange={() => toggleSubject(subject)}
-              />
-              <span>{subject}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className="student-form-section">
-        <h3>希望科目のコマ数</h3>
-        <p className="muted">各科目について、希望するコマ数を入力してください。</p>
+        <h3>希望科目・コマ数</h3>
+        <p className="muted">受講を希望する科目のコマ数を入力してください（0またはの場合は受講なし）。</p>
         <div className="subject-slots-form">
-          {data.subjects.filter((s) => selectedSubjects.has(s)).map((subject) => (
+          {FIXED_SUBJECTS.map((subject) => (
             <div key={subject} className="form-row">
               <label htmlFor={`subject-${subject}`}>{subject}:</label>
               <input
