@@ -215,6 +215,29 @@ const getTeacherAssignedDates = (assignments: Record<string, Assignment[]>, teac
   return dates
 }
 
+/** Get the slot numbers a teacher is assigned on a specific date */
+const getTeacherSlotNumbersOnDate = (assignments: Record<string, Assignment[]>, teacherId: string, date: string): number[] => {
+  const nums: number[] = []
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slot.startsWith(`${date}_`)) {
+      if (slotAssignments.some((a) => a.teacherId === teacherId)) {
+        nums.push(getSlotNumber(slot))
+      }
+    }
+  }
+  return nums.sort((a, b) => a - b)
+}
+
+/** Get student IDs that a teacher taught in the previous slot on the same date */
+const getTeacherPrevSlotStudentIds = (assignments: Record<string, Assignment[]>, teacherId: string, date: string, slotNum: number): string[] => {
+  const prevSlotKey = `${date}_${slotNum - 1}`
+  const prevAssignments = assignments[prevSlotKey] ?? []
+  for (const a of prevAssignments) {
+    if (a.teacherId === teacherId) return a.studentIds
+  }
+  return []
+}
+
 /** Count how many slots a student is assigned on a specific date (including regular) */
 const countStudentSlotsOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number => {
   let count = 0
@@ -411,6 +434,19 @@ const buildIncrementalAutoAssignments = (
 
   // Phase 3: Fill empty slots — minimize total teacher attendance dates, distribute students evenly
   // Process slots date-by-date, within each date prefer using teachers already assigned that day
+
+  // Compute date ordering for first-half bias
+  const allDatesInOrder: string[] = []
+  for (const s of slots) {
+    const d = s.split('_')[0]
+    if (allDatesInOrder.length === 0 || allDatesInOrder[allDatesInOrder.length - 1] !== d) {
+      allDatesInOrder.push(d)
+    }
+  }
+  const totalDates = allDatesInOrder.length
+  const dateIndexMap = new Map<string, number>()
+  for (let i = 0; i < totalDates; i++) dateIndexMap.set(allDatesInOrder[i], i)
+
   for (const slot of slots) {
     if (result[slot] && result[slot].length > 0) continue
 
@@ -419,6 +455,10 @@ const buildIncrementalAutoAssignments = (
     const slotAssignments: Assignment[] = []
     const usedTeacherIdsInSlot = new Set<string>()
     const usedStudentIdsInSlot = new Set<string>()
+
+    // First-half bias: earlier dates get a small bonus (max +10 for first date, 0 for last)
+    const dateIdx = dateIndexMap.get(currentDate) ?? 0
+    const firstHalfBonus = totalDates > 1 ? Math.round(10 * (1 - dateIdx / (totalDates - 1))) : 0
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
@@ -452,9 +492,21 @@ const buildIncrementalAutoAssignments = (
       const isExistingDate = teacherDates.has(currentDate)
       const teacherLoad = countTeacherLoad(result, teacher.id)
 
+      // Teacher consecutive slot bonus
+      const teacherSlotsOnDate = getTeacherSlotNumbersOnDate(result, teacher.id, currentDate)
+      const teacherIsConsecutive = teacherSlotsOnDate.some((n) => Math.abs(n - currentSlotNum) === 1)
+      const teacherConsecutiveBonus = teacherIsConsecutive ? 20 : 0
+
+      // Students that the teacher taught in the immediately previous slot (avoid same student consecutive)
+      const prevSlotStudentIds = new Set(getTeacherPrevSlotStudentIds(result, teacher.id, currentDate, currentSlotNum))
+
       let bestPlan: { score: number; assignment: Assignment } | null = null
 
       for (const combo of [...candidates.map((s) => [s]), ...candidates.flatMap((l, i) => candidates.slice(i + 1).map((r) => [l, r]))]) {
+        // Avoid assigning the same student to this teacher's consecutive slot
+        const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
+        if (hasSameStudentConsecutive) continue
+
         const commonSubjects = teacher.subjects.filter((subject) =>
           combo.every((student) => student.subjects.includes(subject)),
         )
@@ -480,7 +532,7 @@ const buildIncrementalAutoAssignments = (
           // Penalty for same-day multiple slots (avoid if possible)
           if (slotsOnDate > 0) {
             studentScore -= 60
-            // If forced, reward consecutive slots
+            // If forced, reward consecutive slots for students
             const isConsecutive = existingSlotNums.some(
               (n) => Math.abs(n - currentSlotNum) === 1,
             )
@@ -504,6 +556,8 @@ const buildIncrementalAutoAssignments = (
 
         const score = 100 +
           (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
+          teacherConsecutiveBonus +  // Teacher consecutive slot bonus
+          firstHalfBonus +  // Slight first-half bias
           combo.reduce((s, st) => s + (constraintFor(data.constraints, teacher.id, st.id) === 'recommended' ? 30 : 0), 0) +
           (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
           studentScore -
@@ -572,6 +626,7 @@ const HomePage = () => {
   const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [masterSaving, setMasterSaving] = useState(false)
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -608,7 +663,12 @@ const HomePage = () => {
     if (!masterData) return
     const next = updater(masterData)
     setMasterData(next)
-    await saveMasterData(next)
+    setMasterSaving(true)
+    try {
+      await saveMasterData(next)
+    } finally {
+      setMasterSaving(false)
+    }
   }
 
   const addTeacher = async (): Promise<void> => {
@@ -946,8 +1006,23 @@ const HomePage = () => {
             </div>
             <p className="muted">現在は初期値を保存済みのため、入力不要で続行できます。</p>
           </>
+        ) : !masterData ? (
+          <div className="panel">
+            <div className="loading-container">
+              <div className="loading-spinner" />
+              <div className="loading-text">管理データを読み込み中...</div>
+            </div>
+          </div>
         ) : (
           <>
+            {masterSaving && (
+              <div className="panel" style={{ textAlign: 'center', padding: '12px' }}>
+                <div className="loading-container">
+                  <div className="loading-spinner" />
+                  <div className="loading-text">管理データを保存中...</div>
+                </div>
+              </div>
+            )}
             {/* --- Session management --- */}
             <div className="panel">
               <h3>新規セッション追加</h3>
@@ -985,16 +1060,6 @@ const HomePage = () => {
             </div>
 
             {/* --- Master data management --- */}
-            {!masterData && (
-              <div className="panel">
-                <div className="loading-container">
-                  <div className="loading-spinner" />
-                  <div className="loading-text">管理データを読み込み中...</div>
-                </div>
-              </div>
-            )}
-            {masterData && (
-              <>
                 <div className="panel">
                   <h3>管理データ — Excel</h3>
                   <div className="row">
@@ -1163,8 +1228,6 @@ const HomePage = () => {
                     </tbody>
                   </table>
                 </div>
-              </>
-            )}
           </>
         )}
       </div>
@@ -1600,21 +1663,6 @@ const AdminPage = () => {
                   }))
                 }}
               />
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={data.settings.slotsPerDay}
-                onChange={(e) => {
-                  const parsed = Number(e.target.value)
-                  if (!Number.isNaN(parsed)) {
-                    void update((current) => ({
-                      ...current,
-                      settings: { ...current.settings, slotsPerDay: parsed },
-                    }))
-                  }
-                }}
-              />
             </div>
             <div className="list">
               <div className="muted">休日</div>
@@ -1999,7 +2047,7 @@ const TeacherInputPage = ({
     })
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setSubmitting(true)
     const key = personKey('teacher', teacher.id)
     const next: SessionData = {
@@ -2009,7 +2057,9 @@ const TeacherInputPage = ({
         [key]: Array.from(localAvailability),
       },
     }
-    saveSession(sessionId, next).catch(() => {})
+    try {
+      await saveSession(sessionId, next)
+    } catch { /* ignore */ }
     navigate(`/complete/${sessionId}`)
   }
 
@@ -2127,7 +2177,7 @@ const StudentInputPage = ({
     }))
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setSubmitting(true)
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
@@ -2149,7 +2199,9 @@ const StudentInputPage = ({
       ...data,
       students: updatedStudents,
     }
-    saveSession(sessionId, next).catch(() => {})
+    try {
+      await saveSession(sessionId, next)
+    } catch { /* ignore */ }
     navigate(`/complete/${sessionId}`)
   }
 
