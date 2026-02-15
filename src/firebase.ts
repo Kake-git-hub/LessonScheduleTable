@@ -10,7 +10,7 @@ import {
   setDoc,
   type Unsubscribe,
 } from 'firebase/firestore'
-import type { SessionData } from './types'
+import type { MasterData, SessionData } from './types'
 
 const firebaseConfig = {
   apiKey: 'AIzaSyDPs5KUD9j-Oa3lwxEo4so_4tasLlSYI7Q',
@@ -79,4 +79,24 @@ export const saveSession = async (sessionId: string, data: SessionData): Promise
     },
   }
   await setDoc(sessionRef(sessionId), next)
+}
+
+// --- Master Data ---
+
+const masterRef = doc(db, 'master', 'default')
+
+export const watchMasterData = (
+  callback: (data: MasterData | null) => void,
+): Unsubscribe =>
+  onSnapshot(masterRef, (snapshot) => {
+    callback(snapshot.exists() ? (snapshot.data() as MasterData) : null)
+  })
+
+export const loadMasterData = async (): Promise<MasterData | null> => {
+  const snapshot = await getDoc(masterRef)
+  return snapshot.exists() ? (snapshot.data() as MasterData) : null
+}
+
+export const saveMasterData = async (data: MasterData): Promise<void> => {
+  await setDoc(masterRef, data)
 }

@@ -73,3 +73,11 @@ export type SessionData = {
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
 }
+
+export type MasterData = {
+  teachers: Teacher[]
+  students: Student[]
+  constraints: PairConstraint[]
+  gradeConstraints: GradeConstraint[]
+  regularLessons: RegularLesson[]
+}
