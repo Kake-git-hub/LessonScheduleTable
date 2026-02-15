@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import * as XLSX from 'xlsx'
 import './App.css'
 import { loadSession, saveSession, watchSession, watchSessionsList } from './firebase'
 import type {
@@ -15,7 +16,7 @@ import type {
 } from './types'
 import { buildSlotKeys, personKey, slotLabel } from './utils/schedule'
 
-const APP_VERSION = '0.1.0'
+const APP_VERSION = '0.2.0'
 
 const GRADE_OPTIONS = ['小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -570,10 +571,6 @@ const AdminPage = () => {
 
   const [studentName, setStudentName] = useState('')
   const [studentGrade, setStudentGrade] = useState('')
-  const [studentSubjects, setStudentSubjects] = useState<string[]>([])
-  const [studentSubjectSlotsText, setStudentSubjectSlotsText] = useState('')
-  const [studentUnavailableDatesText, setStudentUnavailableDatesText] = useState('')
-  const [studentMemo, setStudentMemo] = useState('')
 
   const [constraintTeacherId, setConstraintTeacherId] = useState('')
   const [constraintStudentId, setConstraintStudentId] = useState('')
@@ -584,7 +581,8 @@ const AdminPage = () => {
   const [gradeConstraintType, setGradeConstraintType] = useState<ConstraintType>('incompatible')
 
   const [regularTeacherId, setRegularTeacherId] = useState('')
-  const [regularStudentIds, setRegularStudentIds] = useState<string[]>([])
+  const [regularStudent1Id, setRegularStudent1Id] = useState('')
+  const [regularStudent2Id, setRegularStudent2Id] = useState('')
   const [regularSubject, setRegularSubject] = useState('')
   const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
@@ -657,45 +655,20 @@ const AdminPage = () => {
       return
     }
 
-    // Parse subject slots (e.g., "数学:5, 英語:3")
-    const subjectSlots: Record<string, number> = {}
-    if (studentSubjectSlotsText.trim()) {
-      const pairs = studentSubjectSlotsText.split(/[、,]/).map((item) => item.trim())
-      for (const pair of pairs) {
-        const [subject, count] = pair.split(':').map((s) => s.trim())
-        if (subject && count) {
-          const num = Number.parseInt(count, 10)
-          if (!Number.isNaN(num) && num > 0) {
-            subjectSlots[subject] = num
-          }
-        }
-      }
-    }
-
-    // Parse unavailable dates (e.g., "2026-07-25, 2026-07-28" or line-separated)
-    const unavailableDates = studentUnavailableDatesText
-      .split(/[、,\n]/)
-      .map((item) => item.trim())
-      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
-
     const student: Student = {
       id: createId(),
       name: studentName.trim(),
       grade: studentGrade.trim(),
-      subjects: studentSubjects,
-      subjectSlots,
-      unavailableDates,
-      memo: studentMemo.trim(),
-      submittedAt: Date.now(),
+      subjects: [],
+      subjectSlots: {},
+      unavailableDates: [],
+      memo: '',
+      submittedAt: 0,
     }
 
     await update((current) => ({ ...current, students: [...current.students, student] }))
     setStudentName('')
     setStudentGrade('')
-    setStudentSubjects([])
-    setStudentSubjectSlotsText('')
-    setStudentUnavailableDatesText('')
-    setStudentMemo('')
   }
 
   const upsertConstraint = async (): Promise<void> => {
@@ -740,9 +713,10 @@ const AdminPage = () => {
   }
 
   const addRegularLesson = async (): Promise<void> => {
+    const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
     if (
       !regularTeacherId ||
-      regularStudentIds.length === 0 ||
+      studentIds.length === 0 ||
       !regularSubject ||
       !regularDayOfWeek ||
       !regularSlotNumber
@@ -753,7 +727,7 @@ const AdminPage = () => {
     const newLesson: RegularLesson = {
       id: createId(),
       teacherId: regularTeacherId,
-      studentIds: regularStudentIds,
+      studentIds,
       subject: regularSubject,
       dayOfWeek: Number.parseInt(regularDayOfWeek, 10),
       slotNumber: Number.parseInt(regularSlotNumber, 10),
@@ -761,7 +735,8 @@ const AdminPage = () => {
 
     await update((current) => ({ ...current, regularLessons: [...current.regularLessons, newLesson] }))
     setRegularTeacherId('')
-    setRegularStudentIds([])
+    setRegularStudent1Id('')
+    setRegularStudent2Id('')
     setRegularSubject('')
     setRegularDayOfWeek('')
     setRegularSlotNumber('')
@@ -793,6 +768,140 @@ const AdminPage = () => {
       assignments,
     }
     await persist(next)
+  }
+
+  // --- Excel / Spreadsheet Import & Export ---
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const downloadTemplate = (): void => {
+    const teacherSheet = [['名前', '担当科目(カンマ区切り)', 'メモ']]
+    const studentSheet = [['名前', '学年']]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(teacherSheet), '先生')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(studentSheet), '生徒')
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['科目名'], ...((data?.subjects ?? []).map((s) => [s]))]),
+      '科目マスター',
+    )
+    XLSX.writeFile(wb, 'テンプレート.xlsx')
+  }
+
+  const exportData = (): void => {
+    if (!data) return
+    const teacherRows = data.teachers.map((t) => [t.name, t.subjects.join(', '), t.memo])
+    const studentRows = data.students.map((s) => [
+      s.name,
+      s.grade,
+      s.subjects.join(', '),
+      Object.entries(s.subjectSlots).map(([k, v]) => `${k}:${v}`).join(', '),
+      s.unavailableDates.join(', '),
+      s.memo,
+    ])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ'], ...teacherRows]),
+      '先生',
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['名前', '学年', '科目', '希望コマ数', '不可日', 'メモ'], ...studentRows]),
+      '生徒',
+    )
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([['科目名'], ...data.subjects.map((s) => [s])]),
+      '科目マスター',
+    )
+    XLSX.writeFile(wb, `${data.settings.name}_データ.xlsx`)
+  }
+
+  const handleFileImport = async (file: File): Promise<void> => {
+    if (!data) return
+    const buf = await file.arrayBuffer()
+    const wb = XLSX.read(buf, { type: 'array' })
+
+    let importedTeachers: Teacher[] = []
+    let importedStudents: Student[] = []
+    let importedSubjects: string[] = [...data.subjects]
+
+    // Subject master sheet
+    const subjectWs = wb.Sheets['科目マスター']
+    if (subjectWs) {
+      const rows = XLSX.utils.sheet_to_json(subjectWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const name = String(rows[i]?.[0] ?? '').trim()
+        if (name && !importedSubjects.includes(name)) {
+          importedSubjects.push(name)
+        }
+      }
+    }
+
+    // Teacher sheet
+    const teacherWs = wb.Sheets['先生']
+    if (teacherWs) {
+      const rows = XLSX.utils.sheet_to_json(teacherWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const name = String(row?.[0] ?? '').trim()
+        if (!name) continue
+        const subjects = String(row?.[1] ?? '')
+          .split(/[、,]/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+        const memo = String(row?.[2] ?? '').trim()
+        // Skip if already registered with same name
+        if (data.teachers.some((t) => t.name === name)) continue
+        importedTeachers.push({ id: createId(), name, subjects, memo })
+      }
+    }
+
+    // Student sheet
+    const studentWs = wb.Sheets['生徒']
+    if (studentWs) {
+      const rows = XLSX.utils.sheet_to_json(studentWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const name = String(row?.[0] ?? '').trim()
+        if (!name) continue
+        const grade = String(row?.[1] ?? '').trim()
+        if (data.students.some((s) => s.name === name)) continue
+        importedStudents.push({
+          id: createId(),
+          name,
+          grade,
+          subjects: [],
+          subjectSlots: {},
+          unavailableDates: [],
+          memo: '',
+          submittedAt: 0,
+        })
+      }
+    }
+
+    const added: string[] = []
+    if (importedTeachers.length) added.push(`先生${importedTeachers.length}名`)
+    if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
+    if (importedSubjects.length > data.subjects.length) added.push(`科目${importedSubjects.length - data.subjects.length}件`)
+
+    if (added.length === 0) {
+      alert('新規データがありませんでした（同名は重複スキップ）。')
+      return
+    }
+
+    const ok = window.confirm(`以下を取り込みます:\n${added.join(', ')}\n\nよろしいですか？`)
+    if (!ok) return
+
+    await update((current) => ({
+      ...current,
+      subjects: importedSubjects,
+      teachers: [...current.teachers, ...importedTeachers],
+      students: [...current.students, ...importedStudents],
+    }))
+
+    alert('取り込み完了！')
   }
 
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
@@ -946,6 +1055,28 @@ const AdminPage = () => {
                 初期テンプレートを再投入
               </button>
               <span className="muted">現在のデータをテンプレートで上書きします。</span>
+            </div>
+            <div className="row">
+              <button className="btn" type="button" onClick={downloadTemplate}>
+                テンプレートExcel出力
+              </button>
+              <button className="btn" type="button" onClick={exportData}>
+                データExcel出力
+              </button>
+              <button className="btn secondary" type="button" onClick={() => fileInputRef.current?.click()}>
+                Excel取り込み
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) void handleFileImport(file)
+                  e.target.value = ''
+                }}
+              />
             </div>
             <div className="row">
               <input
@@ -1119,46 +1250,11 @@ const AdminPage = () => {
                   <option key={g} value={g}>{g}</option>
                 ))}
               </select>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center' }}>
-                <select
-                  value=""
-                  onChange={(e) => {
-                    const val = e.target.value
-                    if (val && !studentSubjects.includes(val)) {
-                      setStudentSubjects((prev) => [...prev, val])
-                    }
-                  }}
-                >
-                  <option value="">科目を追加</option>
-                  {data.subjects.filter((s) => !studentSubjects.includes(s)).map((subject) => (
-                    <option key={subject} value={subject}>{subject}</option>
-                  ))}
-                </select>
-                {studentSubjects.map((s) => (
-                  <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setStudentSubjects((prev) => prev.filter((x) => x !== s))}>
-                    {s} ×
-                  </span>
-                ))}
-              </div>
-              <input
-                value={studentSubjectSlotsText}
-                onChange={(e) => setStudentSubjectSlotsText(e.target.value)}
-                placeholder="希望コマ数(例: 数学:5, 英語:3)"
-              />
-              <input
-                value={studentUnavailableDatesText}
-                onChange={(e) => setStudentUnavailableDatesText(e.target.value)}
-                placeholder="出席不可能日(例: 2026-07-25, 2026-07-28)"
-              />
-              <input
-                value={studentMemo}
-                onChange={(e) => setStudentMemo(e.target.value)}
-                placeholder="メモ"
-              />
               <button className="btn" type="button" onClick={() => void addStudent()}>
                 追加
               </button>
             </div>
+            <p className="muted">科目・希望コマ数・不可日は生徒本人が希望URLから入力します。</p>
             <table className="table">
               <thead>
                 <tr>
@@ -1322,22 +1418,36 @@ const AdminPage = () => {
                 ))}
               </select>
               <select
-                multiple
-                value={regularStudentIds}
-                onChange={(e) => setRegularStudentIds(Array.from(e.target.selectedOptions, (option) => option.value))}
-                style={{ minHeight: '80px' }}
+                value={regularStudent1Id}
+                onChange={(e) => setRegularStudent1Id(e.target.value)}
               >
+                <option value="">生徒1を選択</option>
                 {data.students.map((student) => (
-                  <option key={student.id} value={student.id}>
+                  <option key={student.id} value={student.id} disabled={student.id === regularStudent2Id}>
                     {student.name}
                   </option>
                 ))}
               </select>
-              <input
+              <select
+                value={regularStudent2Id}
+                onChange={(e) => setRegularStudent2Id(e.target.value)}
+              >
+                <option value="">生徒2(任意)</option>
+                {data.students.map((student) => (
+                  <option key={student.id} value={student.id} disabled={student.id === regularStudent1Id}>
+                    {student.name}
+                  </option>
+                ))}
+              </select>
+              <select
                 value={regularSubject}
                 onChange={(e) => setRegularSubject(e.target.value)}
-                placeholder="科目"
-              />
+              >
+                <option value="">科目を選択</option>
+                {data.subjects.map((subject) => (
+                  <option key={subject} value={subject}>{subject}</option>
+                ))}
+              </select>
               <select
                 value={regularDayOfWeek}
                 onChange={(e) => setRegularDayOfWeek(e.target.value)}
@@ -1440,7 +1550,7 @@ const AdminPage = () => {
                 テストデータで自動提案
               </button>
             </div>
-            <p className="muted">不可ペアは選択不可。推奨ペアを優先。先生1人 + 生徒1〜2人。同じコマに複数ペア可。</p>
+            <p className="muted">制約不可は警告付きで手動割当可。推奨ペアを優先。先生1人 + 生徒1〜2人。同じコマに複数ペア可。</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
@@ -1500,7 +1610,30 @@ const AdminPage = () => {
                                     <select
                                       key={pos}
                                       value={assignment.studentIds[pos] ?? ''}
-                                      onChange={(e) => void setSlotStudent(slot, idx, pos, e.target.value)}
+                                      onChange={(e) => {
+                                        const selectedId = e.target.value
+                                        if (selectedId) {
+                                          const student = data.students.find((s) => s.id === selectedId)
+                                          if (student) {
+                                            const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
+                                            const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
+                                            const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
+                                            if (isIncompatible) {
+                                              const reasons: string[] = []
+                                              if (pairTag === 'incompatible') reasons.push('ペア制約で不可')
+                                              if (gradeTag === 'incompatible') reasons.push(`学年制約(${student.grade})で不可`)
+                                              const ok = window.confirm(
+                                                `⚠️ ${student.name} は制約ルールにより割当不可です。\n理由: ${reasons.join(', ')}\n\nそれでも割り当てますか？`,
+                                              )
+                                              if (!ok) {
+                                                e.target.value = assignment.studentIds[pos] ?? ''
+                                                return
+                                              }
+                                            }
+                                          }
+                                        }
+                                        void setSlotStudent(slot, idx, pos, selectedId)
+                                      }}
                                     >
                                       <option value="">{`生徒${pos + 1}を選択`}</option>
                                       {data.students.map((student) => {
@@ -1513,14 +1646,14 @@ const AdminPage = () => {
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
                                         const isSelectedInOtherPosition = student.id === otherStudentId
-                                        const disabled = !available || isIncompatible || usedInOther || isSelectedInOtherPosition
+                                        const disabled = usedInOther || isSelectedInOtherPosition
                                         const subjectRemaining = Object.entries(student.subjectSlots)
                                           .map(([subj, desired]) => {
                                             const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
                                             return `${subj}:残${Math.max(0, desired - assigned)}`
                                           })
                                           .join(' ')
-                                        const tagLabel = isIncompatible ? ' [不可]' : isRecommended ? ' [推奨]' : ''
+                                        const tagLabel = isIncompatible ? ' ⚠不可' : isRecommended ? ' ★推奨' : ''
                                         const statusLabel = !available ? ' (希望なし)' : usedInOther ? ' (他ペア)' : ''
 
                                         return (
