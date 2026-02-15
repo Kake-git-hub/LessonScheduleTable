@@ -1323,22 +1323,18 @@ const TeacherInputPage = ({
     })
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     setSubmitting(true)
-    try {
-      const key = personKey('teacher', teacher.id)
-      const next: SessionData = {
-        ...data,
-        availability: {
-          ...data.availability,
-          [key]: Array.from(localAvailability),
-        },
-      }
-      void saveSession(sessionId, next)
-      navigate(`/complete/${sessionId}`)
-    } catch {
-      setSubmitting(false)
+    const key = personKey('teacher', teacher.id)
+    const next: SessionData = {
+      ...data,
+      availability: {
+        ...data.availability,
+        [key]: Array.from(localAvailability),
+      },
     }
+    saveSession(sessionId, next).catch(() => {})
+    navigate(`/complete/${sessionId}`)
   }
 
   return (
@@ -1452,29 +1448,25 @@ const StudentInputPage = ({
     }))
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     setSubmitting(true)
-    try {
-      const updatedStudents = data.students.map((s) =>
-        s.id === student.id
-          ? {
-              ...s,
-              subjectSlots,
-              unavailableDates: Array.from(unavailableDates),
-              submittedAt: Date.now(),
-            }
-          : s,
-      )
+    const updatedStudents = data.students.map((s) =>
+      s.id === student.id
+        ? {
+            ...s,
+            subjectSlots,
+            unavailableDates: Array.from(unavailableDates),
+            submittedAt: Date.now(),
+          }
+        : s,
+    )
 
-      const next: SessionData = {
-        ...data,
-        students: updatedStudents,
-      }
-      void saveSession(sessionId, next)
-      navigate(`/complete/${sessionId}`)
-    } catch {
-      setSubmitting(false)
+    const next: SessionData = {
+      ...data,
+      students: updatedStudents,
     }
+    saveSession(sessionId, next).catch(() => {})
+    navigate(`/complete/${sessionId}`)
   }
 
   return (
@@ -1618,7 +1610,7 @@ const BootPage = () => {
   const navigate = useNavigate()
 
   useEffect(() => {
-    void saveSession('main', createTemplateSession())
+    saveSession('main', createTemplateSession()).catch(() => {})
     navigate('/admin/main', { replace: true })
   }, [navigate])
 
