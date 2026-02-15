@@ -1632,9 +1632,7 @@ const CompletionPage = () => {
         <h2>入力完了</h2>
         <p>データの送信が完了しました。ありがとうございます。</p>
         <div className="row">
-          <Link to={`/admin/${sessionId}`}>
-            <button className="btn" type="button">設定に戻る</button>
-          </Link>
+          <Link className="btn" to={`/admin/${sessionId}`}>設定に戻る</Link>
         </div>
       </div>
     </div>
