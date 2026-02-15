@@ -74,6 +74,7 @@ const createTemplateSession = (): SessionData => {
       subjects: ['数', '英'],
       subjectSlots: { 数: 3, 英: 2 },
       unavailableDates: ['2026-07-23'],
+      preferredSlots: [],
       memo: '受験対策',
       submittedAt: Date.now() - 4000,
     },
@@ -84,6 +85,7 @@ const createTemplateSession = (): SessionData => {
       subjects: ['英'],
       subjectSlots: { 英: 3 },
       unavailableDates: [],
+      preferredSlots: [],
       memo: '',
       submittedAt: Date.now() - 3000,
     },
@@ -94,6 +96,7 @@ const createTemplateSession = (): SessionData => {
       subjects: ['数'],
       subjectSlots: { 数: 3 },
       unavailableDates: ['2026-07-22'],
+      preferredSlots: [],
       memo: '',
       submittedAt: Date.now() - 2000,
     },
@@ -104,6 +107,7 @@ const createTemplateSession = (): SessionData => {
       subjects: ['英', '数'],
       subjectSlots: { 英: 2, 数: 2 },
       unavailableDates: [],
+      preferredSlots: [],
       memo: '',
       submittedAt: Date.now() - 1000,
     },
@@ -211,17 +215,39 @@ const getTeacherAssignedDates = (assignments: Record<string, Assignment[]>, teac
   return dates
 }
 
-/** Get subjects a teacher teaches on a specific date */
-const getTeacherSubjectsOnDate = (assignments: Record<string, Assignment[]>, teacherId: string, date: string): Set<string> => {
-  const subjects = new Set<string>()
+/** Count how many slots a student is assigned on a specific date (including regular) */
+const countStudentSlotsOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number => {
+  let count = 0
   for (const [slot, slotAssignments] of Object.entries(assignments)) {
     if (slot.startsWith(`${date}_`)) {
-      for (const a of slotAssignments) {
-        if (a.teacherId === teacherId) subjects.add(a.subject)
+      if (slotAssignments.some((a) => a.studentIds.includes(studentId))) count++
+    }
+  }
+  return count
+}
+
+/** Get the slot numbers a student is assigned on a specific date */
+const getStudentSlotNumbersOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number[] => {
+  const nums: number[] = []
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slot.startsWith(`${date}_`)) {
+      if (slotAssignments.some((a) => a.studentIds.includes(studentId))) {
+        nums.push(getSlotNumber(slot))
       }
     }
   }
-  return subjects
+  return nums.sort((a, b) => a - b)
+}
+
+/** Count unique dates a student is assigned to */
+const countStudentAssignedDates = (assignments: Record<string, Assignment[]>, studentId: string): number => {
+  const dates = new Set<string>()
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slotAssignments.some((a) => a.studentIds.includes(studentId))) {
+      dates.add(slot.split('_')[0])
+    }
+  }
+  return dates.size
 }
 
 const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
@@ -384,11 +410,13 @@ const buildIncrementalAutoAssignments = (
     }
   }
 
-  // Phase 3: Fill empty slots — minimize teacher attendance dates, group subjects
+  // Phase 3: Fill empty slots — minimize total teacher attendance dates, distribute students evenly
+  // Process slots date-by-date, within each date prefer using teachers already assigned that day
   for (const slot of slots) {
     if (result[slot] && result[slot].length > 0) continue
 
     const currentDate = slot.split('_')[0]
+    const currentSlotNum = getSlotNumber(slot)
     const slotAssignments: Assignment[] = []
     const usedTeacherIdsInSlot = new Set<string>()
     const usedStudentIdsInSlot = new Set<string>()
@@ -397,13 +425,14 @@ const buildIncrementalAutoAssignments = (
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
     )
 
-    // Sort teachers: prefer those already assigned on this date (minimize attendance days)
+    // Sort teachers: strongly prefer those already assigned on this date (minimize total attendance days)
     const sortedTeachers = [...teachers].sort((a, b) => {
       const aDates = getTeacherAssignedDates(result, a.id)
       const bDates = getTeacherAssignedDates(result, b.id)
       const aOnDate = aDates.has(currentDate) ? 0 : 1
       const bOnDate = bDates.has(currentDate) ? 0 : 1
       if (aOnDate !== bOnDate) return aOnDate - bOnDate
+      // Then prefer teachers with fewer total attendance dates
       return aDates.size - bDates.size
     })
 
@@ -423,7 +452,6 @@ const buildIncrementalAutoAssignments = (
 
       const teacherDates = getTeacherAssignedDates(result, teacher.id)
       const isExistingDate = teacherDates.has(currentDate)
-      const subjectsOnDate = getTeacherSubjectsOnDate(result, teacher.id, currentDate)
       const teacherLoad = countTeacherLoad(result, teacher.id)
 
       let bestPlan: { score: number; assignment: Assignment } | null = null
@@ -443,20 +471,45 @@ const buildIncrementalAutoAssignments = (
         )
         if (viableSubjects.length === 0) continue
 
-        // Pick best subject: prefer one already taught on this date, then alphabetical
-        const bestSubject = viableSubjects.sort((sa, sb) => {
-          const aMatch = subjectsOnDate.has(sa) ? 0 : 1
-          const bMatch = subjectsOnDate.has(sb) ? 0 : 1
-          return aMatch - bMatch
-        })[0]
+        const bestSubject = viableSubjects[0]
+
+        // --- Student distribution scoring ---
+        let studentScore = 0
+        for (const st of combo) {
+          const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
+          const existingSlotNums = getStudentSlotNumbersOnDate(result, st.id, currentDate)
+
+          // Penalty for same-day multiple slots (avoid if possible)
+          if (slotsOnDate > 0) {
+            studentScore -= 60
+            // If forced, reward consecutive slots
+            const isConsecutive = existingSlotNums.some(
+              (n) => Math.abs(n - currentSlotNum) === 1,
+            )
+            if (isConsecutive) studentScore += 25
+          }
+
+          // Prefer students with more remaining slots (even distribution)
+          const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
+          const totalAssigned = countStudentLoad(result, st.id)
+          studentScore += (totalRequested - totalAssigned) * 10
+
+          // Prefer students with fewer assigned dates (spread across days)
+          const assignedDates = countStudentAssignedDates(result, st.id)
+          studentScore -= assignedDates * 5
+
+          // Bonus for preferred slots
+          if ((st.preferredSlots ?? []).includes(slot)) {
+            studentScore += 15
+          }
+        }
 
         const score = 100 +
-          (isExistingDate ? 50 : -30) +  // Heavy preference for reusing existing dates
-          (subjectsOnDate.has(bestSubject) ? 20 : 0) +  // Prefer same subject grouping on same day
+          (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
           combo.reduce((s, st) => s + (constraintFor(data.constraints, teacher.id, st.id) === 'recommended' ? 30 : 0), 0) +
-          (combo.length === 2 ? 5 : 0) -
-          teacherLoad * 2 -
-          combo.reduce((s, st) => s + countStudentLoad(result, st.id) * 8, 0)
+          (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
+          studentScore -
+          teacherLoad * 2
 
         if (!bestPlan || score > bestPlan.score) {
           bestPlan = { score, assignment: { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: bestSubject } }
@@ -571,7 +624,7 @@ const HomePage = () => {
     if (!studentName.trim()) return
     const student: Student = {
       id: createId(), name: studentName.trim(), grade: studentGrade.trim(),
-      subjects: [], subjectSlots: {}, unavailableDates: [], memo: '', submittedAt: 0,
+      subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], memo: '', submittedAt: 0,
     }
     await updateMaster((c) => ({ ...c, students: [...c.students, student] }))
     setStudentName(''); setStudentGrade('')
@@ -737,7 +790,7 @@ const HomePage = () => {
         if (!name) continue
         const grade = String(row?.[1] ?? '').trim()
         if (md.students.some((s) => s.name === name)) continue
-        importedStudents.push({ id: createId(), name, grade, subjects: [], subjectSlots: {}, unavailableDates: [], memo: '', submittedAt: 0 })
+        importedStudents.push({ id: createId(), name, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], memo: '', submittedAt: 0 })
       }
     }
 
@@ -848,7 +901,7 @@ const HomePage = () => {
     if (masterData) {
       seed.teachers = masterData.teachers
       seed.students = masterData.students.map((s) => ({
-        ...s, subjects: [], subjectSlots: {}, unavailableDates: [], submittedAt: 0,
+        ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], submittedAt: 0,
       }))
       seed.constraints = masterData.constraints
       seed.gradeConstraints = masterData.gradeConstraints
@@ -1169,19 +1222,19 @@ const AdminPage = () => {
   }, [data, skipAuth])
 
   // Auto-sync master data on session open (preserves settings, availability, assignments)
-  const masterSyncedRef = useRef(false)
+  const masterSyncedRef = useRef('')
   useEffect(() => {
-    if (!data || !authorized || masterSyncedRef.current) return
-    masterSyncedRef.current = true
+    if (!data || !authorized || masterSyncedRef.current === sessionId) return
+    masterSyncedRef.current = sessionId
     void (async () => {
       const master = await loadMasterData()
       if (!master) return
       const mergedStudents = master.students.map((ms) => {
         const existing = data.students.find((s) => s.id === ms.id)
         if (existing) {
-          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, submittedAt: existing.submittedAt }
+          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], submittedAt: existing.submittedAt }
         }
-        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], submittedAt: 0 }
+        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], submittedAt: 0 }
       })
       // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
       const next: SessionData = {
@@ -1945,6 +1998,9 @@ const StudentInputPage = ({
   const [unavailableDates, setUnavailableDates] = useState<Set<string>>(
     new Set(student.unavailableDates ?? []),
   )
+  const [preferredSlots, setPreferredSlots] = useState<Set<string>>(
+    new Set(student.preferredSlots ?? []),
+  )
   const [submitting, setSubmitting] = useState(false)
 
   const toggleDate = (date: string) => {
@@ -1990,6 +2046,7 @@ const StudentInputPage = ({
             subjects,
             subjectSlots,
             unavailableDates: Array.from(unavailableDates),
+            preferredSlots: Array.from(preferredSlots),
             submittedAt: Date.now(),
           }
         : s,
@@ -2095,6 +2152,52 @@ const StudentInputPage = ({
               </div>
             )
           })}
+        </div>
+      </div>
+
+      <div className="student-form-section">
+        <h3>希望時限</h3>
+        <p className="muted">希望する時限をタップして選択してください（任意）。選択しない場合は全時限が対象です。</p>
+        <div className="preferred-slots-grid">
+          <table className="teacher-table">
+            <thead>
+              <tr>
+                <th className="date-header">日付</th>
+                {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
+                  <th key={i}>{i + 1}限</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {dates.filter((date) => !unavailableDates.has(date)).map((date) => (
+                <tr key={date}>
+                  <td className="date-cell">{date}</td>
+                  {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+                    const slotNum = i + 1
+                    const slotKey = `${date}_${slotNum}`
+                    const isOn = preferredSlots.has(slotKey)
+                    return (
+                      <td key={slotNum}>
+                        <button
+                          className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
+                          onClick={() => {
+                            setPreferredSlots((prev) => {
+                              const next = new Set(prev)
+                              if (next.has(slotKey)) { next.delete(slotKey) } else { next.add(slotKey) }
+                              return next
+                            })
+                          }}
+                          type="button"
+                        >
+                          {isOn ? '○' : ''}
+                        </button>
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -18,6 +18,7 @@ export type Student = {
   subjects: string[]
   subjectSlots: SubjectSlotRequest
   unavailableDates: string[]
+  preferredSlots: string[]
   memo: string
   submittedAt: number
 }
