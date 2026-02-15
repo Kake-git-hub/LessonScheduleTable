@@ -62,8 +62,8 @@ const createTemplateSession = (): SessionData => {
   const subjects = FIXED_SUBJECTS
 
   const teachers: Teacher[] = [
-    { id: 't001', name: '田中先生', subjects: ['数', '英'], memo: '数学メイン' },
-    { id: 't002', name: '佐藤先生', subjects: ['英', '数'], memo: '英語メイン' },
+    { id: 't001', name: '田中講師', subjects: ['数', '英'], memo: '数学メイン' },
+    { id: 't002', name: '佐藤講師', subjects: ['英', '数'], memo: '英語メイン' },
   ]
 
   const students: Student[] = [
@@ -365,9 +365,9 @@ const buildIncrementalAutoAssignments = (
         })
         if (replacement) {
           cleaned.push({ ...assignment, teacherId: replacement.id })
-          changeLog.push({ slot, action: '先生差替', detail: `${replacement.name} に変更（元の先生が削除済）` })
+          changeLog.push({ slot, action: '講師差替', detail: `${replacement.name} に変更（元の講師が削除済）` })
         } else {
-          changeLog.push({ slot, action: '先生削除', detail: `割当解除（先生が削除済・代替不可）` })
+          changeLog.push({ slot, action: '講師削除', detail: `割当解除（講師が削除済・代替不可）` })
         }
         continue
       }
@@ -383,7 +383,7 @@ const buildIncrementalAutoAssignments = (
         })
         if (replacement) {
           cleaned.push({ ...assignment, teacherId: replacement.id })
-          changeLog.push({ slot, action: '先生差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
+          changeLog.push({ slot, action: '講師差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
         } else {
           changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
         }
@@ -412,7 +412,7 @@ const buildIncrementalAutoAssignments = (
         cleaned.push({ ...assignment, studentIds: validStudentIds })
       } else if (removedStudentIds.length > 0) {
         cleaned.push({ ...assignment, studentIds: [] })
-        changeLog.push({ slot, action: '生徒全員解除', detail: `先生のみ残留（予定変更のため）` })
+        changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留（予定変更のため）` })
       } else {
         cleaned.push(assignment)
       }
@@ -752,7 +752,7 @@ const HomePage = () => {
   }
 
   const removeTeacher = async (teacherId: string): Promise<void> => {
-    if (!window.confirm('この先生を削除しますか？')) return
+    if (!window.confirm('この講師を削除しますか？')) return
     await updateMaster((c) => ({ ...c, teachers: c.teachers.filter((t) => t.id !== teacherId) }))
   }
 
@@ -777,8 +777,8 @@ const HomePage = () => {
   const downloadTemplate = (): void => {
     // Include sample test data so users can see the expected format
     const sampleTeachers = [
-      ['田中先生', '数,英', '数学メイン'],
-      ['佐藤先生', '英,数', '英語メイン'],
+      ['田中講師', '数,英', '数学メイン'],
+      ['佐藤講師', '英,数', '英語メイン'],
     ]
     const sampleStudents = [
       ['青木 太郎', '中3'],
@@ -786,21 +786,21 @@ const HomePage = () => {
       ['上田 陽介', '高1'],
     ]
     const sampleConstraints = [
-      ['田中先生', '伊藤 花', '不可'],
-      ['田中先生', '上田 陽介', '推奨'],
+      ['田中講師', '伊藤 花', '不可'],
+      ['田中講師', '上田 陽介', '推奨'],
     ]
     const sampleGradeConstraints = [
-      ['佐藤先生', '高1', '推奨'],
+      ['佐藤講師', '高1', '推奨'],
     ]
     const sampleRegularLessons = [
-      ['田中先生', '青木 太郎', '', '数', '月', '1'],
+      ['田中講師', '青木 太郎', '', '数', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ'], ...sampleTeachers]), '先生')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年'], ...sampleStudents]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒名', '種別(不可/推奨)'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '学年', '種別(不可/推奨)'], ...sampleGradeConstraints]), '学年制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別(不可/推奨)'], ...sampleConstraints]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可/推奨)'], ...sampleGradeConstraints]), '学年制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -827,11 +827,11 @@ const HomePage = () => {
       l.subject, dayNames[l.dayOfWeek] ?? '', l.slotNumber,
     ])
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ'], ...teacherRows]), '先生')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ'], ...studentRows]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒名', '種別'], ...constraintRows]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '学年', '種別'], ...gradeConstraintRows]), '学年制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['先生名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別'], ...constraintRows]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別'], ...gradeConstraintRows]), '学年制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
 
@@ -858,7 +858,7 @@ const HomePage = () => {
       return importedStudents.find((s) => s.name === name)?.id ?? null
     }
 
-    const teacherWs = wb.Sheets['先生']
+    const teacherWs = wb.Sheets['講師']
     if (teacherWs) {
       const rows = XLSX.utils.sheet_to_json(teacherWs, { header: 1 }) as unknown as unknown[][]
       for (let i = 1; i < rows.length; i++) {
@@ -931,8 +931,48 @@ const HomePage = () => {
       }
     }
 
+    // --- Validation: check for inconsistencies ---
+    const validationErrors: string[] = []
+    // All teachers (existing + imported)
+    const allTeachers = [...md.teachers, ...importedTeachers]
+    const allStudents = [...md.students, ...importedStudents]
+    // Check regular lessons
+    for (const rl of importedRegularLessons) {
+      const teacher = allTeachers.find((t) => t.id === rl.teacherId)
+      if (teacher && !teacher.subjects.includes(rl.subject)) {
+        const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
+        validationErrors.push(`通常授業: ${teacher.name} の担当科目に「${rl.subject}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
+      }
+      for (const sid of rl.studentIds) {
+        const student = allStudents.find((s) => s.id === sid)
+        if (!student) {
+          validationErrors.push(`通常授業: 生徒ID「${sid}」が見つかりません`)
+        }
+      }
+    }
+    // Check constraints reference valid people
+    for (const c of importedConstraints) {
+      if (!allTeachers.some((t) => t.id === c.teacherId)) {
+        validationErrors.push(`制約: 講師ID「${c.teacherId}」が見つかりません`)
+      }
+      if (!allStudents.some((s) => s.id === c.studentId)) {
+        validationErrors.push(`制約: 生徒ID「${c.studentId}」が見つかりません`)
+      }
+    }
+    // Check grade constraints reference valid teachers
+    for (const gc of importedGradeConstraints) {
+      if (!allTeachers.some((t) => t.id === gc.teacherId)) {
+        validationErrors.push(`学年制約: 講師ID「${gc.teacherId}」が見つかりません`)
+      }
+    }
+
+    if (validationErrors.length > 0) {
+      alert(`⚠️ 取り込みエラー:\n\n${validationErrors.join('\n')}\n\nデータを修正してから再度取り込んでください。`)
+      return
+    }
+
     const added: string[] = []
-    if (importedTeachers.length) added.push(`先生${importedTeachers.length}名`)
+    if (importedTeachers.length) added.push(`講師${importedTeachers.length}名`)
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
     if (importedConstraints.length) added.push(`制約${importedConstraints.length}件`)
     if (importedGradeConstraints.length) added.push(`学年制約${importedGradeConstraints.length}件`)
@@ -1028,7 +1068,7 @@ const HomePage = () => {
     <div className="app-shell">
       <div className="panel">
         <h2>講習コマ割りアプリ</h2>
-        <p className="muted">管理データ（先生・生徒・制約）はここで一元管理し、セッションごとに希望コマ数とコマ割りを管理します。</p>
+        <p className="muted">管理データ（講師・生徒・制約）はここで一元管理し、セッションごとに希望コマ数とコマ割りを管理します。</p>
 
         {!unlocked ? (
           <>
@@ -1051,7 +1091,7 @@ const HomePage = () => {
             {/* --- Session management --- */}
             <div className="panel">
               <h3>新規セッション追加</h3>
-              <p className="muted">作成時にマスターデータ（先生・生徒・制約・通常授業）が自動コピーされます。</p>
+              <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
               <div className="row">
                 <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 120 }} />
                 <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
@@ -1097,9 +1137,9 @@ const HomePage = () => {
                 </div>
 
                 <div className="panel">
-                  <h3>先生登録</h3>
+                  <h3>講師登録</h3>
                   <div className="row">
-                    <input value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="先生名" />
+                    <input value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="講師名" />
                     <select onChange={(e) => { const v = e.target.value; if (v && !teacherSubjects.includes(v)) setTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
                       <option value="">担当科目を追加</option>
                       {FIXED_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
@@ -1147,10 +1187,10 @@ const HomePage = () => {
                 </div>
 
                 <div className="panel">
-                  <h3>先生×生徒 制約</h3>
+                  <h3>講師×生徒 制約</h3>
                   <div className="row">
                     <select value={constraintTeacherId} onChange={(e) => setConstraintTeacherId(e.target.value)}>
-                      <option value="">先生を選択</option>
+                      <option value="">講師を選択</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
                     <select value={constraintStudentId} onChange={(e) => setConstraintStudentId(e.target.value)}>
@@ -1164,7 +1204,7 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void upsertConstraint()}>保存</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>先生</th><th>生徒</th><th>種別</th><th>操作</th></tr></thead>
+                    <thead><tr><th>講師</th><th>生徒</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.constraints.map((c) => (
                         <tr key={c.id}>
@@ -1177,10 +1217,10 @@ const HomePage = () => {
                     </tbody>
                   </table>
 
-                  <h4 style={{ marginTop: '16px' }}>先生×学年 制約</h4>
+                  <h4 style={{ marginTop: '16px' }}>講師×学年 制約</h4>
                   <div className="row">
                     <select value={gradeConstraintTeacherId} onChange={(e) => setGradeConstraintTeacherId(e.target.value)}>
-                      <option value="">先生を選択</option>
+                      <option value="">講師を選択</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
                     <select value={gradeConstraintGrade} onChange={(e) => setGradeConstraintGrade(e.target.value)}>
@@ -1194,7 +1234,7 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void upsertGradeConstraint()}>保存</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>先生</th><th>学年</th><th>種別</th><th>操作</th></tr></thead>
+                    <thead><tr><th>講師</th><th>学年</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
                       {(masterData.gradeConstraints ?? []).map((gc) => (
                         <tr key={gc.id}>
@@ -1212,7 +1252,7 @@ const HomePage = () => {
                   <h3>通常授業管理</h3>
                   <div className="row">
                     <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
-                      <option value="">先生を選択</option>
+                      <option value="">講師を選択</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
                     <select value={regularStudent1Id} onChange={(e) => setRegularStudent1Id(e.target.value)}>
@@ -1237,7 +1277,7 @@ const HomePage = () => {
                   </div>
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
                   <table className="table">
-                    <thead><tr><th>先生</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <thead><tr><th>講師</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.regularLessons.map((l) => {
                         const dayNames = ['日', '月', '火', '水', '木', '金', '土']
@@ -1315,7 +1355,7 @@ const AdminPage = () => {
   }, [data])
   const copyUrl = async (path: string): Promise<void> => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    const url = base.replace(/\/$/, '') + path
+    const url = base.replace(/\/$/, '') + '/#' + path
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
@@ -1822,7 +1862,7 @@ const AdminPage = () => {
           </div>
 
           <div className="panel">
-            <h3>先生一覧</h3>
+            <h3>講師一覧</h3>
             <table className="table">
               <thead><tr><th>名前</th><th>科目</th><th>希望URL</th><th>共有</th></tr></thead>
               <tbody>
@@ -1932,7 +1972,7 @@ const AdminPage = () => {
                 </button>
               )}
             </div>
-            <p className="muted">通常授業は日付確定時に自動配置（青枠）。特別講習は自動提案で割当。先生1人 + 生徒1〜2人。</p>
+            <p className="muted">通常授業は日付確定時に自動配置（青枠）。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
@@ -1965,7 +2005,7 @@ const AdminPage = () => {
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
                             >
-                              <option value="">先生を選択</option>
+                              <option value="">講師を選択</option>
                               {data.teachers
                                 .filter((teacher) => {
                                   // Always show currently assigned teacher
@@ -2184,12 +2224,34 @@ const TeacherInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+
+  // Find regular lesson slots for this teacher (date_slotNum keys)
+  const regularSlotKeys = useMemo(() => {
+    const keys = new Set<string>()
+    const teacherLessons = data.regularLessons.filter((l) => l.teacherId === teacher.id)
+    for (const date of dates) {
+      const dateObj = new Date(`${date}T00:00:00`)
+      const dayOfWeek = dateObj.getDay()
+      for (const lesson of teacherLessons) {
+        if (lesson.dayOfWeek === dayOfWeek) {
+          keys.add(`${date}_${lesson.slotNumber}`)
+        }
+      }
+    }
+    return keys
+  }, [dates, data.regularLessons, teacher.id])
+
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey('teacher', teacher.id)
-    return new Set(data.availability[key] ?? [])
+    const saved = new Set(data.availability[key] ?? [])
+    // Include regular lesson slots as forced available
+    for (const rk of regularSlotKeys) saved.add(rk)
+    return saved
   })
   const toggleSlot = (date: string, slotNum: number) => {
     const slotKey = `${date}_${slotNum}`
+    // Cannot toggle regular lesson slots
+    if (regularSlotKeys.has(slotKey)) return
     setLocalAvailability((prev) => {
       const next = new Set(prev)
       if (next.has(slotKey)) {
@@ -2203,11 +2265,14 @@ const TeacherInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey('teacher', teacher.id)
+    // Ensure regular lesson slots are always included
+    const merged = new Set(localAvailability)
+    for (const rk of regularSlotKeys) merged.add(rk)
     const next: SessionData = {
       ...data,
       availability: {
         ...data.availability,
-        [key]: Array.from(localAvailability),
+        [key]: Array.from(merged),
       },
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
@@ -2217,11 +2282,11 @@ const TeacherInputPage = ({
   return (
     <div className="availability-container">
       <div className="availability-header">
-        <h2>{data.settings.name} - 先生希望入力</h2>
+        <h2>{data.settings.name} - 講師希望入力</h2>
         <p>
           対象: <strong>{teacher.name}</strong>
         </p>
-        <p className="muted">出席可能なコマをタップして選択してください。</p>
+        <p className="muted">出席可能なコマをタップして選択してください。「通」は通常授業（変更不可）です。</p>
       </div>
 
       <div className="teacher-table-wrapper">
@@ -2241,15 +2306,17 @@ const TeacherInputPage = ({
                 {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
                   const slotNum = i + 1
                   const slotKey = `${date}_${slotNum}`
+                  const isRegular = regularSlotKeys.has(slotKey)
                   const isOn = localAvailability.has(slotKey)
                   return (
                     <td key={slotNum}>
                       <button
-                        className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
+                        className={`teacher-slot-btn ${isRegular ? 'regular' : isOn ? 'active' : ''}`}
                         onClick={() => toggleSlot(date, slotNum)}
                         type="button"
+                        disabled={isRegular}
                       >
-                        {isOn ? '○' : ''}
+                        {isRegular ? '通' : isOn ? '○' : ''}
                       </button>
                     </td>
                   )

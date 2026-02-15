@@ -260,6 +260,14 @@
   color: #2563eb;
 }
 
+.teacher-slot-btn.regular {
+  background: #fef3c7;
+  border-color: #f59e0b;
+  color: #92400e;
+  font-weight: 700;
+  cursor: default;
+}
+
 .teacher-slot-btn:active {
   transform: scale(0.95);
 }
