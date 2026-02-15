@@ -2,6 +2,8 @@ export type PersonType = 'teacher' | 'student'
 
 export type ConstraintType = 'incompatible' | 'recommended'
 
+export type SubjectSlotRequest = Record<string, number>
+
 export type Teacher = {
   id: string
   name: string
@@ -14,7 +16,10 @@ export type Student = {
   name: string
   grade: string
   subjects: string[]
+  subjectSlots: SubjectSlotRequest
+  unavailableDates: string[]
   memo: string
+  submittedAt: number
 }
 
 export type PairConstraint = {
@@ -28,6 +33,15 @@ export type Assignment = {
   teacherId: string
   studentIds: string[]
   subject: string
+}
+
+export type RegularLesson = {
+  id: string
+  teacherId: string
+  studentIds: string[]
+  subject: string
+  dayOfWeek: number
+  slotNumber: number
 }
 
 export type SessionSettings = {
@@ -47,4 +61,5 @@ export type SessionData = {
   constraints: PairConstraint[]
   availability: Record<string, string[]>
   assignments: Record<string, Assignment>
+  regularLessons: RegularLesson[]
 }

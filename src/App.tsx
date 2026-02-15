@@ -7,6 +7,7 @@ import type {
   ConstraintType,
   PairConstraint,
   PersonType,
+  RegularLesson,
   SessionData,
   Student,
   Teacher,
@@ -35,6 +36,7 @@ const emptySession = (): SessionData => ({
   constraints: [],
   availability: {},
   assignments: {},
+  regularLessons: [],
 })
 
 const createTemplateSession = (): SessionData => {
@@ -56,11 +58,56 @@ const createTemplateSession = (): SessionData => {
   ]
 
   const students: Student[] = [
-    { id: 's001', name: '青木 太郎', grade: '中3', subjects: ['数学', '英語'], memo: '受験対策' },
-    { id: 's002', name: '伊藤 花', grade: '中2', subjects: ['英語', '国語'], memo: '' },
-    { id: 's003', name: '上田 陽介', grade: '高1', subjects: ['数学', '理科'], memo: '' },
-    { id: 's004', name: '岡本 美咲', grade: '高2', subjects: ['英語', '数学'], memo: '' },
-    { id: 's005', name: '加藤 駿', grade: '中3', subjects: ['国語', '英語'], memo: '' },
+    {
+      id: 's001',
+      name: '青木 太郎',
+      grade: '中3',
+      subjects: ['数学', '英語'],
+      subjectSlots: { 数学: 5, 英語: 3 },
+      unavailableDates: ['2026-07-25'],
+      memo: '受験対策',
+      submittedAt: Date.now() - 4000,
+    },
+    {
+      id: 's002',
+      name: '伊藤 花',
+      grade: '中2',
+      subjects: ['英語', '国語'],
+      subjectSlots: { 英語: 4, 国語: 2 },
+      unavailableDates: [],
+      memo: '',
+      submittedAt: Date.now() - 3000,
+    },
+    {
+      id: 's003',
+      name: '上田 陽介',
+      grade: '高1',
+      subjects: ['数学', '理科'],
+      subjectSlots: { 数学: 3, 理科: 3 },
+      unavailableDates: ['2026-07-22', '2026-07-29'],
+      memo: '',
+      submittedAt: Date.now() - 2000,
+    },
+    {
+      id: 's004',
+      name: '岡本 美咲',
+      grade: '高2',
+      subjects: ['英語', '数学'],
+      subjectSlots: { 英語: 4, 数学: 4 },
+      unavailableDates: [],
+      memo: '',
+      submittedAt: Date.now() - 1000,
+    },
+    {
+      id: 's005',
+      name: '加藤 駿',
+      grade: '中3',
+      subjects: ['国語', '英語'],
+      subjectSlots: { 国語: 3, 英語: 2 },
+      unavailableDates: ['2026-07-28'],
+      memo: '',
+      submittedAt: Date.now(),
+    },
   ]
 
   const constraints: PairConstraint[] = [
@@ -83,6 +130,25 @@ const createTemplateSession = (): SessionData => {
     [personKey('student', 's005')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
   }
 
+  const regularLessons: RegularLesson[] = [
+    {
+      id: 'r001',
+      teacherId: 't001',
+      studentIds: ['s001'],
+      subject: '数学',
+      dayOfWeek: 1,
+      slotNumber: 1,
+    },
+    {
+      id: 'r002',
+      teacherId: 't002',
+      studentIds: ['s002', 's005'],
+      subject: '国語',
+      dayOfWeek: 3,
+      slotNumber: 2,
+    },
+  ]
+
   return {
     settings,
     subjects,
@@ -91,6 +157,7 @@ const createTemplateSession = (): SessionData => {
     constraints,
     availability,
     assignments: {},
+    regularLessons,
   }
 }
 
@@ -135,6 +202,42 @@ const countTeacherLoad = (assignments: Record<string, Assignment>, teacherId: st
 const countStudentLoad = (assignments: Record<string, Assignment>, studentId: string): number =>
   Object.values(assignments).filter((assignment) => assignment.studentIds.includes(studentId)).length
 
+const countStudentSubjectLoad = (
+  assignments: Record<string, Assignment>,
+  studentId: string,
+  subject: string,
+): number =>
+  Object.values(assignments).filter(
+    (assignment) => assignment.studentIds.includes(studentId) && assignment.subject === subject,
+  ).length
+
+const isStudentAvailable = (student: Student, slotKey: string): boolean => {
+  const [date] = slotKey.split('_')
+  return !student.unavailableDates.includes(date)
+}
+
+const getSlotDayOfWeek = (slotKey: string): number => {
+  const [date] = slotKey.split('_')
+  const [year, month, day] = date.split('-').map(Number)
+  return new Date(year, month - 1, day).getDay()
+}
+
+const getSlotNumber = (slotKey: string): number => {
+  const [, slot] = slotKey.split('_')
+  return Number.parseInt(slot, 10)
+}
+
+const findRegularLessonForSlot = (
+  regularLessons: RegularLesson[],
+  slotKey: string,
+): RegularLesson | null => {
+  const dayOfWeek = getSlotDayOfWeek(slotKey)
+  const slotNumber = getSlotNumber(slotKey)
+  return (
+    regularLessons.find((lesson) => lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber) ?? null
+  )
+}
+
 const buildAutoAssignments = (
   data: SessionData,
   slots: string[],
@@ -147,6 +250,17 @@ const buildAutoAssignments = (
       continue
     }
 
+    // Rule 2: Check if there's a regular lesson for this slot
+    const regularLesson = findRegularLessonForSlot(data.regularLessons, slot)
+    if (regularLesson) {
+      nextAssignments[slot] = {
+        teacherId: regularLesson.teacherId,
+        studentIds: regularLesson.studentIds,
+        subject: regularLesson.subject,
+      }
+      continue
+    }
+
     let bestPlan: { score: number; assignment: Assignment } | null = null
 
     const teachers = data.teachers.filter((teacher) =>
@@ -155,9 +269,15 @@ const buildAutoAssignments = (
 
     for (const teacher of teachers) {
       const candidates = data.students.filter((student) => {
+        // Check teacher availability (existing)
         if (!hasAvailability(data.availability, 'student', student.id, slot)) {
           return false
         }
+        // Rule 1: Check unavailable dates
+        if (!isStudentAvailable(student, slot)) {
+          return false
+        }
+        // Check incompatibility (existing)
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') {
           return false
         }
@@ -184,6 +304,19 @@ const buildAutoAssignments = (
           continue
         }
 
+        // Rule 3: Filter subjects based on subject slot requests
+        const viableSubjects = commonSubjects.filter((subject) =>
+          combo.every((student) => {
+            const requested = student.subjectSlots[subject] ?? 0
+            const allocated = countStudentSubjectLoad(nextAssignments, student.id, subject)
+            return allocated < requested
+          }),
+        )
+
+        if (viableSubjects.length === 0) {
+          continue
+        }
+
         const recommendScore = combo.reduce((score, student) => {
           return score + (constraintFor(data.constraints, teacher.id, student.id) === 'recommended' ? 30 : 0)
         }, 0)
@@ -192,8 +325,29 @@ const buildAutoAssignments = (
           return score + countStudentLoad(nextAssignments, student.id) * 8
         }, 0)
 
+        // Rule 3: Priority bonus based on student index (submission order)
+        const priorityBonus = combo.reduce((bonus, student) => {
+          const studentIndex = data.students.findIndex((s) => s.id === student.id)
+          return bonus + Math.max(0, 20 - studentIndex * 2)
+        }, 0)
+
+        // Rule 3: Bonus for unfulfilled subject requests
+        const unfulfillmentBonus = combo.reduce((bonus, student) => {
+          const totalRequested = Object.values(student.subjectSlots).reduce((sum, count) => sum + count, 0)
+          const totalAllocated = countStudentLoad(nextAssignments, student.id)
+          const fulfillmentRate = totalRequested > 0 ? totalAllocated / totalRequested : 1
+          return bonus + Math.max(0, Math.floor((1 - fulfillmentRate) * 10))
+        }, 0)
+
         const groupBonus = combo.length === 2 ? 5 : 0
-        const score = 100 + recommendScore + groupBonus - teacherLoad * 6 - studentLoadPenalty
+        const score =
+          100 +
+          recommendScore +
+          groupBonus +
+          priorityBonus +
+          unfulfillmentBonus -
+          teacherLoad * 6 -
+          studentLoadPenalty
 
         if (!bestPlan || score > bestPlan.score) {
           bestPlan = {
@@ -201,7 +355,7 @@ const buildAutoAssignments = (
             assignment: {
               teacherId: teacher.id,
               studentIds: combo.map((student) => student.id),
-              subject: commonSubjects[0],
+              subject: viableSubjects[0],
             },
           }
         }
@@ -254,11 +408,19 @@ const AdminPage = () => {
   const [studentName, setStudentName] = useState('')
   const [studentGrade, setStudentGrade] = useState('')
   const [studentSubjectsText, setStudentSubjectsText] = useState('')
+  const [studentSubjectSlotsText, setStudentSubjectSlotsText] = useState('')
+  const [studentUnavailableDatesText, setStudentUnavailableDatesText] = useState('')
   const [studentMemo, setStudentMemo] = useState('')
 
   const [constraintTeacherId, setConstraintTeacherId] = useState('')
   const [constraintStudentId, setConstraintStudentId] = useState('')
   const [constraintType, setConstraintType] = useState<ConstraintType>('incompatible')
+
+  const [regularTeacherId, setRegularTeacherId] = useState('')
+  const [regularStudentIds, setRegularStudentIds] = useState<string[]>([])
+  const [regularSubject, setRegularSubject] = useState('')
+  const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
+  const [regularSlotNumber, setRegularSlotNumber] = useState('')
 
   useEffect(() => {
     setAuthorized(false)
@@ -323,18 +485,45 @@ const AdminPage = () => {
     if (!studentName.trim()) {
       return
     }
+
+    // Parse subject slots (e.g., "数学:5, 英語:3")
+    const subjectSlots: Record<string, number> = {}
+    if (studentSubjectSlotsText.trim()) {
+      const pairs = studentSubjectSlotsText.split(/[、,]/).map((item) => item.trim())
+      for (const pair of pairs) {
+        const [subject, count] = pair.split(':').map((s) => s.trim())
+        if (subject && count) {
+          const num = Number.parseInt(count, 10)
+          if (!Number.isNaN(num) && num > 0) {
+            subjectSlots[subject] = num
+          }
+        }
+      }
+    }
+
+    // Parse unavailable dates (e.g., "2026-07-25, 2026-07-28" or line-separated)
+    const unavailableDates = studentUnavailableDatesText
+      .split(/[、,\n]/)
+      .map((item) => item.trim())
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+
     const student: Student = {
       id: createId(),
       name: studentName.trim(),
       grade: studentGrade.trim(),
       subjects: parseList(studentSubjectsText),
+      subjectSlots,
+      unavailableDates,
       memo: studentMemo.trim(),
+      submittedAt: Date.now(),
     }
 
     await update((current) => ({ ...current, students: [...current.students, student] }))
     setStudentName('')
     setStudentGrade('')
     setStudentSubjectsText('')
+    setStudentSubjectSlotsText('')
+    setStudentUnavailableDatesText('')
     setStudentMemo('')
   }
 
@@ -356,6 +545,41 @@ const AdminPage = () => {
       )
       return { ...current, constraints: [...filtered, newConstraint] }
     })
+  }
+
+  const addRegularLesson = async (): Promise<void> => {
+    if (
+      !regularTeacherId ||
+      regularStudentIds.length === 0 ||
+      !regularSubject ||
+      !regularDayOfWeek ||
+      !regularSlotNumber
+    ) {
+      return
+    }
+
+    const newLesson: RegularLesson = {
+      id: createId(),
+      teacherId: regularTeacherId,
+      studentIds: regularStudentIds,
+      subject: regularSubject,
+      dayOfWeek: Number.parseInt(regularDayOfWeek, 10),
+      slotNumber: Number.parseInt(regularSlotNumber, 10),
+    }
+
+    await update((current) => ({ ...current, regularLessons: [...current.regularLessons, newLesson] }))
+    setRegularTeacherId('')
+    setRegularStudentIds([])
+    setRegularSubject('')
+    setRegularDayOfWeek('')
+    setRegularSlotNumber('')
+  }
+
+  const removeRegularLesson = async (lessonId: string): Promise<void> => {
+    await update((current) => ({
+      ...current,
+      regularLessons: current.regularLessons.filter((lesson) => lesson.id !== lessonId),
+    }))
   }
 
   const applyAutoAssign = async (): Promise<void> => {
@@ -695,6 +919,16 @@ const AdminPage = () => {
                 placeholder="受講科目(カンマ区切り)"
               />
               <input
+                value={studentSubjectSlotsText}
+                onChange={(e) => setStudentSubjectSlotsText(e.target.value)}
+                placeholder="希望コマ数(例: 数学:5, 英語:3)"
+              />
+              <input
+                value={studentUnavailableDatesText}
+                onChange={(e) => setStudentUnavailableDatesText(e.target.value)}
+                placeholder="出席不可能日(例: 2026-07-25, 2026-07-28)"
+              />
+              <input
                 value={studentMemo}
                 onChange={(e) => setStudentMemo(e.target.value)}
                 placeholder="メモ"
@@ -709,6 +943,8 @@ const AdminPage = () => {
                   <th>名前</th>
                   <th>学年</th>
                   <th>科目</th>
+                  <th>希望コマ数</th>
+                  <th>不可日数</th>
                   <th>メモ</th>
                   <th>希望URL</th>
                 </tr>
@@ -719,6 +955,12 @@ const AdminPage = () => {
                     <td>{student.name}</td>
                     <td>{student.grade}</td>
                     <td>{student.subjects.join(', ')}</td>
+                    <td>
+                      {Object.entries(student.subjectSlots)
+                        .map(([subject, count]) => `${subject}:${count}`)
+                        .join(', ') || '-'}
+                    </td>
+                    <td>{student.unavailableDates.length}日</td>
                     <td>{student.memo}</td>
                     <td>
                       <Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link>
@@ -784,6 +1026,103 @@ const AdminPage = () => {
                     </td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="panel">
+            <h3>通常授業管理</h3>
+            <div className="row">
+              <select
+                value={regularTeacherId}
+                onChange={(e) => setRegularTeacherId(e.target.value)}
+              >
+                <option value="">先生を選択</option>
+                {data.teachers.map((teacher) => (
+                  <option key={teacher.id} value={teacher.id}>
+                    {teacher.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                multiple
+                value={regularStudentIds}
+                onChange={(e) => setRegularStudentIds(Array.from(e.target.selectedOptions, (option) => option.value))}
+                style={{ minHeight: '80px' }}
+              >
+                {data.students.map((student) => (
+                  <option key={student.id} value={student.id}>
+                    {student.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={regularSubject}
+                onChange={(e) => setRegularSubject(e.target.value)}
+                placeholder="科目"
+              />
+              <select
+                value={regularDayOfWeek}
+                onChange={(e) => setRegularDayOfWeek(e.target.value)}
+              >
+                <option value="">曜日を選択</option>
+                <option value="0">日曜</option>
+                <option value="1">月曜</option>
+                <option value="2">火曜</option>
+                <option value="3">水曜</option>
+                <option value="4">木曜</option>
+                <option value="5">金曜</option>
+                <option value="6">土曜</option>
+              </select>
+              <input
+                type="number"
+                value={regularSlotNumber}
+                onChange={(e) => setRegularSlotNumber(e.target.value)}
+                placeholder="時限番号"
+                min="1"
+              />
+              <button className="btn" type="button" onClick={() => void addRegularLesson()}>
+                追加
+              </button>
+            </div>
+            <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>先生</th>
+                  <th>生徒</th>
+                  <th>科目</th>
+                  <th>曜日</th>
+                  <th>時限</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.regularLessons.map((lesson) => {
+                  const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                  return (
+                    <tr key={lesson.id}>
+                      <td>{data.teachers.find((t) => t.id === lesson.teacherId)?.name ?? '-'}</td>
+                      <td>
+                        {lesson.studentIds
+                          .map((id) => data.students.find((s) => s.id === id)?.name ?? '-')
+                          .join(', ')}
+                      </td>
+                      <td>{lesson.subject}</td>
+                      <td>{dayNames[lesson.dayOfWeek]}曜</td>
+                      <td>{lesson.slotNumber}限</td>
+                      <td>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          onClick={() => void removeRegularLesson(lesson.id)}
+                        >
+                          削除
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
