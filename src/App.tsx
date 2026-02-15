@@ -75,6 +75,7 @@ const createTemplateSession = (): SessionData => {
       subjectSlots: { 数: 3, 英: 2 },
       unavailableDates: ['2026-07-23'],
       preferredSlots: [],
+      unavailableSlots: [],
       memo: '受験対策',
       submittedAt: Date.now() - 4000,
     },
@@ -86,6 +87,7 @@ const createTemplateSession = (): SessionData => {
       subjectSlots: { 英: 3 },
       unavailableDates: [],
       preferredSlots: [],
+      unavailableSlots: [],
       memo: '',
       submittedAt: Date.now() - 3000,
     },
@@ -97,6 +99,7 @@ const createTemplateSession = (): SessionData => {
       subjectSlots: { 数: 3 },
       unavailableDates: ['2026-07-22'],
       preferredSlots: [],
+      unavailableSlots: [],
       memo: '',
       submittedAt: Date.now() - 2000,
     },
@@ -108,6 +111,7 @@ const createTemplateSession = (): SessionData => {
       subjectSlots: { 英: 2, 数: 2 },
       unavailableDates: [],
       preferredSlots: [],
+      unavailableSlots: [],
       memo: '',
       submittedAt: Date.now() - 1000,
     },
@@ -288,6 +292,9 @@ const countStudentSubjectLoad = (
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
   // Unsubmitted students (submittedAt === 0) are treated as unavailable for all dates
   if (!student.submittedAt) return false
+  // Per-slot unavailability (new model)
+  if ((student.unavailableSlots ?? []).includes(slotKey)) return false
+  // Legacy: per-date unavailability (fallback for old data)
   const [date] = slotKey.split('_')
   return !student.unavailableDates.includes(date)
 }
@@ -585,11 +592,6 @@ const buildIncrementalAutoAssignments = (
           // Prefer students with fewer assigned dates (spread across days)
           const assignedDates = countStudentAssignedDates(result, st.id)
           studentScore -= assignedDates * 5
-
-          // Bonus for preferred slots (slot number match)
-          if ((st.preferredSlots ?? []).includes(String(currentSlotNum))) {
-            studentScore += 15
-          }
         }
 
         const score = 100 +
@@ -715,7 +717,7 @@ const HomePage = () => {
     if (!studentName.trim()) return
     const student: Student = {
       id: createId(), name: studentName.trim(), grade: studentGrade.trim(),
-      subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], memo: '', submittedAt: 0,
+      subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
     }
     await updateMaster((c) => ({ ...c, students: [...c.students, student] }))
     setStudentName(''); setStudentGrade('')
@@ -881,7 +883,7 @@ const HomePage = () => {
         if (!name) continue
         const grade = String(row?.[1] ?? '').trim()
         if (md.students.some((s) => s.name === name)) continue
-        importedStudents.push({ id: createId(), name, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], memo: '', submittedAt: 0 })
+        importedStudents.push({ id: createId(), name, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0 })
       }
     }
 
@@ -1043,7 +1045,7 @@ const HomePage = () => {
     if (masterData) {
       seed.teachers = masterData.teachers
       seed.students = masterData.students.map((s) => ({
-        ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], submittedAt: 0,
+        ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
       }))
       seed.constraints = masterData.constraints
       seed.gradeConstraints = masterData.gradeConstraints
@@ -1414,9 +1416,9 @@ const AdminPage = () => {
       const mergedStudents = master.students.map((ms) => {
         const existing = data.students.find((s) => s.id === ms.id)
         if (existing) {
-          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], submittedAt: existing.submittedAt }
+          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
         }
-        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], submittedAt: 0 }
+        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
       })
       // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
       const next: SessionData = {
@@ -1940,12 +1942,13 @@ const AdminPage = () => {
                             .filter(([, c]) => c > 0)
                             .map(([subj, c]) => `  ${subj}: ${c}コマ`)
                             .join('\n') || '  なし'
-                          const unavail = student.unavailableDates.length > 0
-                            ? student.unavailableDates.join(', ') : 'なし'
-                          const pref = (student.preferredSlots ?? []).length > 0
-                            ? (student.preferredSlots ?? []).map((s: string) => `${s}限`).join(', ') : 'なし'
+                          const unavailSlots = (student.unavailableSlots ?? [])
+                          const unavailCount = unavailSlots.length
+                          const unavailSummary = unavailCount > 0
+                            ? unavailSlots.map((sk: string) => slotLabel(sk)).join(', ')
+                            : 'なし'
                           const time = new Date(student.submittedAt).toLocaleString('ja-JP')
-                          alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可日: ${unavail}\n\n希望時限: ${pref}`)
+                          alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可コマ (${unavailCount}件): ${unavailSummary}`)
                         }}>
                           確認
                         </button>
@@ -2123,9 +2126,8 @@ const AdminPage = () => {
                                           if (student.id === assignment.studentIds[pos]) return true
                                           // Unsubmitted students are unavailable
                                           if (!student.submittedAt) return false
-                                          // Filter out students unavailable on this date
-                                          const date = slot.split('_')[0]
-                                          return !student.unavailableDates.includes(date)
+                                          // Filter out students unavailable for this specific slot
+                                          return isStudentAvailable(student, slot)
                                         })
                                         .map((student) => {
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
@@ -2226,30 +2228,6 @@ const getDatesInRange = (settings: SessionData['settings']): string[] => {
   }
 
   return dates
-}
-
-// Helper: Check if date has regular lesson for student
-const hasRegularLessonOnDate = (
-  date: string,
-  studentId: string,
-  regularLessons: RegularLesson[],
-): { hasLesson: boolean; lessonInfo?: string } => {
-  const dateObj = new Date(`${date}T00:00:00`)
-  const dayOfWeek = dateObj.getDay()
-
-  const lesson = regularLessons.find(
-    (lesson) => lesson.dayOfWeek === dayOfWeek && lesson.studentIds.includes(studentId),
-  )
-
-  if (lesson) {
-    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-    return {
-      hasLesson: true,
-      lessonInfo: `${lesson.subject} ${dayNames[dayOfWeek]}曜${lesson.slotNumber}限`,
-    }
-  }
-
-  return { hasLesson: false }
 }
 
 // Teacher Input Component
@@ -2399,31 +2377,57 @@ const StudentInputPage = ({
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
-  const [unavailableDates, setUnavailableDates] = useState<Set<string>>(
-    new Set(student.unavailableDates ?? []),
-  )
-  const [preferredSlots, setPreferredSlots] = useState<Set<string>>(
-    new Set(student.preferredSlots ?? []),
-  )
 
-  const toggleDate = (date: string) => {
-    const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
-
-    if (regularCheck.hasLesson && !unavailableDates.has(date)) {
-      const confirmed = window.confirm(
-        `この日は通常授業（${regularCheck.lessonInfo}）がありますが、出席不可としますか？`,
-      )
-      if (!confirmed) {
-        return
+  // Initialize unavailable slots from existing data (migrate from legacy unavailableDates if needed)
+  const [unavailableSlots, setUnavailableSlots] = useState<Set<string>>(() => {
+    const initial = new Set(student.unavailableSlots ?? [])
+    // Migrate legacy: if unavailableDates exist and unavailableSlots is empty, expand dates to all slots
+    if (initial.size === 0 && (student.unavailableDates ?? []).length > 0) {
+      for (const date of student.unavailableDates) {
+        for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+          initial.add(`${date}_${s}`)
+        }
       }
     }
+    return initial
+  })
 
-    setUnavailableDates((prev) => {
+  const toggleSlot = (slotKey: string) => {
+    // Check if this slot has a regular lesson
+    const [date, slotNumStr] = slotKey.split('_')
+    const slotNum = Number(slotNumStr)
+    const dateObj = new Date(`${date}T00:00:00`)
+    const dow = dateObj.getDay()
+    const hasRegular = data.regularLessons.some(
+      (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
+    )
+    if (hasRegular && !unavailableSlots.has(slotKey)) {
+      const confirmed = window.confirm(
+        `この時限には通常授業がありますが、出席不可としますか？`,
+      )
+      if (!confirmed) return
+    }
+
+    setUnavailableSlots((prev) => {
       const next = new Set(prev)
-      if (next.has(date)) {
-        next.delete(date)
+      if (next.has(slotKey)) {
+        next.delete(slotKey)
       } else {
-        next.add(date)
+        next.add(slotKey)
+      }
+      return next
+    })
+  }
+
+  const toggleDateAllSlots = (date: string) => {
+    const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+    const allMarked = allSlotKeys.every((sk) => unavailableSlots.has(sk))
+    setUnavailableSlots((prev) => {
+      const next = new Set(prev)
+      if (allMarked) {
+        for (const sk of allSlotKeys) next.delete(sk)
+      } else {
+        for (const sk of allSlotKeys) next.add(sk)
       }
       return next
     })
@@ -2441,14 +2445,25 @@ const StudentInputPage = ({
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
       .map(([subject]) => subject)
+    // Derive unavailableDates from unavailableSlots (dates where ALL slots are unavailable)
+    const dateSlotCounts = new Map<string, number>()
+    for (const sk of unavailableSlots) {
+      const d = sk.split('_')[0]
+      dateSlotCounts.set(d, (dateSlotCounts.get(d) ?? 0) + 1)
+    }
+    const derivedUnavailDates = [...dateSlotCounts.entries()]
+      .filter(([, count]) => count >= data.settings.slotsPerDay)
+      .map(([d]) => d)
+
     const updatedStudents = data.students.map((s) =>
       s.id === student.id
         ? {
             ...s,
             subjects,
             subjectSlots,
-            unavailableDates: Array.from(unavailableDates),
-            preferredSlots: Array.from(preferredSlots),
+            unavailableDates: derivedUnavailDates,
+            preferredSlots: [],
+            unavailableSlots: Array.from(unavailableSlots),
             submittedAt: Date.now(),
           }
         : s,
@@ -2532,55 +2547,60 @@ const StudentInputPage = ({
       </div>
 
       <div className="student-form-section">
-        <h3>希望時限 <span className="muted" style={{ fontWeight: 400, fontSize: '0.85em' }}>（任意・選択なしは全時限対象）</span></h3>
-        <div className="preferred-slots-buttons" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
-            const slotNum = String(i + 1)
-            const isOn = preferredSlots.has(slotNum)
-            return (
-              <button
-                key={slotNum}
-                className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
-                style={{ minWidth: '44px', padding: '6px 10px', fontSize: '14px' }}
-                onClick={() => {
-                  setPreferredSlots((prev) => {
-                    const next = new Set(prev)
-                    if (next.has(slotNum)) { next.delete(slotNum) } else { next.add(slotNum) }
-                    return next
-                  })
-                }}
-                type="button"
-              >
-                {i + 1}限{isOn ? ' ○' : ''}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="student-form-section">
-        <h3>出席不可日</h3>
-        <p className="muted">出席できない日をタップして選択してください。</p>
-        <div className="date-checkboxes">
-          {dates.map((date) => {
-            const isUnavailable = unavailableDates.has(date)
-            const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
-            return (
-              <div key={date} className="date-checkbox-item">
-                <button
-                  className={`date-checkbox-btn ${isUnavailable ? 'checked' : ''}`}
-                  onClick={() => toggleDate(date)}
-                  type="button"
-                >
-                  <span className="checkbox-icon">{isUnavailable ? '✓' : ''}</span>
-                  <span className="date-label">{formatShortDate(date)}</span>
-                  {regularCheck.hasLesson && (
-                    <span className="regular-lesson-badge">通常授業</span>
-                  )}
-                </button>
-              </div>
-            )
-          })}
+        <h3>出席不可コマ</h3>
+        <p className="muted">出席できないコマをタップして選択してください。日付をタップすると全時限を一括切替できます。</p>
+        <div className="teacher-table-wrapper">
+          <table className="teacher-table">
+            <thead>
+              <tr>
+                <th className="date-header">日付</th>
+                {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
+                  <th key={i}>{i + 1}限</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {dates.map((date) => {
+                const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+                const allMarked = allSlotKeys.every((sk) => unavailableSlots.has(sk))
+                return (
+                  <tr key={date}>
+                    <td
+                      className="date-cell"
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => toggleDateAllSlots(date)}
+                      title="全時限を一括切替"
+                    >
+                      <span style={{ fontWeight: allMarked ? 700 : 400, color: allMarked ? '#dc2626' : undefined }}>
+                        {formatShortDate(date)}
+                      </span>
+                    </td>
+                    {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+                      const slotNum = i + 1
+                      const slotKey = `${date}_${slotNum}`
+                      const isUnavail = unavailableSlots.has(slotKey)
+                      const dateObj = new Date(`${date}T00:00:00`)
+                      const dow = dateObj.getDay()
+                      const hasRegular = data.regularLessons.some(
+                        (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
+                      )
+                      return (
+                        <td key={slotNum}>
+                          <button
+                            className={`teacher-slot-btn ${isUnavail ? 'unavail' : ''} ${hasRegular && !isUnavail ? 'regular' : ''}`}
+                            onClick={() => toggleSlot(slotKey)}
+                            type="button"
+                          >
+                            {isUnavail ? '✕' : hasRegular ? '通' : ''}
+                          </button>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 

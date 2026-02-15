@@ -283,6 +283,13 @@
   cursor: default;
 }
 
+.teacher-slot-btn.unavail {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #dc2626;
+  font-weight: 700;
+}
+
 .teacher-slot-btn:active {
   transform: scale(0.95);
 }
