@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app'
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getFirestore,
@@ -79,6 +80,10 @@ export const saveSession = async (sessionId: string, data: SessionData): Promise
     },
   }
   await setDoc(sessionRef(sessionId), next)
+}
+
+export const deleteSession = async (sessionId: string): Promise<void> => {
+  await deleteDoc(sessionRef(sessionId))
 }
 
 // --- Master Data ---

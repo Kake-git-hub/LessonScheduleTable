@@ -90,8 +90,8 @@
 
 .grid-slots {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
 }
 
 .slot-card {
@@ -466,28 +466,6 @@
 }
 
 /* Save indicator */
-.save-toast {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  background: #16a34a;
-  color: #fff;
-  padding: 10px 20px;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  z-index: 9999;
-  animation: fadeInOut 2s ease forwards;
-  pointer-events: none;
-}
-
-@keyframes fadeInOut {
-  0% { opacity: 0; transform: translateY(10px); }
-  15% { opacity: 1; transform: translateY(0); }
-  70% { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-10px); }
-}
-
 /* Subject slot badges */
 .subject-slot-entries {
   display: flex;

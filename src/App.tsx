@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import './App.css'
-import { loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { deleteSession, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -213,6 +213,8 @@ const countStudentSubjectLoad = (
   ).length
 
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
+  // Unsubmitted students (submittedAt === 0) are treated as unavailable for all dates
+  if (!student.submittedAt) return false
   const [date] = slotKey.split('_')
   return !student.unavailableDates.includes(date)
 }
@@ -826,6 +828,18 @@ const HomePage = () => {
     navigate(`/admin/${sessionId}`)
   }
 
+  const handleDeleteSession = async (sessionId: string, sessionName: string): Promise<void> => {
+    const confirmed = window.confirm(`セッション「${sessionName || sessionId}」を削除しますか？\nこの操作は元に戻せません。`)
+    if (!confirmed) return
+    const password = window.prompt('削除パスワードを入力してください:')
+    if (password !== adminPassword) {
+      alert('パスワードが正しくありません。')
+      return
+    }
+    await deleteSession(sessionId)
+    alert('セッションを削除しました。')
+  }
+
   const formatDate = (ms: number): string => {
     if (!ms) return '-'
     const d = new Date(ms)
@@ -872,12 +886,13 @@ const HomePage = () => {
                 <button className="btn secondary" type="button" onClick={() => setUnlocked(false)}>ロック</button>
               </div>
               <table className="table">
-                <thead><tr><th>セッションID</th><th>名称</th><th>作成</th><th>更新</th><th /></tr></thead>
+                <thead><tr><th>セッションID</th><th>名称</th><th>作成</th><th>更新</th><th /><th /></tr></thead>
                 <tbody>
                   {sessions.map((s) => (
                     <tr key={s.id}>
                       <td>{s.id}</td><td>{s.name}</td><td>{formatDate(s.createdAt)}</td><td>{formatDate(s.updatedAt)}</td>
                       <td><button className="btn" type="button" onClick={() => openAdmin(s.id)}>管理</button></td>
+                      <td><button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDeleteSession(s.id, s.name)}>削除</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1078,7 +1093,6 @@ const AdminPage = () => {
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
-  const [saveToast, setSaveToast] = useState(false)
   const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
 
   const copyUrl = async (path: string): Promise<void> => {
@@ -1090,13 +1104,6 @@ const AdminPage = () => {
     } catch {
       window.prompt('URLをコピーしてください:', url)
     }
-  }
-
-  const handleSaveSession = async (): Promise<void> => {
-    if (!data) return
-    await saveSession(sessionId, data)
-    setSaveToast(true)
-    setTimeout(() => setSaveToast(false), 2000)
   }
 
   useEffect(() => {
@@ -1497,7 +1504,7 @@ const AdminPage = () => {
                 )
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
-                自動提案(未割当)
+                自動提案
               </button>
               {lastChangeLog.length > 0 && (
                 <button className="btn" type="button" onClick={downloadChangeLog}>
@@ -1535,12 +1542,18 @@ const AdminPage = () => {
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
                             >
                               <option value="">先生を選択</option>
-                              {data.teachers.map((teacher) => {
-                                const available = hasAvailability(data.availability, 'teacher', teacher.id, slot)
+                              {data.teachers
+                                .filter((teacher) => {
+                                  // Always show currently assigned teacher
+                                  if (teacher.id === assignment.teacherId) return true
+                                  // Only show teachers who have availability for this slot
+                                  return hasAvailability(data.availability, 'teacher', teacher.id, slot)
+                                })
+                                .map((teacher) => {
                                 const usedElsewhere = usedTeacherIds.has(teacher.id) && teacher.id !== assignment.teacherId
                                 return (
-                                  <option key={teacher.id} value={teacher.id} disabled={!available || usedElsewhere}>
-                                    {teacher.name} {!available ? '(希望なし)' : usedElsewhere ? '(割当済)' : ''}
+                                  <option key={teacher.id} value={teacher.id} disabled={usedElsewhere}>
+                                    {teacher.name}{usedElsewhere ? ' (割当済)' : ''}
                                   </option>
                                 )
                               })}
@@ -1595,12 +1608,13 @@ const AdminPage = () => {
                                         .filter((student) => {
                                           // Always show currently assigned student
                                           if (student.id === assignment.studentIds[pos]) return true
+                                          // Unsubmitted students are unavailable
+                                          if (!student.submittedAt) return false
                                           // Filter out students unavailable on this date
                                           const date = slot.split('_')[0]
                                           return !student.unavailableDates.includes(date)
                                         })
                                         .map((student) => {
-                                        const available = hasAvailability(data.availability, 'student', student.id, slot)
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
                                         const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
                                         const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
@@ -1617,7 +1631,7 @@ const AdminPage = () => {
                                           })
                                           .join(' ')
                                         const tagLabel = isIncompatible ? ' ⚠不可' : isRecommended ? ' ★推奨' : ''
-                                        const statusLabel = !available ? ' (希望なし)' : usedInOther ? ' (他ペア)' : ''
+                                        const statusLabel = usedInOther ? ' (他ペア)' : ''
 
                                         return (
                                           <option key={student.id} value={student.id} disabled={disabled}>
@@ -1675,14 +1689,6 @@ const AdminPage = () => {
             </div>
           </div>
         </>
-      )}
-      {saveToast && <div className="save-toast">保存しました</div>}
-      {authorized && data && (
-        <div style={{ position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 9998 }}>
-          <button className="btn" type="button" style={{ padding: '10px 24px', fontSize: '16px' }} onClick={() => void handleSaveSession()}>
-            一時保存
-          </button>
-        </div>
       )}
     </div>
   )
