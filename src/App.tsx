@@ -193,6 +193,15 @@ const countStudentSubjectLoad = (
     (a) => a.studentIds.includes(studentId) && a.subject === subject,
   ).length
 
+const getTotalRemainingSlots = (
+  assignments: Record<string, Assignment[]>,
+  student: Student,
+): number =>
+  Object.entries(student.subjectSlots).reduce((sum, [subject, desired]) => {
+    const assigned = countStudentSubjectLoad(assignments, student.id, subject)
+    return sum + Math.max(0, desired - assigned)
+  }, 0)
+
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
   const [date] = slotKey.split('_')
   return !student.unavailableDates.includes(date)
@@ -638,7 +647,7 @@ const AdminPage = () => {
     })
   }
 
-  const toggleSlotStudent = async (slot: string, idx: number, studentId: string): Promise<void> => {
+  const setSlotStudent = async (slot: string, idx: number, position: number, studentId: string): Promise<void> => {
     await update((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const assignment = slotAssignments[idx]
@@ -646,14 +655,13 @@ const AdminPage = () => {
         return current
       }
 
-      const already = assignment.studentIds.includes(studentId)
-      let studentIds = already
-        ? assignment.studentIds.filter((id) => id !== studentId)
-        : [...assignment.studentIds, studentId]
-
-      if (studentIds.length > 2) {
-        studentIds = studentIds.slice(0, 2)
+      const prevIds = [...assignment.studentIds]
+      if (studentId === '') {
+        prevIds.splice(position, 1)
+      } else {
+        prevIds[position] = studentId
       }
+      const studentIds = prevIds.filter(Boolean)
 
       const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
       const commonSubjects = (teacher?.subjects ?? []).filter((subject) =>
@@ -1205,36 +1213,34 @@ const AdminPage = () => {
                                   ))}
                                 </select>
 
-                                {data.students.map((student) => {
-                                  const available = hasAvailability(data.availability, 'student', student.id, slot)
-                                  const tag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                                  const usedInOther = slotAssignments.some(
-                                    (a, i) => i !== idx && a.studentIds.includes(student.id),
-                                  )
-                                  const disabled =
-                                    !available ||
-                                    tag === 'incompatible' ||
-                                    usedInOther ||
-                                    (!assignment.studentIds.includes(student.id) && assignment.studentIds.length >= 2)
-                                  const checked = assignment.studentIds.includes(student.id)
-
+                                {[0, 1].map((pos) => {
+                                  const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
                                   return (
-                                    <label className="row" key={student.id}>
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        disabled={disabled}
-                                        onChange={() => void toggleSlotStudent(slot, idx, student.id)}
-                                      />
-                                      <span>{student.name}</span>
-                                      {tag === 'incompatible' ? (
-                                        <span className="badge warn">不可</span>
-                                      ) : tag === 'recommended' ? (
-                                        <span className="badge rec">推奨</span>
-                                      ) : null}
-                                      {!available ? <span className="muted">希望なし</span> : null}
-                                      {usedInOther ? <span className="muted">他ペア</span> : null}
-                                    </label>
+                                    <select
+                                      key={pos}
+                                      value={assignment.studentIds[pos] ?? ''}
+                                      onChange={(e) => void setSlotStudent(slot, idx, pos, e.target.value)}
+                                    >
+                                      <option value="">{`生徒${pos + 1}を選択`}</option>
+                                      {data.students.map((student) => {
+                                        const available = hasAvailability(data.availability, 'student', student.id, slot)
+                                        const tag = constraintFor(data.constraints, assignment.teacherId, student.id)
+                                        const usedInOther = slotAssignments.some(
+                                          (a, i) => i !== idx && a.studentIds.includes(student.id),
+                                        )
+                                        const isOtherInPair = student.id === otherStudentId
+                                        const disabled = !available || tag === 'incompatible' || usedInOther || isOtherInPair
+                                        const remaining = getTotalRemainingSlots(data.assignments, student)
+                                        const tagLabel = tag === 'incompatible' ? ' [不可]' : tag === 'recommended' ? ' [推奨]' : ''
+                                        const statusLabel = !available ? ' (希望なし)' : usedInOther ? ' (他ペア)' : ''
+
+                                        return (
+                                          <option key={student.id} value={student.id} disabled={disabled}>
+                                            {student.name} 残{remaining}コマ{tagLabel}{statusLabel}
+                                          </option>
+                                        )
+                                      })}
+                                    </select>
                                   )
                                 })}
                               </>
