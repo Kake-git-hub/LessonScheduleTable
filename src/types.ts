@@ -60,6 +60,6 @@ export type SessionData = {
   students: Student[]
   constraints: PairConstraint[]
   availability: Record<string, string[]>
-  assignments: Record<string, Assignment>
+  assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
 }

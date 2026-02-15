@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom'
+import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import './App.css'
 import { saveSession, watchSession } from './firebase'
 import type {
@@ -46,17 +46,16 @@ const createTemplateSession = (): SessionData => {
     name: '夏期講習テンプレート',
     adminPassword: 'admin1234',
     startDate: '2026-07-21',
-    endDate: '2026-07-25',
-    slotsPerDay: 5,
+    endDate: '2026-07-23',
+    slotsPerDay: 3,
     holidays: [],
   }
 
-  const subjects = ['数学', '英語', '国語', '理科']
+  const subjects = ['数学', '英語']
 
   const teachers: Teacher[] = [
-    { id: 't001', name: '田中先生', subjects: ['数学', '理科'], memo: '中3理系担当' },
-    { id: 't002', name: '佐藤先生', subjects: ['英語', '国語'], memo: '文系担当' },
-    { id: 't003', name: '鈴木先生', subjects: ['数学', '英語'], memo: '高1〜高2担当' },
+    { id: 't001', name: '田中先生', subjects: ['数学', '英語'], memo: '数学メイン' },
+    { id: 't002', name: '佐藤先生', subjects: ['英語', '数学'], memo: '英語メイン' },
   ]
 
   const students: Student[] = [
@@ -65,8 +64,8 @@ const createTemplateSession = (): SessionData => {
       name: '青木 太郎',
       grade: '中3',
       subjects: ['数学', '英語'],
-      subjectSlots: { 数学: 5, 英語: 3 },
-      unavailableDates: ['2026-07-25'],
+      subjectSlots: { 数学: 3, 英語: 2 },
+      unavailableDates: ['2026-07-23'],
       memo: '受験対策',
       submittedAt: Date.now() - 4000,
     },
@@ -74,8 +73,8 @@ const createTemplateSession = (): SessionData => {
       id: 's002',
       name: '伊藤 花',
       grade: '中2',
-      subjects: ['英語', '国語'],
-      subjectSlots: { 英語: 4, 国語: 2 },
+      subjects: ['英語'],
+      subjectSlots: { 英語: 3 },
       unavailableDates: [],
       memo: '',
       submittedAt: Date.now() - 3000,
@@ -84,8 +83,8 @@ const createTemplateSession = (): SessionData => {
       id: 's003',
       name: '上田 陽介',
       grade: '高1',
-      subjects: ['数学', '理科'],
-      subjectSlots: { 数学: 3, 理科: 3 },
+      subjects: ['数学'],
+      subjectSlots: { 数学: 3 },
       unavailableDates: ['2026-07-22'],
       memo: '',
       submittedAt: Date.now() - 2000,
@@ -95,41 +94,27 @@ const createTemplateSession = (): SessionData => {
       name: '岡本 美咲',
       grade: '高2',
       subjects: ['英語', '数学'],
-      subjectSlots: { 英語: 4, 数学: 4 },
+      subjectSlots: { 英語: 2, 数学: 2 },
       unavailableDates: [],
       memo: '',
       submittedAt: Date.now() - 1000,
-    },
-    {
-      id: 's005',
-      name: '加藤 駿',
-      grade: '中3',
-      subjects: ['国語', '英語'],
-      subjectSlots: { 国語: 3, 英語: 2 },
-      unavailableDates: [],
-      memo: '',
-      submittedAt: Date.now(),
     },
   ]
 
   const constraints: PairConstraint[] = [
     { id: 'c001', teacherId: 't001', studentId: 's002', type: 'incompatible' },
-    { id: 'c002', teacherId: 't002', studentId: 's003', type: 'incompatible' },
-    { id: 'c003', teacherId: 't001', studentId: 's003', type: 'recommended' },
-    { id: 'c004', teacherId: 't002', studentId: 's005', type: 'recommended' },
-    { id: 'c005', teacherId: 't003', studentId: 's004', type: 'recommended' },
+    { id: 'c002', teacherId: 't001', studentId: 's003', type: 'recommended' },
+    { id: 'c003', teacherId: 't002', studentId: 's004', type: 'recommended' },
   ]
 
   const slotKeys = buildSlotKeys(settings)
   const availability: SessionData['availability'] = {
     [personKey('teacher', 't001')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
-    [personKey('teacher', 't002')]: slotKeys.filter((slot) => /_(2|3|4)$/.test(slot)),
-    [personKey('teacher', 't003')]: slotKeys.filter((slot) => /_(3|4|5)$/.test(slot)),
-    [personKey('student', 's001')]: slotKeys.filter((slot) => /_(1|2|4)$/.test(slot)),
-    [personKey('student', 's002')]: slotKeys.filter((slot) => /_(2|3|5)$/.test(slot)),
-    [personKey('student', 's003')]: slotKeys.filter((slot) => /_(1|3|4)$/.test(slot)),
-    [personKey('student', 's004')]: slotKeys.filter((slot) => /_(2|4|5)$/.test(slot)),
-    [personKey('student', 's005')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
+    [personKey('teacher', 't002')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
+    [personKey('student', 's001')]: slotKeys.filter((slot) => /_(1|2)$/.test(slot)),
+    [personKey('student', 's002')]: slotKeys.filter((slot) => /_(2|3)$/.test(slot)),
+    [personKey('student', 's003')]: slotKeys.filter((slot) => /_(1|3)$/.test(slot)),
+    [personKey('student', 's004')]: slotKeys.filter((slot) => /_(1|2|3)$/.test(slot)),
   }
 
   const regularLessons: RegularLesson[] = [
@@ -140,14 +125,6 @@ const createTemplateSession = (): SessionData => {
       subject: '数学',
       dayOfWeek: 1,
       slotNumber: 1,
-    },
-    {
-      id: 'r002',
-      teacherId: 't002',
-      studentIds: ['s002', 's005'],
-      subject: '国語',
-      dayOfWeek: 3,
-      slotNumber: 2,
     },
   ]
 
@@ -198,19 +175,22 @@ const hasAvailability = (
   return (availability[key] ?? []).includes(slotKeyValue)
 }
 
-const countTeacherLoad = (assignments: Record<string, Assignment>, teacherId: string): number =>
-  Object.values(assignments).filter((assignment) => assignment.teacherId === teacherId).length
+const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[] =>
+  Object.values(assignments).flat()
 
-const countStudentLoad = (assignments: Record<string, Assignment>, studentId: string): number =>
-  Object.values(assignments).filter((assignment) => assignment.studentIds.includes(studentId)).length
+const countTeacherLoad = (assignments: Record<string, Assignment[]>, teacherId: string): number =>
+  allAssignments(assignments).filter((a) => a.teacherId === teacherId).length
+
+const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
+  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId)).length
 
 const countStudentSubjectLoad = (
-  assignments: Record<string, Assignment>,
+  assignments: Record<string, Assignment[]>,
   studentId: string,
   subject: string,
 ): number =>
-  Object.values(assignments).filter(
-    (assignment) => assignment.studentIds.includes(studentId) && assignment.subject === subject,
+  allAssignments(assignments).filter(
+    (a) => a.studentIds.includes(studentId) && a.subject === subject,
   ).length
 
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
@@ -244,52 +224,51 @@ const buildAutoAssignments = (
   data: SessionData,
   slots: string[],
   onlyEmpty: boolean,
-): Record<string, Assignment> => {
-  const nextAssignments: Record<string, Assignment> = onlyEmpty ? { ...data.assignments } : {}
+): Record<string, Assignment[]> => {
+  const nextAssignments: Record<string, Assignment[]> = onlyEmpty
+    ? Object.fromEntries(Object.entries(data.assignments).map(([k, v]) => [k, [...v]]))
+    : {}
 
   for (const slot of slots) {
-    if (onlyEmpty && nextAssignments[slot]) {
+    if (onlyEmpty && nextAssignments[slot] && nextAssignments[slot].length > 0) {
       continue
     }
 
     // Rule 2: Check if there's a regular lesson for this slot
     const regularLesson = findRegularLessonForSlot(data.regularLessons, slot)
     if (regularLesson) {
-      nextAssignments[slot] = {
-        teacherId: regularLesson.teacherId,
-        studentIds: regularLesson.studentIds,
-        subject: regularLesson.subject,
-      }
+      nextAssignments[slot] = [
+        {
+          teacherId: regularLesson.teacherId,
+          studentIds: regularLesson.studentIds,
+          subject: regularLesson.subject,
+        },
+      ]
       continue
     }
 
-    let bestPlan: { score: number; assignment: Assignment } | null = null
+    const slotAssignments: Assignment[] = []
+    const usedTeacherIds = new Set<string>()
+    const usedStudentIds = new Set<string>()
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
     )
 
     for (const teacher of teachers) {
+      if (usedTeacherIds.has(teacher.id)) continue
+
       const candidates = data.students.filter((student) => {
-        // Check teacher availability (existing)
-        if (!hasAvailability(data.availability, 'student', student.id, slot)) {
-          return false
-        }
-        // Rule 1: Check unavailable dates
-        if (!isStudentAvailable(student, slot)) {
-          return false
-        }
-        // Check incompatibility (existing)
-        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') {
-          return false
-        }
+        if (usedStudentIds.has(student.id)) return false
+        if (!hasAvailability(data.availability, 'student', student.id, slot)) return false
+        if (!isStudentAvailable(student, slot)) return false
+        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         return teacher.subjects.some((subject) => student.subjects.includes(subject))
       })
 
-      if (candidates.length === 0) {
-        continue
-      }
+      if (candidates.length === 0) continue
 
+      let bestPlan: { score: number; assignment: Assignment } | null = null
       const teacherLoad = countTeacherLoad(nextAssignments, teacher.id)
       const oneStudentCombos = candidates.map((student) => [student])
       const twoStudentCombos = candidates.flatMap((left, index) =>
@@ -302,11 +281,8 @@ const buildAutoAssignments = (
           combo.every((student) => student.subjects.includes(subject)),
         )
 
-        if (commonSubjects.length === 0) {
-          continue
-        }
+        if (commonSubjects.length === 0) continue
 
-        // Rule 3: Filter subjects based on subject slot requests
         const viableSubjects = commonSubjects.filter((subject) =>
           combo.every((student) => {
             const requested = student.subjectSlots[subject] ?? 0
@@ -315,9 +291,7 @@ const buildAutoAssignments = (
           }),
         )
 
-        if (viableSubjects.length === 0) {
-          continue
-        }
+        if (viableSubjects.length === 0) continue
 
         const recommendScore = combo.reduce((score, student) => {
           return score + (constraintFor(data.constraints, teacher.id, student.id) === 'recommended' ? 30 : 0)
@@ -327,13 +301,11 @@ const buildAutoAssignments = (
           return score + countStudentLoad(nextAssignments, student.id) * 8
         }, 0)
 
-        // Rule 3: Priority bonus based on student index (submission order)
         const priorityBonus = combo.reduce((bonus, student) => {
           const studentIndex = data.students.findIndex((s) => s.id === student.id)
           return bonus + Math.max(0, 20 - studentIndex * 2)
         }, 0)
 
-        // Rule 3: Bonus for unfulfilled subject requests
         const unfulfillmentBonus = combo.reduce((bonus, student) => {
           const totalRequested = Object.values(student.subjectSlots).reduce((sum, count) => sum + count, 0)
           const totalAllocated = countStudentLoad(nextAssignments, student.id)
@@ -362,10 +334,18 @@ const buildAutoAssignments = (
           }
         }
       }
+
+      if (bestPlan) {
+        slotAssignments.push(bestPlan.assignment)
+        usedTeacherIds.add(teacher.id)
+        for (const sid of bestPlan.assignment.studentIds) {
+          usedStudentIds.add(sid)
+        }
+      }
     }
 
-    if (bestPlan) {
-      nextAssignments[slot] = bestPlan.assignment
+    if (slotAssignments.length > 0) {
+      nextAssignments[slot] = slotAssignments
     }
   }
 
@@ -404,9 +384,11 @@ const HomePage = () => {
 
 const AdminPage = () => {
   const { sessionId = 'main' } = useParams()
+  const location = useLocation()
+  const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
   const [passwordInput, setPasswordInput] = useState('')
-  const [authorized, setAuthorized] = useState(import.meta.env.DEV)
+  const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
 
   const [subjectInput, setSubjectInput] = useState('')
   const [teacherName, setTeacherName] = useState('')
@@ -431,9 +413,9 @@ const AdminPage = () => {
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
 
   useEffect(() => {
-    setAuthorized(import.meta.env.DEV)
+    setAuthorized(import.meta.env.DEV || skipAuth)
     setPasswordInput('')
-  }, [sessionId])
+  }, [sessionId, skipAuth])
 
   const slotKeys = useMemo(() => (data ? buildSlotKeys(data.settings) : []), [data])
 
@@ -611,38 +593,55 @@ const AdminPage = () => {
     await persist(next)
   }
 
-  const setSlotTeacher = async (slot: string, teacherId: string): Promise<void> => {
+  const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
     await update((current) => {
-      const prev = current.assignments[slot]
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
       if (!teacherId) {
+        slotAssignments.splice(idx, 1)
         const nextAssignments = { ...current.assignments }
-        delete nextAssignments[slot]
+        if (slotAssignments.length === 0) {
+          delete nextAssignments[slot]
+        } else {
+          nextAssignments[slot] = slotAssignments
+        }
         return { ...current, assignments: nextAssignments }
       }
 
+      const prev = slotAssignments[idx]
       const currentTeacher = current.teachers.find((item) => item.id === teacherId)
       const nextSubject =
         prev?.subject && currentTeacher?.subjects.includes(prev.subject)
           ? prev.subject
           : (currentTeacher?.subjects[0] ?? '')
 
+      slotAssignments[idx] = {
+        teacherId,
+        studentIds: prev?.teacherId === teacherId ? prev.studentIds : [],
+        subject: nextSubject,
+      }
+
       return {
         ...current,
-        assignments: {
-          ...current.assignments,
-          [slot]: {
-            teacherId,
-            studentIds: prev?.teacherId === teacherId ? prev.studentIds : [],
-            subject: nextSubject,
-          },
-        },
+        assignments: { ...current.assignments, [slot]: slotAssignments },
       }
     })
   }
 
-  const toggleSlotStudent = async (slot: string, studentId: string): Promise<void> => {
+  const addSlotAssignment = async (slot: string): Promise<void> => {
     await update((current) => {
-      const assignment = current.assignments[slot]
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
+      slotAssignments.push({ teacherId: '', studentIds: [], subject: '' })
+      return {
+        ...current,
+        assignments: { ...current.assignments, [slot]: slotAssignments },
+      }
+    })
+  }
+
+  const toggleSlotStudent = async (slot: string, idx: number, studentId: string): Promise<void> => {
+    await update((current) => {
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
+      const assignment = slotAssignments[idx]
       if (!assignment) {
         return current
       }
@@ -661,34 +660,32 @@ const AdminPage = () => {
         studentIds.every((id) => current.students.find((student) => student.id === id)?.subjects.includes(subject)),
       )
 
+      slotAssignments[idx] = {
+        ...assignment,
+        studentIds,
+        subject: commonSubjects.includes(assignment.subject)
+          ? assignment.subject
+          : (commonSubjects[0] ?? assignment.subject),
+      }
+
       return {
         ...current,
-        assignments: {
-          ...current.assignments,
-          [slot]: {
-            ...assignment,
-            studentIds,
-            subject: commonSubjects.includes(assignment.subject)
-              ? assignment.subject
-              : (commonSubjects[0] ?? assignment.subject),
-          },
-        },
+        assignments: { ...current.assignments, [slot]: slotAssignments },
       }
     })
   }
 
-  const setSlotSubject = async (slot: string, subject: string): Promise<void> => {
+  const setSlotSubject = async (slot: string, idx: number, subject: string): Promise<void> => {
     await update((current) => {
-      const assignment = current.assignments[slot]
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
+      const assignment = slotAssignments[idx]
       if (!assignment) {
         return current
       }
+      slotAssignments[idx] = { ...assignment, subject }
       return {
         ...current,
-        assignments: {
-          ...current.assignments,
-          [slot]: { ...assignment, subject },
-        },
+        assignments: { ...current.assignments, [slot]: slotAssignments },
       }
     })
   }
@@ -1154,83 +1151,115 @@ const AdminPage = () => {
                 テストデータで自動提案
               </button>
             </div>
-            <p className="muted">不可ペアは選択不可。推奨ペアを優先。先生1人 + 生徒1〜2人。</p>
+            <p className="muted">不可ペアは選択不可。推奨ペアを優先。先生1人 + 生徒1〜2人。同じコマに複数ペア可。</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
-                const assignment = data.assignments[slot]
-                const selectedTeacher = data.teachers.find((teacher) => teacher.id === assignment?.teacherId)
-                const selectedStudents = data.students.filter((student) =>
-                  assignment?.studentIds.includes(student.id),
-                )
-                const subjectOptions = selectedTeacher
-                  ? selectedTeacher.subjects.filter((subject) =>
-                      selectedStudents.length === 0
-                        ? true
-                        : selectedStudents.every((student) => student.subjects.includes(subject)),
-                    )
-                  : []
+                const slotAssignments = data.assignments[slot] ?? []
+                const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
 
                 return (
                   <div className="slot-card" key={slot}>
                     <div className="slot-title">{slotLabel(slot)}</div>
                     <div className="list">
-                      <select
-                        value={assignment?.teacherId ?? ''}
-                        onChange={(e) => void setSlotTeacher(slot, e.target.value)}
-                      >
-                        <option value="">先生を選択</option>
-                        {data.teachers.map((teacher) => {
-                          const available = hasAvailability(data.availability, 'teacher', teacher.id, slot)
-                          return (
-                            <option key={teacher.id} value={teacher.id} disabled={!available}>
-                              {teacher.name} {available ? '' : '(希望なし)'}
-                            </option>
-                          )
-                        })}
-                      </select>
-
-                      {assignment && (
-                        <>
-                          <select
-                            value={assignment.subject}
-                            onChange={(e) => void setSlotSubject(slot, e.target.value)}
-                          >
-                            {subjectOptions.map((subject) => (
-                              <option key={subject} value={subject}>
-                                {subject}
-                              </option>
-                            ))}
-                          </select>
-
-                          {data.students.map((student) => {
-                            const available = hasAvailability(data.availability, 'student', student.id, slot)
-                            const tag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                            const disabled =
-                              !available ||
-                              tag === 'incompatible' ||
-                              (!assignment.studentIds.includes(student.id) && assignment.studentIds.length >= 2)
-                            const checked = assignment.studentIds.includes(student.id)
-
-                            return (
-                              <label className="row" key={student.id}>
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={disabled}
-                                  onChange={() => void toggleSlotStudent(slot, student.id)}
-                                />
-                                <span>{student.name}</span>
-                                {tag === 'incompatible' ? (
-                                  <span className="badge warn">不可</span>
-                                ) : tag === 'recommended' ? (
-                                  <span className="badge rec">推奨</span>
-                                ) : null}
-                                {!available ? <span className="muted">希望なし</span> : null}
-                              </label>
+                      {slotAssignments.map((assignment, idx) => {
+                        const selectedTeacher = data.teachers.find((t) => t.id === assignment.teacherId)
+                        const selectedStudents = data.students.filter((s) =>
+                          assignment.studentIds.includes(s.id),
+                        )
+                        const subjectOptions = selectedTeacher
+                          ? selectedTeacher.subjects.filter((subject) =>
+                              selectedStudents.length === 0
+                                ? true
+                                : selectedStudents.every((s) => s.subjects.includes(subject)),
                             )
-                          })}
-                        </>
-                      )}
+                          : []
+
+                        return (
+                          <div key={idx} className="assignment-block">
+                            <select
+                              value={assignment.teacherId}
+                              onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
+                            >
+                              <option value="">先生を選択</option>
+                              {data.teachers.map((teacher) => {
+                                const available = hasAvailability(data.availability, 'teacher', teacher.id, slot)
+                                const usedElsewhere = usedTeacherIds.has(teacher.id) && teacher.id !== assignment.teacherId
+                                return (
+                                  <option key={teacher.id} value={teacher.id} disabled={!available || usedElsewhere}>
+                                    {teacher.name} {!available ? '(希望なし)' : usedElsewhere ? '(割当済)' : ''}
+                                  </option>
+                                )
+                              })}
+                            </select>
+
+                            {assignment.teacherId && (
+                              <>
+                                <select
+                                  value={assignment.subject}
+                                  onChange={(e) => void setSlotSubject(slot, idx, e.target.value)}
+                                >
+                                  {subjectOptions.map((subject) => (
+                                    <option key={subject} value={subject}>
+                                      {subject}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                {data.students.map((student) => {
+                                  const available = hasAvailability(data.availability, 'student', student.id, slot)
+                                  const tag = constraintFor(data.constraints, assignment.teacherId, student.id)
+                                  const usedInOther = slotAssignments.some(
+                                    (a, i) => i !== idx && a.studentIds.includes(student.id),
+                                  )
+                                  const disabled =
+                                    !available ||
+                                    tag === 'incompatible' ||
+                                    usedInOther ||
+                                    (!assignment.studentIds.includes(student.id) && assignment.studentIds.length >= 2)
+                                  const checked = assignment.studentIds.includes(student.id)
+
+                                  return (
+                                    <label className="row" key={student.id}>
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={disabled}
+                                        onChange={() => void toggleSlotStudent(slot, idx, student.id)}
+                                      />
+                                      <span>{student.name}</span>
+                                      {tag === 'incompatible' ? (
+                                        <span className="badge warn">不可</span>
+                                      ) : tag === 'recommended' ? (
+                                        <span className="badge rec">推奨</span>
+                                      ) : null}
+                                      {!available ? <span className="muted">希望なし</span> : null}
+                                      {usedInOther ? <span className="muted">他ペア</span> : null}
+                                    </label>
+                                  )
+                                })}
+                              </>
+                            )}
+                            {slotAssignments.length > 1 && (
+                              <button
+                                className="btn secondary"
+                                type="button"
+                                style={{ fontSize: '0.8em', marginTop: '4px' }}
+                                onClick={() => void setSlotTeacher(slot, idx, '')}
+                              >
+                                このペアを削除
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        style={{ fontSize: '0.8em', marginTop: '4px' }}
+                        onClick={() => void addSlotAssignment(slot)}
+                      >
+                        ＋ ペア追加
+                      </button>
                     </div>
                   </div>
                 )
@@ -1409,6 +1438,9 @@ const StudentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(
+    new Set(student.subjects ?? []),
+  )
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -1416,6 +1448,18 @@ const StudentInputPage = ({
     new Set(student.unavailableDates ?? []),
   )
   const [submitting, setSubmitting] = useState(false)
+
+  const toggleSubject = (subject: string) => {
+    setSelectedSubjects((prev) => {
+      const next = new Set(prev)
+      if (next.has(subject)) {
+        next.delete(subject)
+      } else {
+        next.add(subject)
+      }
+      return next
+    })
+  }
 
   const toggleDate = (date: string) => {
     const regularCheck = hasRegularLessonOnDate(date, student.id, data.regularLessons)
@@ -1450,10 +1494,12 @@ const StudentInputPage = ({
 
   const handleSubmit = () => {
     setSubmitting(true)
+    const subjects = Array.from(selectedSubjects)
     const updatedStudents = data.students.map((s) =>
       s.id === student.id
         ? {
             ...s,
+            subjects,
             subjectSlots,
             unavailableDates: Array.from(unavailableDates),
             submittedAt: Date.now(),
@@ -1479,10 +1525,27 @@ const StudentInputPage = ({
       </div>
 
       <div className="student-form-section">
+        <h3>希望科目</h3>
+        <p className="muted">受講を希望する科目を選択してください。</p>
+        <div className="subject-checkboxes">
+          {data.subjects.map((subject) => (
+            <label className="row" key={subject}>
+              <input
+                type="checkbox"
+                checked={selectedSubjects.has(subject)}
+                onChange={() => toggleSubject(subject)}
+              />
+              <span>{subject}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="student-form-section">
         <h3>希望科目のコマ数</h3>
         <p className="muted">各科目について、希望するコマ数を入力してください。</p>
         <div className="subject-slots-form">
-          {student.subjects.map((subject) => (
+          {Array.from(selectedSubjects).map((subject) => (
             <div key={subject} className="form-row">
               <label htmlFor={`subject-${subject}`}>{subject}:</label>
               <input
@@ -1630,7 +1693,7 @@ const CompletionPage = () => {
         <h2>入力完了</h2>
         <p>データの送信が完了しました。ありがとうございます。</p>
         <div className="row">
-          <Link className="btn" to={`/admin/${sessionId}`}>設定に戻る</Link>
+          <Link className="btn" to={`/admin/${sessionId}`} state={{ skipAuth: true }}>設定に戻る</Link>
         </div>
       </div>
     </div>
