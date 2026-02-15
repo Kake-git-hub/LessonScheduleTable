@@ -31,9 +31,17 @@ export const buildSlotKeys = (settings: SessionData['settings']): string[] => {
   return result
 }
 
+const DAY_NAMES = ['日', '月', '火', '水', '木', '金', '土']
+
+/** Format ISO date "YYYY-MM-DD" → "M/D(曜)" */
+export const formatShortDate = (iso: string): string => {
+  const d = new Date(`${iso}T00:00:00`)
+  return `${d.getMonth() + 1}/${d.getDate()}(${DAY_NAMES[d.getDay()]})`
+}
+
 export const slotLabel = (slotKey: string): string => {
   const [date, slot] = slotKey.split('_')
-  return `${date} ${slot}限`
+  return `${formatShortDate(date)} ${slot}限`
 }
 
 export const personKey = (personType: 'teacher' | 'student', personId: string): string =>

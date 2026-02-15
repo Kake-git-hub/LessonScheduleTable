@@ -74,6 +74,7 @@ export type SessionData = {
   availability: Record<string, string[]>
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
+  teacherSubmittedAt?: Record<string, number>
 }
 
 export type MasterData = {

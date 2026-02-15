@@ -15,7 +15,7 @@ import type {
   Student,
   Teacher,
 } from './types'
-import { buildSlotKeys, personKey, slotLabel } from './utils/schedule'
+import { buildSlotKeys, formatShortDate, personKey, slotLabel } from './utils/schedule'
 
 const APP_VERSION = '0.4.0'
 
@@ -927,6 +927,17 @@ const HomePage = () => {
         if (sids.length === 0) continue
         const dow = dayNameMap[dayStr]
         if (dow === undefined || Number.isNaN(slotNum) || slotNum < 1) continue
+        // Dedup: skip if same regular lesson already exists in master data
+        const sortedSids = [...sids].sort()
+        const isDup = md.regularLessons.some((existing) =>
+          existing.teacherId === tid &&
+          existing.subject === subject &&
+          existing.dayOfWeek === dow &&
+          existing.slotNumber === slotNum &&
+          existing.studentIds.length === sortedSids.length &&
+          [...existing.studentIds].sort().every((id, j) => id === sortedSids[j]),
+        )
+        if (isDup) continue
         importedRegularLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, dayOfWeek: dow, slotNumber: slotNum })
       }
     }
@@ -1657,7 +1668,19 @@ const AdminPage = () => {
       XLSX.utils.book_append_sheet(wb, ws, sheetName)
     }
 
-    XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
+    try {
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+      const blob = new Blob([wbout], { type: 'application/octet-stream' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `コマ割り_${data.settings.name}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Excel export error:', err)
+      alert('Excel出力に失敗しました。')
+    }
   }
 
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
@@ -1855,7 +1878,7 @@ const AdminPage = () => {
                     settings: { ...current.settings, holidays: current.settings.holidays.filter((d) => d !== h) },
                   }))
                 }}>
-                  {h} ×
+                  {formatShortDate(h)} ×
                 </span>
               ))}
             </div>
@@ -1864,9 +1887,11 @@ const AdminPage = () => {
           <div className="panel">
             <h3>講師一覧</h3>
             <table className="table">
-              <thead><tr><th>名前</th><th>科目</th><th>希望URL</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th><th>科目</th><th>提出データ</th><th>希望URL</th><th>共有</th></tr></thead>
               <tbody>
-                {data.teachers.map((teacher) => (
+                {data.teachers.map((teacher) => {
+                  const teacherSubmittedAt = (data.teacherSubmittedAt ?? {})[teacher.id] ?? 0
+                  return (
                   <tr key={teacher.id}>
                     <td>
                       {teacher.name}
@@ -1875,10 +1900,20 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td>{teacher.subjects.join(', ')}</td>
+                    <td>
+                      {teacherSubmittedAt ? (
+                        <span style={{ fontSize: '0.85em', color: '#374151' }}>
+                          {new Date(teacherSubmittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      ) : (
+                        <span className="badge warn" style={{ fontSize: '11px' }}>未提出</span>
+                      )}
+                    </td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
                     <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`)}>URLコピー</button></td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -2005,6 +2040,7 @@ const AdminPage = () => {
                         return (
                           <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}>
                             {assignment.isRegular && <span className="badge regular-badge">通常授業</span>}
+                            {isIncompatiblePair && <span className="badge incompatible-badge">⚠不可</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
@@ -2278,6 +2314,10 @@ const TeacherInputPage = ({
         ...data.availability,
         [key]: Array.from(merged),
       },
+      teacherSubmittedAt: {
+        ...(data.teacherSubmittedAt ?? {}),
+        [teacher.id]: Date.now(),
+      },
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
     navigate(`/complete/${sessionId}`)
@@ -2306,7 +2346,7 @@ const TeacherInputPage = ({
           <tbody>
             {dates.map((date) => (
               <tr key={date}>
-                <td className="date-cell">{date}</td>
+                <td className="date-cell">{formatShortDate(date)}</td>
                 {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
                   const slotNum = i + 1
                   const slotKey = `${date}_${slotNum}`
@@ -2492,6 +2532,33 @@ const StudentInputPage = ({
       </div>
 
       <div className="student-form-section">
+        <h3>希望時限 <span className="muted" style={{ fontWeight: 400, fontSize: '0.85em' }}>（任意・選択なしは全時限対象）</span></h3>
+        <div className="preferred-slots-buttons" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+            const slotNum = String(i + 1)
+            const isOn = preferredSlots.has(slotNum)
+            return (
+              <button
+                key={slotNum}
+                className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
+                style={{ minWidth: '44px', padding: '6px 10px', fontSize: '14px' }}
+                onClick={() => {
+                  setPreferredSlots((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(slotNum)) { next.delete(slotNum) } else { next.add(slotNum) }
+                    return next
+                  })
+                }}
+                type="button"
+              >
+                {i + 1}限{isOn ? ' ○' : ''}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="student-form-section">
         <h3>出席不可日</h3>
         <p className="muted">出席できない日をタップして選択してください。</p>
         <div className="date-checkboxes">
@@ -2506,40 +2573,12 @@ const StudentInputPage = ({
                   type="button"
                 >
                   <span className="checkbox-icon">{isUnavailable ? '✓' : ''}</span>
-                  <span className="date-label">{date}</span>
+                  <span className="date-label">{formatShortDate(date)}</span>
                   {regularCheck.hasLesson && (
                     <span className="regular-lesson-badge">通常授業</span>
                   )}
                 </button>
               </div>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="student-form-section">
-        <h3>希望時限</h3>
-        <p className="muted">希望する時限をタップして選択してください（任意）。選択しない場合は全時限が対象です。</p>
-        <div className="preferred-slots-buttons" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
-            const slotNum = String(i + 1)
-            const isOn = preferredSlots.has(slotNum)
-            return (
-              <button
-                key={slotNum}
-                className={`teacher-slot-btn ${isOn ? 'active' : ''}`}
-                style={{ minWidth: '60px', padding: '12px 16px', fontSize: '16px' }}
-                onClick={() => {
-                  setPreferredSlots((prev) => {
-                    const next = new Set(prev)
-                    if (next.has(slotNum)) { next.delete(slotNum) } else { next.add(slotNum) }
-                    return next
-                  })
-                }}
-                type="button"
-              >
-                {i + 1}限{isOn ? ' ○' : ''}
-              </button>
             )
           })}
         </div>

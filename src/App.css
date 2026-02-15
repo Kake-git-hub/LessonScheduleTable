@@ -121,6 +121,16 @@
   background: #fef2f2;
 }
 
+.incompatible-badge {
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.75em;
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
 .slot-title {
   font-weight: 700;
   margin-bottom: 8px;
