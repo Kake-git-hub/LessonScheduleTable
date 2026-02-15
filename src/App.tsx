@@ -915,7 +915,7 @@ const HomePage = () => {
       gradeConstraints: [...(c.gradeConstraints ?? []), ...importedGradeConstraints],
       regularLessons: [...c.regularLessons, ...importedRegularLessons],
     }))
-    alert('取り込み完了！')
+    setTimeout(() => alert('取り込み完了！'), 50)
   }
 
   // --- Session management ---
@@ -1015,14 +1015,14 @@ const HomePage = () => {
           </div>
         ) : (
           <>
-            {masterSaving && (
+            {masterSaving ? (
               <div className="panel" style={{ textAlign: 'center', padding: '12px' }}>
                 <div className="loading-container">
                   <div className="loading-spinner" />
                   <div className="loading-text">管理データを保存中...</div>
                 </div>
               </div>
-            )}
+            ) : (<>
             {/* --- Session management --- */}
             <div className="panel">
               <h3>新規セッション追加</h3>
@@ -1060,7 +1060,7 @@ const HomePage = () => {
             </div>
 
             {/* --- Master data management --- */}
-                <div className="panel">
+                <div className="panel" style={{ position: 'relative' }}>
                   <h3>管理データ — Excel</h3>
                   <div className="row">
                     <button className="btn" type="button" onClick={downloadTemplate}>テンプレートExcel出力</button>
@@ -1228,6 +1228,7 @@ const HomePage = () => {
                     </tbody>
                   </table>
                 </div>
+            </>)}
           </>
         )}
       </div>
@@ -1242,7 +1243,52 @@ const AdminPage = () => {
   const { data, setData, loading } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
+  const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
+  const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
 
+  // Track real-time changes to show "just updated" indicators for teachers/students
+  useEffect(() => {
+    if (!data) return
+    const prev = prevSnapshotRef.current
+    if (!prev) {
+      // First load — just record snapshot, don't show indicators
+      prevSnapshotRef.current = {
+        availability: { ...data.availability },
+        studentSubmittedAt: Object.fromEntries(data.students.map((s) => [s.id, s.submittedAt])),
+      }
+      return
+    }
+    const updatedIds: string[] = []
+    // Check teachers: availability change
+    for (const teacher of data.teachers) {
+      const key = `teacher:${teacher.id}`
+      const prevSlots = (prev.availability[key] ?? []).slice().sort().join(',')
+      const currSlots = (data.availability[key] ?? []).slice().sort().join(',')
+      if (prevSlots !== currSlots) updatedIds.push(teacher.id)
+    }
+    // Check students: submittedAt change
+    for (const student of data.students) {
+      const prevAt = prev.studentSubmittedAt[student.id] ?? 0
+      if (student.submittedAt !== prevAt) updatedIds.push(student.id)
+    }
+    // Update snapshot
+    prevSnapshotRef.current = {
+      availability: { ...data.availability },
+      studentSubmittedAt: Object.fromEntries(data.students.map((s) => [s.id, s.submittedAt])),
+    }
+    if (updatedIds.length > 0) {
+      setRecentlyUpdated((p) => new Set([...p, ...updatedIds]))
+      // Clear after 3 seconds
+      const timer = setTimeout(() => {
+        setRecentlyUpdated((p) => {
+          const next = new Set(p)
+          for (const id of updatedIds) next.delete(id)
+          return next
+        })
+      }, 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [data])
   const copyUrl = async (path: string): Promise<void> => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
     const url = base.replace(/\/$/, '') + path
@@ -1701,7 +1747,12 @@ const AdminPage = () => {
               <tbody>
                 {data.teachers.map((teacher) => (
                   <tr key={teacher.id}>
-                    <td>{teacher.name}</td>
+                    <td>
+                      {teacher.name}
+                      {recentlyUpdated.has(teacher.id) && (
+                        <span className="badge ok" style={{ marginLeft: '8px', fontSize: '11px', animation: 'fadeIn 0.3s' }}>✓ 更新済</span>
+                      )}
+                    </td>
                     <td>{teacher.subjects.join(', ')}</td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
                     <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`)}>URLコピー</button></td>
@@ -1719,7 +1770,12 @@ const AdminPage = () => {
               <tbody>
                 {data.students.map((student) => (
                   <tr key={student.id}>
-                    <td>{student.name}</td>
+                    <td>
+                      {student.name}
+                      {recentlyUpdated.has(student.id) && (
+                        <span className="badge ok" style={{ marginLeft: '8px', fontSize: '11px', animation: 'fadeIn 0.3s' }}>✓ 更新済</span>
+                      )}
+                    </td>
                     <td>{student.grade}</td>
                     <td>
                       {Object.entries(student.subjectSlots)
@@ -2047,7 +2103,7 @@ const TeacherInputPage = ({
     })
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     setSubmitting(true)
     const key = personKey('teacher', teacher.id)
     const next: SessionData = {
@@ -2057,9 +2113,7 @@ const TeacherInputPage = ({
         [key]: Array.from(localAvailability),
       },
     }
-    try {
-      await saveSession(sessionId, next)
-    } catch { /* ignore */ }
+    saveSession(sessionId, next).catch(() => { /* ignore */ })
     navigate(`/complete/${sessionId}`)
   }
 
@@ -2177,7 +2231,7 @@ const StudentInputPage = ({
     }))
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     setSubmitting(true)
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
@@ -2199,9 +2253,7 @@ const StudentInputPage = ({
       ...data,
       students: updatedStudents,
     }
-    try {
-      await saveSession(sessionId, next)
-    } catch { /* ignore */ }
+    saveSession(sessionId, next).catch(() => { /* ignore */ })
     navigate(`/complete/${sessionId}`)
   }
 

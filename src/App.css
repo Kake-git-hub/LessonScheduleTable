@@ -475,6 +475,11 @@
   to { transform: rotate(360deg); }
 }
 
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
 .loading-text {
   color: #6b7280;
   font-size: 14px;
