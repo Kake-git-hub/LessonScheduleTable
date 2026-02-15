@@ -490,9 +490,9 @@ const buildIncrementalAutoAssignments = (
       continue
     }
 
-    // First-half bias: earlier dates get a small bonus (max +10 for first date, 0 for last)
+    // First-half bias: earlier dates get a bonus (max +25 for first date, 0 for last)
     const dateIdx = dateIndexMap.get(currentDate) ?? 0
-    const firstHalfBonus = totalDates > 1 ? Math.round(10 * (1 - dateIdx / (totalDates - 1))) : 0
+    const firstHalfBonus = totalDates > 1 ? Math.round(25 * (1 - dateIdx / (totalDates - 1))) : 0
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
@@ -566,11 +566,15 @@ const buildIncrementalAutoAssignments = (
           // Penalty for same-day multiple slots (avoid if possible)
           if (slotsOnDate > 0) {
             studentScore -= 60
-            // If forced, reward consecutive slots for students
+            // If forced, strongly reward consecutive slots / penalize non-consecutive
             const isConsecutive = existingSlotNums.some(
               (n) => Math.abs(n - currentSlotNum) === 1,
             )
-            if (isConsecutive) studentScore += 25
+            if (isConsecutive) {
+              studentScore += 50
+            } else {
+              studentScore -= 30
+            }
           }
 
           // Prefer students with more remaining slots (even distribution)
@@ -591,7 +595,7 @@ const buildIncrementalAutoAssignments = (
         const score = 100 +
           (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
           teacherConsecutiveBonus +  // Teacher consecutive slot bonus
-          firstHalfBonus +  // Slight first-half bias
+          firstHalfBonus +  // First-half bias (max +25)
           combo.reduce((s, st) => s + (constraintFor(data.constraints, teacher.id, st.id) === 'recommended' ? 30 : 0), 0) +
           (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
           studentScore -
