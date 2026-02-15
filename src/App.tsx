@@ -502,6 +502,24 @@ const HomePage = () => {
     setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
 
+  const removeTeacher = async (teacherId: string): Promise<void> => {
+    if (!window.confirm('この先生を削除しますか？')) return
+    await updateMaster((c) => ({ ...c, teachers: c.teachers.filter((t) => t.id !== teacherId) }))
+  }
+
+  const removeStudent = async (studentId: string): Promise<void> => {
+    if (!window.confirm('この生徒を削除しますか？')) return
+    await updateMaster((c) => ({ ...c, students: c.students.filter((s) => s.id !== studentId) }))
+  }
+
+  const removeConstraint = async (constraintId: string): Promise<void> => {
+    await updateMaster((c) => ({ ...c, constraints: c.constraints.filter((x) => x.id !== constraintId) }))
+  }
+
+  const removeGradeConstraint = async (constraintId: string): Promise<void> => {
+    await updateMaster((c) => ({ ...c, gradeConstraints: (c.gradeConstraints ?? []).filter((x) => x.id !== constraintId) }))
+  }
+
   const removeRegularLesson = async (lessonId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, regularLessons: c.regularLessons.filter((l) => l.id !== lessonId) }))
   }
@@ -798,6 +816,14 @@ const HomePage = () => {
             </div>
 
             {/* --- Master data management --- */}
+            {!masterData && (
+              <div className="panel">
+                <div className="loading-container">
+                  <div className="loading-spinner" />
+                  <div className="loading-text">管理データを読み込み中...</div>
+                </div>
+              </div>
+            )}
             {masterData && (
               <>
                 <div className="panel">
@@ -828,10 +854,12 @@ const HomePage = () => {
                     ))}
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>科目</th><th>メモ</th></tr></thead>
+                    <thead><tr><th>名前</th><th>科目</th><th>メモ</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.teachers.map((t) => (
-                        <tr key={t.id}><td>{t.name}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td></tr>
+                        <tr key={t.id}><td>{t.name}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td>
+                          <td><button className="btn secondary" type="button" onClick={() => void removeTeacher(t.id)}>削除</button></td>
+                        </tr>
                       ))}
                     </tbody>
                   </table>
@@ -848,10 +876,12 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void addStudent()}>追加</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>学年</th></tr></thead>
+                    <thead><tr><th>名前</th><th>学年</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.students.map((s) => (
-                        <tr key={s.id}><td>{s.name}</td><td>{s.grade}</td></tr>
+                        <tr key={s.id}><td>{s.name}</td><td>{s.grade}</td>
+                          <td><button className="btn secondary" type="button" onClick={() => void removeStudent(s.id)}>削除</button></td>
+                        </tr>
                       ))}
                     </tbody>
                   </table>
@@ -875,13 +905,14 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void upsertConstraint()}>保存</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>先生</th><th>生徒</th><th>種別</th></tr></thead>
+                    <thead><tr><th>先生</th><th>生徒</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.constraints.map((c) => (
                         <tr key={c.id}>
                           <td>{masterData.teachers.find((t) => t.id === c.teacherId)?.name ?? '-'}</td>
                           <td>{masterData.students.find((s) => s.id === c.studentId)?.name ?? '-'}</td>
                           <td>{c.type === 'incompatible' ? <span className="badge warn">不可</span> : <span className="badge rec">推奨</span>}</td>
+                          <td><button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -904,13 +935,14 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void upsertGradeConstraint()}>保存</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>先生</th><th>学年</th><th>種別</th></tr></thead>
+                    <thead><tr><th>先生</th><th>学年</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
                       {(masterData.gradeConstraints ?? []).map((gc) => (
                         <tr key={gc.id}>
                           <td>{masterData.teachers.find((t) => t.id === gc.teacherId)?.name ?? '-'}</td>
                           <td>{gc.grade}</td>
                           <td>{gc.type === 'incompatible' ? <span className="badge warn">不可</span> : <span className="badge rec">推奨</span>}</td>
+                          <td><button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -977,6 +1009,25 @@ const AdminPage = () => {
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
+  const [saveToast, setSaveToast] = useState(false)
+
+  const copyUrl = async (path: string): Promise<void> => {
+    const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
+    const url = base.replace(/\/$/, '') + path
+    try {
+      await navigator.clipboard.writeText(url)
+      alert('URLをコピーしました')
+    } catch {
+      window.prompt('URLをコピーしてください:', url)
+    }
+  }
+
+  const handleSaveSession = async (): Promise<void> => {
+    if (!data) return
+    await saveSession(sessionId, data)
+    setSaveToast(true)
+    setTimeout(() => setSaveToast(false), 2000)
+  }
 
   useEffect(() => {
     setAuthorized(import.meta.env.DEV || skipAuth)
@@ -996,11 +1047,6 @@ const AdminPage = () => {
 
   const createSession = async (): Promise<void> => {
     const seed = emptySession()
-    await saveSession(sessionId, seed)
-  }
-
-  const createTemplateSessionDoc = async (): Promise<void> => {
-    const seed = createTemplateSession()
     await saveSession(sessionId, seed)
   }
 
@@ -1040,17 +1086,6 @@ const AdminPage = () => {
     const nextAssignments = buildAutoAssignments(data, slotKeys, true)
 
     await update((current) => ({ ...current, assignments: nextAssignments }))
-  }
-
-  const applyTemplateAndAutoAssign = async (): Promise<void> => {
-    const template = createTemplateSession()
-    const templateSlots = buildSlotKeys(template.settings)
-    const assignments = buildAutoAssignments(template, templateSlots, false)
-    const next: SessionData = {
-      ...template,
-      assignments,
-    }
-    await persist(next)
   }
 
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
@@ -1166,9 +1201,6 @@ const AdminPage = () => {
             <button className="btn" type="button" onClick={createSession}>
               空のセッションを作成
             </button>
-            <button className="btn secondary" type="button" onClick={createTemplateSessionDoc}>
-              テンプレートで作成
-            </button>
           </div>
           <p className="muted">作成後に管理パスワードや期間を変更してください。</p>
           <Link to="/">ホームに戻る</Link>
@@ -1199,11 +1231,6 @@ const AdminPage = () => {
         <>
           <div className="panel">
             <h3>講習設定</h3>
-            <div className="row">
-              <button className="btn secondary" type="button" onClick={createTemplateSessionDoc}>
-                初期テンプレートを再投入
-              </button>
-            </div>
             <div className="row">
               <input
                 value={data.settings.name}
@@ -1284,13 +1311,14 @@ const AdminPage = () => {
           <div className="panel">
             <h3>先生一覧</h3>
             <table className="table">
-              <thead><tr><th>名前</th><th>科目</th><th>希望URL</th></tr></thead>
+              <thead><tr><th>名前</th><th>科目</th><th>希望URL</th><th>共有</th></tr></thead>
               <tbody>
                 {data.teachers.map((teacher) => (
                   <tr key={teacher.id}>
                     <td>{teacher.name}</td>
                     <td>{teacher.subjects.join(', ')}</td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`)}>URLコピー</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1301,7 +1329,7 @@ const AdminPage = () => {
             <h3>生徒一覧</h3>
             <p className="muted">希望コマ数・不可日は生徒本人が希望URLから入力します。</p>
             <table className="table">
-              <thead><tr><th>名前</th><th>学年</th><th>希望コマ数</th><th>不可日数</th><th>希望URL</th></tr></thead>
+              <thead><tr><th>名前</th><th>学年</th><th>希望コマ数</th><th>不可日数</th><th>希望URL</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => (
                   <tr key={student.id}>
@@ -1314,6 +1342,7 @@ const AdminPage = () => {
                     </td>
                     <td>{student.unavailableDates.length}日</td>
                     <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/student/${student.id}`)}>URLコピー</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -1341,7 +1370,12 @@ const AdminPage = () => {
                   .map((s) => `${s.name}: ${s.remaining.map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
                   .join('\n')
 
-                return studentsWithRemaining.length > 0 ? (
+                const hasAnyAssignment = Object.keys(data.assignments).length > 0
+                const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
+
+                return !hasAnyAssignment || !hasAnyDesired ? (
+                  <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
+                ) : studentsWithRemaining.length > 0 ? (
                   <span className="badge warn" title={tooltipText} style={{ cursor: 'help' }}>
                     残コマあり: {studentsWithRemaining.length}名
                   </span>
@@ -1351,9 +1385,6 @@ const AdminPage = () => {
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案(未割当)
-              </button>
-              <button className="btn" type="button" onClick={() => void applyTemplateAndAutoAssign()}>
-                テストデータで自動提案
               </button>
             </div>
             <p className="muted">制約不可は警告付きで手動割当可。推奨ペアを優先。先生1人 + 生徒1〜2人。同じコマに複数ペア可。</p>
@@ -1526,6 +1557,14 @@ const AdminPage = () => {
             </div>
           </div>
         </>
+      )}
+      {saveToast && <div className="save-toast">保存しました</div>}
+      {authorized && data && (
+        <div style={{ position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 9998 }}>
+          <button className="btn" type="button" style={{ padding: '10px 24px', fontSize: '16px' }} onClick={() => void handleSaveSession()}>
+            一時保存
+          </button>
+        </div>
       )}
     </div>
   )
@@ -1772,22 +1811,62 @@ const StudentInputPage = ({
 
       <div className="student-form-section">
         <h3>希望科目・コマ数</h3>
-        <p className="muted">受講を希望する科目のコマ数を入力してください（0またはの場合は受講なし）。</p>
-        <div className="subject-slots-form">
-          {FIXED_SUBJECTS.map((subject) => (
-            <div key={subject} className="form-row">
-              <label htmlFor={`subject-${subject}`}>{subject}:</label>
-              <input
-                id={`subject-${subject}`}
-                type="number"
-                min="0"
-                value={subjectSlots[subject] ?? 0}
-                onChange={(e) => handleSubjectSlotsChange(subject, e.target.value)}
-              />
-              <span className="form-unit">コマ</span>
-            </div>
-          ))}
+        <p className="muted">受講を希望する科目を追加し、コマ数を入力してください。</p>
+        <div className="subject-slot-entries">
+          {Object.entries(subjectSlots)
+            .filter(([, count]) => count > 0 || FIXED_SUBJECTS.includes(Object.keys(subjectSlots).find((k) => subjectSlots[k] === count) ?? ''))
+            .filter(([subj]) => FIXED_SUBJECTS.includes(subj))
+            .map(([subject, count]) => (
+              <div key={subject} className="subject-slot-entry">
+                <span style={{ fontWeight: 600, minWidth: '28px' }}>{subject}</span>
+                <input
+                  type="number"
+                  min="1"
+                  value={count || ''}
+                  onChange={(e) => handleSubjectSlotsChange(subject, e.target.value)}
+                  placeholder="コマ数"
+                />
+                <span className="form-unit">コマ</span>
+                <button
+                  className="subject-slot-remove"
+                  type="button"
+                  onClick={() => {
+                    setSubjectSlots((prev) => {
+                      const next = { ...prev }
+                      delete next[subject]
+                      return next
+                    })
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
         </div>
+        {(() => {
+          const selectedSubjects = Object.keys(subjectSlots).filter((s) => FIXED_SUBJECTS.includes(s))
+          const availableSubjects = FIXED_SUBJECTS.filter((s) => !selectedSubjects.includes(s))
+          if (availableSubjects.length === 0) return null
+          return (
+            <div style={{ marginTop: '12px' }}>
+              <select
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v) {
+                    setSubjectSlots((prev) => ({ ...prev, [v]: 1 }))
+                  }
+                }}
+                style={{ padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '16px' }}
+              >
+                <option value="">＋ 科目を追加</option>
+                {availableSubjects.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+          )
+        })()}
       </div>
 
       <div className="student-form-section">
