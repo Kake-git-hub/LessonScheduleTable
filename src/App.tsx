@@ -119,8 +119,6 @@ const createTemplateSession = (): SessionData => {
 
   const constraints: PairConstraint[] = [
     { id: 'c001', teacherId: 't001', studentId: 's002', type: 'incompatible' },
-    { id: 'c002', teacherId: 't001', studentId: 's003', type: 'recommended' },
-    { id: 'c003', teacherId: 't002', studentId: 's004', type: 'recommended' },
   ]
 
   const slotKeys = buildSlotKeys(settings)
@@ -314,6 +312,28 @@ const ADMIN_PASSWORD_STORAGE_KEY = 'lst_admin_password_v1'
 const readSavedAdminPassword = (): string => localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY) ?? 'admin1234'
 const saveAdminPassword = (password: string): void => {
   localStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password)
+}
+
+/** Check if a teacher-student pair appears in regular lessons */
+const isRegularLessonPair = (regularLessons: RegularLesson[], teacherId: string, studentId: string): boolean =>
+  regularLessons.some((rl) => rl.teacherId === teacherId && rl.studentIds.includes(studentId))
+
+/** Get teacher-student pair assignments on a specific date (for consecutive slot grouping) */
+const getTeacherStudentSlotsOnDate = (
+  assignments: Record<string, Assignment[]>,
+  teacherId: string,
+  studentId: string,
+  date: string,
+): number[] => {
+  const nums: number[] = []
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slot.startsWith(`${date}_`)) {
+      if (slotAssignments.some((a) => a.teacherId === teacherId && a.studentIds.includes(studentId))) {
+        nums.push(getSlotNumber(slot))
+      }
+    }
+  }
+  return nums.sort((a, b) => a - b)
 }
 
 const findRegularLessonForSlot = (
@@ -594,11 +614,27 @@ const buildIncrementalAutoAssignments = (
           studentScore -= assignedDates * 5
         }
 
+        // Regular lesson pair bonus: prefer assigning regular-lesson teacher-student combos
+        const regularPairBonus = combo.reduce((s, st) =>
+          s + (isRegularLessonPair(data.regularLessons, teacher.id, st.id) ? 30 : 0), 0)
+
+        // Same-day same-pair consecutive bonus: if this teacher+student pair already
+        // exists on this date, strongly prefer making it consecutive
+        let pairConsecutiveBonus = 0
+        for (const st of combo) {
+          const existingPairSlots = getTeacherStudentSlotsOnDate(result, teacher.id, st.id, currentDate)
+          if (existingPairSlots.length > 0) {
+            const isConsecutive = existingPairSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
+            pairConsecutiveBonus += isConsecutive ? 60 : -40
+          }
+        }
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
           teacherConsecutiveBonus +  // Teacher consecutive slot bonus
           firstHalfBonus +  // First-half bias (max +25)
-          combo.reduce((s, st) => s + (constraintFor(data.constraints, teacher.id, st.id) === 'recommended' ? 30 : 0), 0) +
+          regularPairBonus +  // Regular lesson pair preference
+          pairConsecutiveBonus +  // Same teacher+student consecutive on same day
           (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
           studentScore -
           teacherLoad * 2
@@ -789,10 +825,9 @@ const HomePage = () => {
     ]
     const sampleConstraints = [
       ['田中講師', '伊藤 花', '不可'],
-      ['田中講師', '上田 陽介', '推奨'],
     ]
     const sampleGradeConstraints = [
-      ['佐藤講師', '高1', '推奨'],
+      ['佐藤講師', '高1', '不可'],
     ]
     const sampleRegularLessons = [
       ['田中講師', '青木 太郎', '', '数', '月', '1'],
@@ -800,8 +835,8 @@ const HomePage = () => {
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年'], ...sampleStudents]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別(不可/推奨)'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可/推奨)'], ...sampleGradeConstraints]), '学年制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別(不可)'], ...sampleConstraints]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可)'], ...sampleGradeConstraints]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
@@ -1212,7 +1247,6 @@ const HomePage = () => {
                     </select>
                     <select value={constraintType} onChange={(e) => setConstraintType(e.target.value as ConstraintType)}>
                       <option value="incompatible">組み合わせ不可</option>
-                      <option value="recommended">組み合わせ推奨</option>
                     </select>
                     <button className="btn" type="button" onClick={() => void upsertConstraint()}>保存</button>
                   </div>
@@ -1223,7 +1257,7 @@ const HomePage = () => {
                         <tr key={c.id}>
                           <td>{masterData.teachers.find((t) => t.id === c.teacherId)?.name ?? '-'}</td>
                           <td>{masterData.students.find((s) => s.id === c.studentId)?.name ?? '-'}</td>
-                          <td>{c.type === 'incompatible' ? <span className="badge warn">不可</span> : <span className="badge rec">推奨</span>}</td>
+                          <td><span className="badge warn">不可</span></td>
                           <td><button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button></td>
                         </tr>
                       ))}
@@ -1242,7 +1276,6 @@ const HomePage = () => {
                     </select>
                     <select value={gradeConstraintType} onChange={(e) => setGradeConstraintType(e.target.value as ConstraintType)}>
                       <option value="incompatible">担当不可</option>
-                      <option value="recommended">担当推奨</option>
                     </select>
                     <button className="btn" type="button" onClick={() => void upsertGradeConstraint()}>保存</button>
                   </div>
@@ -1253,7 +1286,7 @@ const HomePage = () => {
                         <tr key={gc.id}>
                           <td>{masterData.teachers.find((t) => t.id === gc.teacherId)?.name ?? '-'}</td>
                           <td>{gc.grade}</td>
-                          <td>{gc.type === 'incompatible' ? <span className="badge warn">不可</span> : <span className="badge rec">推奨</span>}</td>
+                          <td><span className="badge warn">不可</span></td>
                           <td><button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button></td>
                         </tr>
                       ))}
@@ -1671,20 +1704,7 @@ const AdminPage = () => {
     }
 
     try {
-      // Use binary string approach for broader compatibility
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' })
-      const buf = new ArrayBuffer(wbout.length)
-      const view = new Uint8Array(buf)
-      for (let i = 0; i < wbout.length; i++) view[i] = wbout.charCodeAt(i) & 0xFF
-      const blob = new Blob([buf], { type: 'application/octet-stream' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `コマ割り_${data.settings.name}.xlsx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
     } catch (err) {
       console.error('Excel export error:', err)
       alert('Excel出力に失敗しました。')
@@ -2161,13 +2181,13 @@ const AdminPage = () => {
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
                                         const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
                                         const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
-                                        const isRecommended = !isIncompatible && (pairTag === 'recommended' || gradeTag === 'recommended')
+                                        const isRegularPair = !isIncompatible && isRegularLessonPair(data.regularLessons, assignment.teacherId, student.id)
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
                                         const isSelectedInOtherPosition = student.id === otherStudentId
                                         const disabled = usedInOther || isSelectedInOtherPosition
-                                        const tagLabel = isIncompatible ? ' ⚠不可' : isRecommended ? ' ★推奨' : ''
+                                        const tagLabel = isIncompatible ? ' ⚠不可' : isRegularPair ? ' ★通常' : ''
                                         const statusLabel = usedInOther ? ' (他ペア)' : ''
 
                                         return (
@@ -2648,76 +2668,72 @@ const StudentInputPage = ({
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
   const [data, setData] = useState<SessionData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [errorMsg, setErrorMsg] = useState('')
+  const [phase, setPhase] = useState<'loading' | 'syncing' | 'ready' | 'error'>('loading')
+  const syncAttemptedRef = useRef(false)
 
+  // Phase 1: Watch session data via realtime listener (auto-retries on cold start)
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
+    setPhase('loading')
     setData(null)
-    setErrorMsg('')
+    syncAttemptedRef.current = false
+    const unsub = watchSession(sessionId, (value) => {
+      setData(value)
+      // Don't move to 'ready' yet — let the sync effect decide
+      if (!value) {
+        setPhase('error')
+      }
+    })
+    return () => unsub()
+  }, [sessionId])
+
+  // Phase 2: Once data arrives, check if person exists; if not, attempt master sync once
+  useEffect(() => {
+    if (!data || phase === 'error') return
+
+    const found = personType === 'teacher'
+      ? data.teachers.find((t) => t.id === personId)
+      : data.students.find((s) => s.id === personId)
+
+    if (found) {
+      setPhase('ready')
+      return
+    }
+
+    // Person not found — try master sync once
+    if (syncAttemptedRef.current) {
+      setPhase('ready') // Will show "not found" message
+      return
+    }
+    syncAttemptedRef.current = true
+    setPhase('syncing')
 
     void (async () => {
       try {
-        // One-time read (more reliable than onSnapshot for initial load)
-        let sessionData = await loadSession(sessionId)
-        if (cancelled) return
-
-        if (!sessionData) {
-          setErrorMsg('セッションが見つかりません。管理者にURLを確認してください。')
-          setLoading(false)
-          return
-        }
-
-        // Check if person exists in session
-        const findPerson = (d: SessionData) =>
-          personType === 'teacher'
-            ? d.teachers.find((t) => t.id === personId)
-            : d.students.find((s) => s.id === personId)
-
-        if (!findPerson(sessionData)) {
-          // Person not in session — sync from master data
-          try {
-            const master = await loadMasterData()
-            if (cancelled) return
-            if (master) {
-              const mergedStudents = master.students.map((ms) => {
-                const existing = sessionData!.students.find((s) => s.id === ms.id)
-                if (existing) {
-                  return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
-                }
-                return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
-              })
-              const next: SessionData = {
-                ...sessionData,
-                teachers: master.teachers,
-                students: mergedStudents,
-                constraints: master.constraints,
-                gradeConstraints: master.gradeConstraints ?? [],
-                regularLessons: master.regularLessons,
-              }
-              await saveSession(sessionId, next)
-              sessionData = next
-            }
-          } catch (e) {
-            console.error('Master sync failed:', e)
+        const master = await loadMasterData()
+        if (!master) { setPhase('ready'); return }
+        const mergedStudents = master.students.map((ms) => {
+          const existing = data.students.find((s) => s.id === ms.id)
+          if (existing) {
+            return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
           }
+          return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+        })
+        const next: SessionData = {
+          ...data,
+          teachers: master.teachers,
+          students: mergedStudents,
+          constraints: master.constraints,
+          gradeConstraints: master.gradeConstraints ?? [],
+          regularLessons: master.regularLessons,
         }
-
-        if (cancelled) return
-        setData(sessionData)
-        setLoading(false)
+        await saveSession(sessionId, next)
+        // watchSession will fire again with updated data → found check will pass
       } catch (e) {
-        if (!cancelled) {
-          console.error('Failed to load session:', e)
-          setErrorMsg('データの読み込みに失敗しました。通信環境を確認してリロードしてください。')
-          setLoading(false)
-        }
+        console.error('Master sync failed:', e)
+        setPhase('ready') // Show "not found" message
       }
     })()
-
-    return () => { cancelled = true }
-  }, [sessionId, personType, personId])
+  }, [data, phase, personId, personType, sessionId])
 
   const currentPerson = useMemo(() => {
     if (!data) return null
@@ -2727,7 +2743,7 @@ const AvailabilityPage = () => {
     return data.students.find((student) => student.id === personId) ?? null
   }, [data, personId, personType])
 
-  if (loading) {
+  if (phase === 'loading' || phase === 'syncing') {
     return (
       <div className="app-shell">
         <div className="panel">読み込み中...</div>
@@ -2735,11 +2751,11 @@ const AvailabilityPage = () => {
     )
   }
 
-  if (errorMsg || !data || !currentPerson) {
+  if (phase === 'error' || !data || !currentPerson) {
     return (
       <div className="app-shell">
         <div className="panel">
-          {errorMsg || '入力対象が見つかりません。管理者にURLを確認してください。'}
+          入力対象が見つかりません。管理者にURLを確認してください。
           <br />
           <Link to="/">ホームに戻る</Link>
         </div>
