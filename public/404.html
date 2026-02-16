@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>Redirecting…</title>
+</head>
+<body>
+  <script>
+    // GitHub Pages SPA redirect: convert path-based URL to hash route
+    // e.g. /LessonScheduleTable/availability/abc/teacher/xyz
+    //   → /LessonScheduleTable/#/availability/abc/teacher/xyz
+    (function () {
+      var segments = window.location.pathname.split('/');
+      // segments[0] = '', segments[1] = 'LessonScheduleTable', rest = route
+      var base = '/' + segments[1];
+      var route = '/' + segments.slice(2).join('/');
+      if (route && route !== '/') {
+        var search = window.location.search || '';
+        window.location.replace(base + '/' + search + '#' + route);
+      } else {
+        window.location.replace(base + '/');
+      }
+    })();
+  </script>
+</body>
+</html>

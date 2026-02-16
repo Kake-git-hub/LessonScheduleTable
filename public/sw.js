@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-const CACHE_NAME = 'lst-v1'
+const CACHE_NAME = 'lst-v2'
 
 // Shell files cached on install (app shell strategy)
 const SHELL_FILES = [

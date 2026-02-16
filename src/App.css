@@ -509,6 +509,16 @@
   background: #eff6ff;
 }
 
+.slot-card.drag-valid {
+  outline: 2px dashed #16a34a;
+  background: #f0fdf4;
+}
+
+.slot-card.drag-invalid {
+  opacity: 0.45;
+  background: #f3f4f6;
+}
+
 .assignment-block + .assignment-block {
   margin-top: 6px;
 }

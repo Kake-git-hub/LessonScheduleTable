@@ -1366,6 +1366,7 @@ const AdminPage = () => {
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; teacherId: string } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
 
   // Track real-time changes to show "just updated" indicators for teachers/students
@@ -1413,8 +1414,9 @@ const AdminPage = () => {
   }, [data])
   const copyUrl = async (path: string): Promise<void> => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    // Use query parameter ?r= for sharing (survives messaging apps that strip hash fragments)
-    const url = base.replace(/\/$/, '') + '/?r=' + encodeURIComponent(path)
+    // Path-based URL: GitHub Pages 404.html redirects to hash route
+    // This survives messaging apps (LINE etc.) that strip hash fragments
+    const url = base.replace(/\/$/, '') + path
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
@@ -2084,9 +2086,19 @@ const AdminPage = () => {
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
+
+                // D&D: compute validity of this slot as a drop target
+                const deskCount = data.settings.deskCount ?? 0
+                const isDragActive = dragInfo !== null
+                const isSameSlot = isDragActive && dragInfo.sourceSlot === slot
+                const isDeskFull = isDragActive && deskCount > 0 && slotAssignments.length >= deskCount
+                const isTeacherConflict = isDragActive && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
+                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict
+                const slotDragClass = isDragActive ? (isSameSlot ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
+
                 return (
-                  <div className="slot-card" key={slot}
-                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).classList.add('drag-over') }}
+                  <div className={`slot-card${slotDragClass}`} key={slot}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = isDropValid ? 'move' : 'none'; (e.currentTarget as HTMLElement).classList.add('drag-over') }}
                     onDragLeave={(e) => { (e.currentTarget as HTMLElement).classList.remove('drag-over') }}
                     onDrop={(e) => {
                       e.preventDefault()
@@ -2135,7 +2147,9 @@ const AdminPage = () => {
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
                               e.dataTransfer.setData('text/plain', payload)
                               e.dataTransfer.effectAllowed = 'move'
+                              setDragInfo({ sourceSlot: slot, teacherId: assignment.teacherId })
                             }}
+                            onDragEnd={() => setDragInfo(null)}
                             style={{ position: 'relative' }}
                           >
                             {!assignment.isRegular && (
@@ -2153,6 +2167,7 @@ const AdminPage = () => {
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
+                              disabled={assignment.isRegular}
                             >
                               <option value="">講師を選択</option>
                               {data.teachers
@@ -2177,6 +2192,7 @@ const AdminPage = () => {
                                 <select
                                   value={assignment.subject}
                                   onChange={(e) => void setSlotSubject(slot, idx, e.target.value)}
+                                  disabled={assignment.isRegular}
                                 >
                                   {subjectOptions.map((subject) => (
                                     <option key={subject} value={subject}>
@@ -2200,6 +2216,7 @@ const AdminPage = () => {
                                     <div key={pos} className="student-select-row">
                                     <select
                                       value={assignment.studentIds[pos] ?? ''}
+                                      disabled={assignment.isRegular}
                                       onChange={(e) => {
                                         const selectedId = e.target.value
                                         if (selectedId) {
@@ -2480,6 +2497,26 @@ const TeacherInputPage = ({
       </div>
 
       <div className="submit-section">
+        {import.meta.env.DEV && (
+          <button
+            className="btn secondary"
+            type="button"
+            style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => {
+              // Randomly toggle ~60% of non-regular slots as available
+              const next = new Set(regularSlotKeys)
+              for (const date of dates) {
+                for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+                  const sk = `${date}_${s}`
+                  if (!regularSlotKeys.has(sk) && Math.random() < 0.6) next.add(sk)
+                }
+              }
+              setLocalAvailability(next)
+            }}
+          >
+            🎲 ランダム入力 (DEV)
+          </button>
+        )}
         <button
           className="submit-btn"
           onClick={handleSubmit}
@@ -2735,17 +2772,60 @@ const StudentInputPage = ({
       </div>
 
       <div className="submit-section">
-        {Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0 && (
-          <p style={{ color: '#dc2626', fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>※ 科目を1つ以上選択してください</p>
+        {import.meta.env.DEV && (
+          <button
+            className="btn secondary"
+            type="button"
+            style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => {
+              // Randomly pick 1-3 subjects with 1-4 slots each
+              const shuffled = [...FIXED_SUBJECTS].sort(() => Math.random() - 0.5)
+              const count = 1 + Math.floor(Math.random() * 3)
+              const randomSubjects: Record<string, number> = {}
+              for (let i = 0; i < count && i < shuffled.length; i++) {
+                randomSubjects[shuffled[i]] = 1 + Math.floor(Math.random() * 4)
+              }
+              setSubjectSlots(randomSubjects)
+              // Randomly mark ~20% of slots as unavailable
+              const next = new Set<string>()
+              for (const date of dates) {
+                for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+                  if (Math.random() < 0.2) next.add(`${date}_${s}`)
+                }
+              }
+              setUnavailableSlots(next)
+            }}
+          >
+            🎲 ランダム入力 (DEV)
+          </button>
         )}
-        <button
-          className="submit-btn"
-          onClick={handleSubmit}
-          type="button"
-          disabled={Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0}
-        >
-          送信
-        </button>
+        {(() => {
+          const totalDesired = Object.values(subjectSlots).reduce((s, c) => s + c, 0)
+          const totalSlots = dates.length * data.settings.slotsPerDay
+          const totalAvailable = totalSlots - unavailableSlots.size
+          const noSubjects = Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0
+          const overAvailable = totalDesired > totalAvailable
+          return (
+            <>
+              {noSubjects && (
+                <p style={{ color: '#dc2626', fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>※ 科目を1つ以上選択してください</p>
+              )}
+              {!noSubjects && overAvailable && (
+                <p style={{ color: '#dc2626', fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>
+                  ※ 希望コマ数({totalDesired})が出席可能コマ数({totalAvailable})を超えています
+                </p>
+              )}
+              <button
+                className="submit-btn"
+                onClick={handleSubmit}
+                type="button"
+                disabled={noSubjects || overAvailable}
+              >
+                送信
+              </button>
+            </>
+          )
+        })()}
       </div>
     </div>
   )
