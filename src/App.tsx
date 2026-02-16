@@ -2649,52 +2649,78 @@ const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
   const [data, setData] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
-  const syncedRef = useRef(false)
+  const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
-    syncedRef.current = false
-    const unsub = watchSession(sessionId, (value) => {
-      setData(value)
-      setLoading(false)
-    })
-    return () => unsub()
-  }, [sessionId])
+    setData(null)
+    setErrorMsg('')
 
-  // Auto-sync master data if person not found in session
-  useEffect(() => {
-    if (!data || loading || syncedRef.current) return
-    const found = personType === 'teacher'
-      ? data.teachers.find((t) => t.id === personId)
-      : data.students.find((s) => s.id === personId)
-    if (found) return
-    syncedRef.current = true
     void (async () => {
-      const master = await loadMasterData()
-      if (!master) return
-      const mergedStudents = master.students.map((ms) => {
-        const existing = data.students.find((s) => s.id === ms.id)
-        if (existing) {
-          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+      try {
+        // One-time read (more reliable than onSnapshot for initial load)
+        let sessionData = await loadSession(sessionId)
+        if (cancelled) return
+
+        if (!sessionData) {
+          setErrorMsg('セッションが見つかりません。管理者にURLを確認してください。')
+          setLoading(false)
+          return
         }
-        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
-      })
-      const next: SessionData = {
-        ...data,
-        teachers: master.teachers,
-        students: mergedStudents,
-        constraints: master.constraints,
-        gradeConstraints: master.gradeConstraints ?? [],
-        regularLessons: master.regularLessons,
+
+        // Check if person exists in session
+        const findPerson = (d: SessionData) =>
+          personType === 'teacher'
+            ? d.teachers.find((t) => t.id === personId)
+            : d.students.find((s) => s.id === personId)
+
+        if (!findPerson(sessionData)) {
+          // Person not in session — sync from master data
+          try {
+            const master = await loadMasterData()
+            if (cancelled) return
+            if (master) {
+              const mergedStudents = master.students.map((ms) => {
+                const existing = sessionData!.students.find((s) => s.id === ms.id)
+                if (existing) {
+                  return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+                }
+                return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+              })
+              const next: SessionData = {
+                ...sessionData,
+                teachers: master.teachers,
+                students: mergedStudents,
+                constraints: master.constraints,
+                gradeConstraints: master.gradeConstraints ?? [],
+                regularLessons: master.regularLessons,
+              }
+              await saveSession(sessionId, next)
+              sessionData = next
+            }
+          } catch (e) {
+            console.error('Master sync failed:', e)
+          }
+        }
+
+        if (cancelled) return
+        setData(sessionData)
+        setLoading(false)
+      } catch (e) {
+        if (!cancelled) {
+          console.error('Failed to load session:', e)
+          setErrorMsg('データの読み込みに失敗しました。通信環境を確認してリロードしてください。')
+          setLoading(false)
+        }
       }
-      await saveSession(sessionId, next)
     })()
-  }, [data, loading, personId, personType, sessionId])
+
+    return () => { cancelled = true }
+  }, [sessionId, personType, personId])
 
   const currentPerson = useMemo(() => {
-    if (!data) {
-      return null
-    }
+    if (!data) return null
     if (personType === 'teacher') {
       return data.teachers.find((teacher) => teacher.id === personId) ?? null
     }
@@ -2709,11 +2735,11 @@ const AvailabilityPage = () => {
     )
   }
 
-  if (!data || !currentPerson) {
+  if (errorMsg || !data || !currentPerson) {
     return (
       <div className="app-shell">
         <div className="panel">
-          入力対象が見つかりません。管理者にURLを確認してください。
+          {errorMsg || '入力対象が見つかりません。管理者にURLを確認してください。'}
           <br />
           <Link to="/">ホームに戻る</Link>
         </div>
