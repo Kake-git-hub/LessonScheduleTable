@@ -1671,13 +1671,19 @@ const AdminPage = () => {
     }
 
     try {
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-      const blob = new Blob([wbout], { type: 'application/octet-stream' })
+      // Use binary string approach for broader compatibility
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' })
+      const buf = new ArrayBuffer(wbout.length)
+      const view = new Uint8Array(buf)
+      for (let i = 0; i < wbout.length; i++) view[i] = wbout.charCodeAt(i) & 0xFF
+      const blob = new Blob([buf], { type: 'application/octet-stream' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
       a.download = `コマ割り_${data.settings.name}.xlsx`
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Excel export error:', err)
@@ -1904,11 +1910,12 @@ const AdminPage = () => {
                     <td>{teacher.subjects.join(', ')}</td>
                     <td>
                       {teacherSubmittedAt ? (
-                        <span style={{ fontSize: '0.85em', color: '#374151' }}>
+                        <span style={{ fontSize: '0.85em', color: '#16a34a' }}>
                           {new Date(teacherSubmittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {' '}提出済
                         </span>
                       ) : (
-                        <span className="badge warn" style={{ fontSize: '11px' }}>未提出</span>
+                        <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
@@ -1937,23 +1944,29 @@ const AdminPage = () => {
                     <td>{student.grade}</td>
                     <td>
                       {student.submittedAt ? (
-                        <button className="btn secondary" type="button" style={{ fontSize: '0.85em' }} onClick={() => {
-                          const slots = Object.entries(student.subjectSlots)
-                            .filter(([, c]) => c > 0)
-                            .map(([subj, c]) => `  ${subj}: ${c}コマ`)
-                            .join('\n') || '  なし'
-                          const unavailSlots = (student.unavailableSlots ?? [])
-                          const unavailCount = unavailSlots.length
-                          const unavailSummary = unavailCount > 0
-                            ? unavailSlots.map((sk: string) => slotLabel(sk)).join(', ')
-                            : 'なし'
-                          const time = new Date(student.submittedAt).toLocaleString('ja-JP')
-                          alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可コマ (${unavailCount}件): ${unavailSummary}`)
-                        }}>
-                          確認
-                        </button>
+                        <span style={{ fontSize: '0.85em', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ color: '#16a34a' }}>
+                            {new Date(student.submittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            {' '}提出済
+                          </span>
+                          <button className="btn secondary" type="button" style={{ fontSize: '0.8em', padding: '2px 8px' }} onClick={() => {
+                            const slots = Object.entries(student.subjectSlots)
+                              .filter(([, c]) => c > 0)
+                              .map(([subj, c]) => `  ${subj}: ${c}コマ`)
+                              .join('\n') || '  なし'
+                            const unavailSlots = (student.unavailableSlots ?? [])
+                            const unavailCount = unavailSlots.length
+                            const unavailSummary = unavailCount > 0
+                              ? unavailSlots.map((sk: string) => slotLabel(sk)).join(', ')
+                              : 'なし'
+                            const time = new Date(student.submittedAt).toLocaleString('ja-JP')
+                            alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可コマ (${unavailCount}件): ${unavailSummary}`)
+                          }}>
+                            詳細
+                          </button>
+                        </span>
                       ) : (
-                        <span className="badge warn" style={{ fontSize: '11px' }}>未提出</span>
+                        <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
@@ -1973,29 +1986,44 @@ const AdminPage = () => {
                     const remaining = Object.entries(student.subjectSlots)
                       .map(([subj, desired]) => {
                         const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
-                        return { subj, rem: Math.max(0, desired - assigned) }
+                        return { subj, rem: desired - assigned }
                       })
-                      .filter((r) => r.rem > 0)
+                      .filter((r) => r.rem !== 0)
                     if (remaining.length === 0) return null
                     return { name: student.name, remaining }
                   })
                   .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[] }[]
 
-                const tooltipText = studentsWithRemaining
-                  .map((s) => `${s.name}: ${s.remaining.map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
+                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0))
+                const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
+
+                const underTooltip = underAssigned
+                  .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem > 0).map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
+                  .join('\n')
+                const overTooltip = overAssigned
+                  .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
                   .join('\n')
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
                 const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
 
-                return !hasAnyAssignment || !hasAnyDesired ? (
-                  <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
-                ) : studentsWithRemaining.length > 0 ? (
-                  <span className="badge warn" title={tooltipText} style={{ cursor: 'help' }}>
-                    残コマあり: {studentsWithRemaining.length}名
-                  </span>
-                ) : (
-                  <span className="badge ok">全員割当完了</span>
+                return (
+                  <>
+                    {!hasAnyAssignment || !hasAnyDesired ? (
+                      <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
+                    ) : underAssigned.length > 0 ? (
+                      <span className="badge warn" title={underTooltip} style={{ cursor: 'help' }}>
+                        残コマあり: {underAssigned.length}名
+                      </span>
+                    ) : (
+                      <span className="badge ok">全員割当完了</span>
+                    )}
+                    {overAssigned.length > 0 && (
+                      <span className="badge" title={overTooltip} style={{ cursor: 'help', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }}>
+                        過割当: {overAssigned.length}名
+                      </span>
+                    )}
+                  </>
                 )
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
@@ -2621,15 +2649,47 @@ const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
   const [data, setData] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
+  const syncedRef = useRef(false)
 
   useEffect(() => {
     setLoading(true)
+    syncedRef.current = false
     const unsub = watchSession(sessionId, (value) => {
       setData(value)
       setLoading(false)
     })
     return () => unsub()
   }, [sessionId])
+
+  // Auto-sync master data if person not found in session
+  useEffect(() => {
+    if (!data || loading || syncedRef.current) return
+    const found = personType === 'teacher'
+      ? data.teachers.find((t) => t.id === personId)
+      : data.students.find((s) => s.id === personId)
+    if (found) return
+    syncedRef.current = true
+    void (async () => {
+      const master = await loadMasterData()
+      if (!master) return
+      const mergedStudents = master.students.map((ms) => {
+        const existing = data.students.find((s) => s.id === ms.id)
+        if (existing) {
+          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+        }
+        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+      })
+      const next: SessionData = {
+        ...data,
+        teachers: master.teachers,
+        students: mergedStudents,
+        constraints: master.constraints,
+        gradeConstraints: master.gradeConstraints ?? [],
+        regularLessons: master.regularLessons,
+      }
+      await saveSession(sessionId, next)
+    })()
+  }, [data, loading, personId, personType, sessionId])
 
   const currentPerson = useMemo(() => {
     if (!data) {
