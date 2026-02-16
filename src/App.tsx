@@ -1553,7 +1553,7 @@ const AdminPage = () => {
     URL.revokeObjectURL(url)
   }
 
-  /** Export schedule to Excel: weekly sheets (Mon–Sun), A3 portrait layout */
+  /** Export schedule to Excel: weekly sheets (Mon–Sun) */
   const exportScheduleExcel = (): void => {
     if (!data) return
     const { startDate, endDate, slotsPerDay, holidays } = data.settings
@@ -1573,12 +1573,13 @@ const AdminPage = () => {
       allDates.push(`${y}-${m}-${d}`)
     }
 
+    if (allDates.length === 0) { alert('期間に日付がありません。'); return }
+
     // Group dates into weeks (Mon–Sun)
     const weeks: string[][] = []
     let currentWeek: string[] = []
     for (const date of allDates) {
       const dow = new Date(`${date}T00:00:00`).getDay()
-      // Start new week on Monday (dow=1), or if first date and it's not Monday, pad the beginning
       if (dow === 1 && currentWeek.length > 0) {
         weeks.push(currentWeek)
         currentWeek = []
@@ -1593,121 +1594,74 @@ const AdminPage = () => {
       if (slotAssignments.length === 0) return ''
       return slotAssignments.map((a) => {
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
-        const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join('\n')
-        const regular = a.isRegular ? '[通常]\n' : ''
-        return `${regular}${tName}\n${sNames}\n(${a.subject})`
-      }).join('\n---\n')
-    }
-
-    const wb = XLSX.utils.book_new()
-
-    for (let wi = 0; wi < weeks.length; wi++) {
-      const weekDates = weeks[wi]
-      const firstDate = weekDates[0]
-      const lastDate = weekDates[weekDates.length - 1]
-      const [, fm, fd] = firstDate.split('-')
-      const [, lm, ld] = lastDate.split('-')
-
-      // Pad to full Mon–Sun week
-      const fullWeek: (string | null)[] = []
-      const firstDow = new Date(`${firstDate}T00:00:00`).getDay()
-      // Monday=1, pad from Monday to firstDow
-      const startPad = firstDow === 0 ? 6 : firstDow - 1 // Mon=0 pad, Tue=1 pad, ..., Sun=6 pad
-      for (let p = 0; p < startPad; p++) fullWeek.push(null)
-      for (const d of weekDates) fullWeek.push(d)
-      while (fullWeek.length < 7) fullWeek.push(null)
-
-      // Header row: day labels
-      const header: string[] = ['']
-      const dowOrder = [1, 2, 3, 4, 5, 6, 0] // Mon–Sun
-      for (let i = 0; i < 7; i++) {
-        const date = fullWeek[i]
-        if (!date) {
-          header.push(`${dayNames[dowOrder[i]]}`)
-        } else {
-          const [, mm, dd] = date.split('-')
-          header.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`)
-        }
-      }
-
-      // Data rows
-      const rows: string[][] = []
-      for (let s = 1; s <= slotsPerDay; s++) {
-        const row: string[] = [`${s}限`]
-        for (let i = 0; i < 7; i++) {
-          const date = fullWeek[i]
-          if (!date) {
-            row.push('')
-          } else if (holidaySet.has(date)) {
-            row.push('///')
-          } else {
-            row.push(buildCellText(`${date}_${s}`))
-          }
-        }
-        rows.push(row)
-      }
-
-      const aoa = [header, ...rows]
-      const ws = XLSX.utils.aoa_to_sheet(aoa)
-
-      // Column widths: A3 portrait ~297mm print width, minus margins → ~265mm usable
-      // 1 narrow label col + 7 equal date cols
-      // wch=5 for label, wch=36 for each date column (fits A3 portrait with 7 days)
-      ws['!cols'] = [{ wch: 5 }, ...Array(7).fill({ wch: 36 })]
-
-      // Row heights: header=25, data rows=tall for content
-      ws['!rows'] = [{ hpt: 25 }]
-      for (let s = 0; s < slotsPerDay; s++) {
-        ws['!rows'].push({ hpt: 120 }) // Tall rows for multi-line content
-      }
-
-      // Wrap text for all data cells
-      for (let r = 0; r <= slotsPerDay; r++) {
-        for (let c = 0; c <= 7; c++) {
-          const cellAddr = XLSX.utils.encode_cell({ r, c })
-          if (ws[cellAddr]) {
-            ws[cellAddr].s = {
-              alignment: { wrapText: true, vertical: 'top' },
-              border: {
-                top: { style: 'thin' }, bottom: { style: 'thin' },
-                left: { style: 'thin' }, right: { style: 'thin' },
-              },
-            }
-            // Header row: center + bold
-            if (r === 0) {
-              ws[cellAddr].s.alignment = { horizontal: 'center', vertical: 'center' }
-              ws[cellAddr].s.font = { bold: true, sz: 11 }
-            }
-          }
-        }
-      }
-
-      // Holiday cell styling
-      for (let s = 0; s <= slotsPerDay; s++) {
-        for (let i = 0; i < 7; i++) {
-          const date = fullWeek[i]
-          if (date && holidaySet.has(date)) {
-            const cellAddr = XLSX.utils.encode_cell({ r: s, c: i + 1 })
-            if (ws[cellAddr]) {
-              ws[cellAddr].s = {
-                ...ws[cellAddr].s,
-                fill: { patternType: 'gray125', fgColor: { rgb: 'CCCCCC' } },
-                font: { color: { rgb: '999999' } },
-              }
-            }
-          }
-        }
-      }
-
-      const sheetName = `${Number(fm)}/${Number(fd)}-${Number(lm)}/${Number(ld)}`
-      XLSX.utils.book_append_sheet(wb, ws, sheetName)
+        const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join(', ')
+        const regular = a.isRegular ? '[通常] ' : ''
+        return `${regular}${tName} / ${sNames} (${a.subject})`
+      }).join(' | ')
     }
 
     try {
+      const wb = XLSX.utils.book_new()
+
+      for (let wi = 0; wi < weeks.length; wi++) {
+        const weekDates = weeks[wi]
+        const firstDate = weekDates[0]
+        const lastDate = weekDates[weekDates.length - 1]
+        const [, fm, fd] = firstDate.split('-')
+        const [, lm, ld] = lastDate.split('-')
+
+        // Pad to full Mon–Sun week
+        const fullWeek: (string | null)[] = []
+        const firstDow = new Date(`${firstDate}T00:00:00`).getDay()
+        const startPad = firstDow === 0 ? 6 : firstDow - 1
+        for (let p = 0; p < startPad; p++) fullWeek.push(null)
+        for (const d of weekDates) fullWeek.push(d)
+        while (fullWeek.length < 7) fullWeek.push(null)
+
+        // Header row
+        const dowOrder = [1, 2, 3, 4, 5, 6, 0]
+        const header: string[] = ['']
+        for (let i = 0; i < 7; i++) {
+          const date = fullWeek[i]
+          if (!date) {
+            header.push(`${dayNames[dowOrder[i]]}`)
+          } else {
+            const [, mm, dd] = date.split('-')
+            header.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`)
+          }
+        }
+
+        // Data rows
+        const rows: string[][] = []
+        for (let s = 1; s <= slotsPerDay; s++) {
+          const row: string[] = [`${s}限`]
+          for (let i = 0; i < 7; i++) {
+            const date = fullWeek[i]
+            if (!date) {
+              row.push('')
+            } else if (holidaySet.has(date)) {
+              row.push('休')
+            } else {
+              row.push(buildCellText(`${date}_${s}`))
+            }
+          }
+          rows.push(row)
+        }
+
+        const aoa = [header, ...rows]
+        const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+        // Column widths only (community XLSX does not support cell styling)
+        ws['!cols'] = [{ wch: 5 }, ...Array(7).fill({ wch: 36 })]
+
+        const sheetName = `${Number(fm)}月${Number(fd)}日-${Number(lm)}月${Number(ld)}日`
+        XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31))
+      }
+
       XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
     } catch (err) {
       console.error('Excel export error:', err)
-      alert('Excel出力に失敗しました。')
+      alert('Excel出力に失敗しました: ' + String(err))
     }
   }
 
@@ -2668,72 +2622,91 @@ const StudentInputPage = ({
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
   const [data, setData] = useState<SessionData | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'syncing' | 'ready' | 'error'>('loading')
-  const syncAttemptedRef = useRef(false)
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
+  const syncingRef = useRef(false)
+  const syncDoneRef = useRef(false)
 
-  // Phase 1: Watch session data via realtime listener (auto-retries on cold start)
   useEffect(() => {
     setPhase('loading')
     setData(null)
-    syncAttemptedRef.current = false
+    syncingRef.current = false
+    syncDoneRef.current = false
+
     const unsub = watchSession(sessionId, (value) => {
-      setData(value)
-      // Don't move to 'ready' yet — let the sync effect decide
       if (!value) {
+        // Session doesn't exist
         setPhase('error')
+        return
       }
-    })
-    return () => unsub()
-  }, [sessionId])
 
-  // Phase 2: Once data arrives, check if person exists; if not, attempt master sync once
-  useEffect(() => {
-    if (!data || phase === 'error') return
+      // Check if person exists in this session data
+      const found = personType === 'teacher'
+        ? value.teachers.find((t) => t.id === personId)
+        : value.students.find((s) => s.id === personId)
 
-    const found = personType === 'teacher'
-      ? data.teachers.find((t) => t.id === personId)
-      : data.students.find((s) => s.id === personId)
+      if (found) {
+        // Person found — show the form
+        setData(value)
+        setPhase('ready')
+        return
+      }
 
-    if (found) {
-      setPhase('ready')
-      return
-    }
+      // Person NOT found — try master sync (once)
+      if (syncDoneRef.current) {
+        // Already tried sync, still not found — show error
+        setData(value)
+        setPhase('ready')
+        return
+      }
+      if (syncingRef.current) {
+        // Sync in progress — keep showing loading
+        return
+      }
 
-    // Person not found — try master sync once
-    if (syncAttemptedRef.current) {
-      setPhase('ready') // Will show "not found" message
-      return
-    }
-    syncAttemptedRef.current = true
-    setPhase('syncing')
+      syncingRef.current = true
+      // Keep phase as 'loading' while syncing
 
-    void (async () => {
-      try {
-        const master = await loadMasterData()
-        if (!master) { setPhase('ready'); return }
-        const mergedStudents = master.students.map((ms) => {
-          const existing = data.students.find((s) => s.id === ms.id)
-          if (existing) {
-            return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+      loadMasterData()
+        .then((master) => {
+          if (!master) {
+            syncDoneRef.current = true
+            syncingRef.current = false
+            setData(value)
+            setPhase('ready')
+            return
           }
-          return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+          const mergedStudents = master.students.map((ms) => {
+            const existing = value.students.find((s) => s.id === ms.id)
+            if (existing) {
+              return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+            }
+            return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+          })
+          const next: SessionData = {
+            ...value,
+            teachers: master.teachers,
+            students: mergedStudents,
+            constraints: master.constraints,
+            gradeConstraints: master.gradeConstraints ?? [],
+            regularLessons: master.regularLessons,
+          }
+          return saveSession(sessionId, next)
         })
-        const next: SessionData = {
-          ...data,
-          teachers: master.teachers,
-          students: mergedStudents,
-          constraints: master.constraints,
-          gradeConstraints: master.gradeConstraints ?? [],
-          regularLessons: master.regularLessons,
-        }
-        await saveSession(sessionId, next)
-        // watchSession will fire again with updated data → found check will pass
-      } catch (e) {
-        console.error('Master sync failed:', e)
-        setPhase('ready') // Show "not found" message
-      }
-    })()
-  }, [data, phase, personId, personType, sessionId])
+        .then(() => {
+          syncDoneRef.current = true
+          syncingRef.current = false
+          // watchSession will fire again with updated data
+        })
+        .catch(() => {
+          syncDoneRef.current = true
+          syncingRef.current = false
+          setData(value)
+          setPhase('ready')
+        })
+    })
+
+    return () => unsub()
+  }, [sessionId, personType, personId])
 
   const currentPerson = useMemo(() => {
     if (!data) return null
@@ -2743,7 +2716,7 @@ const AvailabilityPage = () => {
     return data.students.find((student) => student.id === personId) ?? null
   }, [data, personId, personType])
 
-  if (phase === 'loading' || phase === 'syncing') {
+  if (phase === 'loading') {
     return (
       <div className="app-shell">
         <div className="panel">読み込み中...</div>
