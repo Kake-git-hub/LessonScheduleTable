@@ -2092,7 +2092,9 @@ const AdminPage = () => {
                       e.preventDefault()
                       ;(e.currentTarget as HTMLElement).classList.remove('drag-over')
                       try {
-                        const { sourceSlot, sourceIdx } = JSON.parse(e.dataTransfer.getData('application/json')) as { sourceSlot: string; sourceIdx: number }
+                        const raw = e.dataTransfer.getData('text/plain')
+                        if (!raw) return
+                        const { sourceSlot, sourceIdx } = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number }
                         if (sourceSlot === slot) return
                         void moveAssignment(sourceSlot, sourceIdx, slot)
                       } catch { /* ignore */ }
@@ -2130,10 +2132,22 @@ const AdminPage = () => {
                           <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}
                             draggable={!assignment.isRegular}
                             onDragStart={(e) => {
-                              e.dataTransfer.setData('application/json', JSON.stringify({ sourceSlot: slot, sourceIdx: idx }))
+                              const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
+                              e.dataTransfer.setData('text/plain', payload)
                               e.dataTransfer.effectAllowed = 'move'
                             }}
+                            style={{ position: 'relative' }}
                           >
+                            {!assignment.isRegular && (
+                              <button
+                                type="button"
+                                className="pair-delete-btn"
+                                title="このペアを削除"
+                                onClick={() => void setSlotTeacher(slot, idx, '')}
+                              >
+                                ×
+                              </button>
+                            )}
                             {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                             <select
@@ -2233,10 +2247,14 @@ const AdminPage = () => {
                                         const disabled = usedInOther || isSelectedInOtherPosition
                                         const tagLabel = isIncompatible ? ' ⚠不可' : isRegularPair ? ' ★通常' : ''
                                         const statusLabel = usedInOther ? ' (他ペア)' : ''
+                                        // Show remaining slots in dropdown
+                                        const totalDesired = Object.values(student.subjectSlots).reduce((s, c) => s + c, 0)
+                                        const totalUsed = countStudentLoad(data.assignments, student.id)
+                                        const remainLabel = student.submittedAt ? ` 残${Math.max(0, totalDesired - totalUsed)}` : ''
 
                                         return (
                                           <option key={student.id} value={student.id} disabled={disabled}>
-                                            {student.name}{tagLabel}{statusLabel}
+                                            {student.name}{tagLabel}{remainLabel}{statusLabel}
                                           </option>
                                         )
                                       })}
@@ -2247,16 +2265,7 @@ const AdminPage = () => {
                                 })}
                               </>
                             )}
-                            {!assignment.isRegular && (
-                              <button
-                                className="btn secondary"
-                                type="button"
-                                style={{ fontSize: '0.8em', marginTop: '4px' }}
-                                onClick={() => void setSlotTeacher(slot, idx, '')}
-                              >
-                                このペアを削除
-                              </button>
-                            )}
+
                           </div>
                         )
                       })}
@@ -2373,6 +2382,22 @@ const TeacherInputPage = ({
     })
   }
 
+  const toggleDateAllSlots = (date: string) => {
+    const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+    const nonRegularKeys = allSlotKeys.filter((sk) => !regularSlotKeys.has(sk))
+    if (nonRegularKeys.length === 0) return
+    const allOn = nonRegularKeys.every((sk) => localAvailability.has(sk))
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (allOn) {
+        for (const sk of nonRegularKeys) next.delete(sk)
+      } else {
+        for (const sk of nonRegularKeys) next.add(sk)
+      }
+      return next
+    })
+  }
+
   const handleSubmit = () => {
     const key = personKey('teacher', teacher.id)
     // Ensure regular lesson slots are always included
@@ -2414,9 +2439,21 @@ const TeacherInputPage = ({
             </tr>
           </thead>
           <tbody>
-            {dates.map((date) => (
+            {dates.map((date) => {
+              const nonRegularKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`).filter((sk) => !regularSlotKeys.has(sk))
+              const allOn = nonRegularKeys.length > 0 && nonRegularKeys.every((sk) => localAvailability.has(sk))
+              return (
               <tr key={date}>
-                <td className="date-cell">{formatShortDate(date)}</td>
+                <td
+                  className="date-cell"
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => toggleDateAllSlots(date)}
+                  title="全時限を一括切替"
+                >
+                  <span style={{ fontWeight: allOn ? 700 : 400, color: allOn ? '#2563eb' : undefined }}>
+                    {formatShortDate(date)}
+                  </span>
+                </td>
                 {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
                   const slotNum = i + 1
                   const slotKey = `${date}_${slotNum}`
@@ -2436,7 +2473,8 @@ const TeacherInputPage = ({
                   )
                 })}
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -2697,10 +2735,14 @@ const StudentInputPage = ({
       </div>
 
       <div className="submit-section">
+        {Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0 && (
+          <p style={{ color: '#dc2626', fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>※ 科目を1つ以上選択してください</p>
+        )}
         <button
           className="submit-btn"
           onClick={handleSubmit}
           type="button"
+          disabled={Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0}
         >
           送信
         </button>
@@ -2881,33 +2923,9 @@ const CompletionPage = () => {
   )
 }
 
-/** Redirect component: reads ?r= query param and navigates to hash route */
-const QueryParamRedirect = () => {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const redirectedRef = useRef(false)
-
-  useEffect(() => {
-    if (redirectedRef.current) return
-    // Only redirect from root path
-    if (location.pathname !== '/') return
-    const params = new URLSearchParams(window.location.search)
-    const redirectPath = params.get('r')
-    if (redirectPath) {
-      redirectedRef.current = true
-      // Clean the query string from the browser URL
-      window.history.replaceState(null, '', window.location.pathname + window.location.hash)
-      navigate(redirectPath, { replace: true })
-    }
-  }, [navigate, location.pathname])
-
-  return null
-}
-
 function App() {
   return (
     <>
-      <QueryParamRedirect />
       <div className="version-badge">v{APP_VERSION}</div>
       <Routes>
         <Route path="/" element={<HomePage />} />

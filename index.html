@@ -13,6 +13,16 @@
     <title>Lesson Schedule Table</title>
   </head>
   <body>
+    <script>
+      // Redirect ?r= query param to hash route (runs before React)
+      (function() {
+        var p = new URLSearchParams(window.location.search);
+        var r = p.get('r');
+        if (r) {
+          window.location.replace(window.location.pathname + '#' + r);
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
