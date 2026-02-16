@@ -38,6 +38,7 @@ const emptySession = (): SessionData => ({
     endDate: '',
     slotsPerDay: 5,
     holidays: [],
+    deskCount: 0,
   },
   subjects: FIXED_SUBJECTS,
   teachers: [],
@@ -57,6 +58,7 @@ const createTemplateSession = (): SessionData => {
     endDate: '2026-07-23',
     slotsPerDay: 3,
     holidays: [],
+    deskCount: 0,
   }
 
   const subjects = FIXED_SUBJECTS
@@ -275,16 +277,18 @@ const countStudentAssignedDates = (assignments: Record<string, Assignment[]>, st
   return dates.size
 }
 
+/** Count how many SPECIAL (non-regular) slots a student is assigned */
 const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
-  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId)).length
+  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular).length
 
+/** Count how many SPECIAL (non-regular) slots a student is assigned for a specific subject */
 const countStudentSubjectLoad = (
   assignments: Record<string, Assignment[]>,
   studentId: string,
   subject: string,
 ): number =>
   allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && a.subject === subject,
+    (a) => a.studentIds.includes(studentId) && a.subject === subject && !a.isRegular,
   ).length
 
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
@@ -503,6 +507,8 @@ const buildIncrementalAutoAssignments = (
   const dateIndexMap = new Map<string, number>()
   for (let i = 0; i < totalDates; i++) dateIndexMap.set(allDatesInOrder[i], i)
 
+  const deskCountLimit = data.settings.deskCount ?? 0
+
   for (const slot of slots) {
     const currentDate = slot.split('_')[0]
     const currentSlotNum = getSlotNumber(slot)
@@ -514,6 +520,10 @@ const buildIncrementalAutoAssignments = (
     const usedStudentIdsInSlot = new Set<string>(existingAssignments.flatMap((a) => a.studentIds))
     // Skip slots where all assignments are regular lessons (protected)
     if (existingAssignments.length > 0 && existingAssignments.every((a) => a.isRegular)) {
+      continue
+    }
+    // Skip slots at desk count limit
+    if (deskCountLimit > 0 && slotAssignments.length >= deskCountLimit) {
       continue
     }
 
@@ -538,6 +548,8 @@ const buildIncrementalAutoAssignments = (
 
     for (const teacher of sortedTeachers) {
       if (usedTeacherIdsInSlot.has(teacher.id)) continue
+      // Stop if desk count limit reached
+      if (deskCountLimit > 0 && slotAssignments.length >= deskCountLimit) break
 
       const candidates = data.students.filter((student) => {
         if (usedStudentIdsInSlot.has(student.id)) return false
@@ -1401,7 +1413,8 @@ const AdminPage = () => {
   }, [data])
   const copyUrl = async (path: string): Promise<void> => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    const url = base.replace(/\/$/, '') + '/#' + path
+    // Use query parameter ?r= for sharing (survives messaging apps that strip hash fragments)
+    const url = base.replace(/\/$/, '') + '/?r=' + encodeURIComponent(path)
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
@@ -1702,6 +1715,11 @@ const AdminPage = () => {
   const addSlotAssignment = async (slot: string): Promise<void> => {
     await update((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
+      const deskCount = current.settings.deskCount ?? 0
+      if (deskCount > 0 && slotAssignments.length >= deskCount) {
+        alert(`机の数(${deskCount})の上限に達しています。`)
+        return current
+      }
       slotAssignments.push({ teacherId: '', studentIds: [], subject: '' })
       return {
         ...current,
@@ -1758,6 +1776,35 @@ const AdminPage = () => {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
       }
+    })
+  }
+
+  /** Move an assignment from one slot to another (drag-and-drop) */
+  const moveAssignment = async (sourceSlot: string, sourceIdx: number, targetSlot: string): Promise<void> => {
+    await update((current) => {
+      const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
+      const moved = srcAssignments[sourceIdx]
+      if (!moved || moved.isRegular) return current
+
+      // Desk count check
+      const deskCount = current.settings.deskCount ?? 0
+      const targetAssignments = [...(current.assignments[targetSlot] ?? [])]
+      if (deskCount > 0 && targetAssignments.length >= deskCount) return current
+
+      // Check teacher not already in target
+      if (moved.teacherId && targetAssignments.some((a) => a.teacherId === moved.teacherId)) return current
+
+      // Move
+      srcAssignments.splice(sourceIdx, 1)
+      targetAssignments.push(moved)
+      const nextAssignments = { ...current.assignments }
+      if (srcAssignments.length === 0) {
+        delete nextAssignments[sourceSlot]
+      } else {
+        nextAssignments[sourceSlot] = srcAssignments
+      }
+      nextAssignments[targetSlot] = targetAssignments
+      return { ...current, assignments: nextAssignments }
     })
   }
 
@@ -1863,6 +1910,25 @@ const AdminPage = () => {
                   {formatShortDate(h)} ×
                 </span>
               ))}
+            </div>
+            <div className="row" style={{ marginTop: '8px' }}>
+              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                机の数:
+                <input
+                  type="number"
+                  min={0}
+                  value={data.settings.deskCount ?? 0}
+                  onChange={(e) => {
+                    const val = Math.max(0, Number(e.target.value) || 0)
+                    void update((current) => ({
+                      ...current,
+                      settings: { ...current.settings, deskCount: val },
+                    }))
+                  }}
+                  style={{ width: '60px' }}
+                />
+                <span className="muted" style={{ fontSize: '12px' }}>0=無制限　各コマの通常+特別講習ペア数がこの数以下になります</span>
+              </label>
             </div>
           </div>
 
@@ -2012,15 +2078,33 @@ const AdminPage = () => {
                 </button>
               )}
             </div>
-            <p className="muted">通常授業は日付確定時に自動配置（青枠）。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
+            <p className="muted">通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
+            <p className="muted" style={{ fontSize: '12px' }}>★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可</p>
             <div className="grid-slots">
               {slotKeys.map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
                 return (
-                  <div className="slot-card" key={slot}>
+                  <div className="slot-card" key={slot}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; (e.currentTarget as HTMLElement).classList.add('drag-over') }}
+                    onDragLeave={(e) => { (e.currentTarget as HTMLElement).classList.remove('drag-over') }}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      ;(e.currentTarget as HTMLElement).classList.remove('drag-over')
+                      try {
+                        const { sourceSlot, sourceIdx } = JSON.parse(e.dataTransfer.getData('application/json')) as { sourceSlot: string; sourceIdx: number }
+                        if (sourceSlot === slot) return
+                        void moveAssignment(sourceSlot, sourceIdx, slot)
+                      } catch { /* ignore */ }
+                    }}
+                  >
                     <div className="slot-title">
                       {slotLabel(slot)}
+                      {(data.settings.deskCount ?? 0) > 0 && (
+                        <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
+                          {slotAssignments.length}/{data.settings.deskCount}
+                        </span>
+                      )}
                     </div>
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
@@ -2043,9 +2127,15 @@ const AdminPage = () => {
                         })
 
                         return (
-                          <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}>
-                            {assignment.isRegular && <span className="badge regular-badge">通常授業</span>}
-                            {isIncompatiblePair && <span className="badge incompatible-badge">⚠不可</span>}
+                          <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}
+                            draggable={!assignment.isRegular}
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('application/json', JSON.stringify({ sourceSlot: slot, sourceIdx: idx }))
+                              e.dataTransfer.effectAllowed = 'move'
+                            }}
+                          >
+                            {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
+                            {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
@@ -2151,13 +2241,13 @@ const AdminPage = () => {
                                         )
                                       })}
                                     </select>
-                                    {selectedStudent && <div className="student-remaining">{selectedRemaining || '残コマなし'}</div>}
+                                    {selectedStudent && <div className="student-remaining">{selectedRemaining || (selectedStudent.submittedAt ? '残コマなし' : '特別講習なし')}</div>}
                                     </div>
                                   )
                                 })}
                               </>
                             )}
-                            {slotAssignments.length > 1 && (
+                            {!assignment.isRegular && (
                               <button
                                 className="btn secondary"
                                 type="button"
@@ -2791,9 +2881,33 @@ const CompletionPage = () => {
   )
 }
 
+/** Redirect component: reads ?r= query param and navigates to hash route */
+const QueryParamRedirect = () => {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const redirectedRef = useRef(false)
+
+  useEffect(() => {
+    if (redirectedRef.current) return
+    // Only redirect from root path
+    if (location.pathname !== '/') return
+    const params = new URLSearchParams(window.location.search)
+    const redirectPath = params.get('r')
+    if (redirectPath) {
+      redirectedRef.current = true
+      // Clean the query string from the browser URL
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash)
+      navigate(redirectPath, { replace: true })
+    }
+  }, [navigate, location.pathname])
+
+  return null
+}
+
 function App() {
   return (
     <>
+      <QueryParamRedirect />
       <div className="version-badge">v{APP_VERSION}</div>
       <Routes>
         <Route path="/" element={<HomePage />} />

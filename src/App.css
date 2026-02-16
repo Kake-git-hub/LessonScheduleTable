@@ -471,6 +471,20 @@
   background: #f9fafb;
 }
 
+.assignment-block[draggable="true"] {
+  cursor: grab;
+}
+
+.assignment-block[draggable="true"]:active {
+  cursor: grabbing;
+  opacity: 0.6;
+}
+
+.slot-card.drag-over {
+  outline: 2px dashed #2563eb;
+  background: #eff6ff;
+}
+
 .assignment-block + .assignment-block {
   margin-top: 6px;
 }

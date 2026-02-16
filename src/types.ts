@@ -61,6 +61,7 @@ export type SessionSettings = {
   endDate: string
   slotsPerDay: number
   holidays: string[]
+  deskCount?: number
   createdAt?: number
   updatedAt?: number
 }
