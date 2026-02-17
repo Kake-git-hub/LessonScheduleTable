@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import './App.css'
-import { deleteSession, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { deleteSession, findSessionIdByShareToken, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -2888,6 +2888,7 @@ const StudentInputPage = ({
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '', token = '' } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
   const isDebugMode = useMemo(() => {
@@ -2927,8 +2928,21 @@ const AvailabilityPage = () => {
         setDebugInfo((prev) => ({
           ...prev,
           sessionExists: false,
+          sessionId,
           token,
         }))
+
+        if (token) {
+          void (async () => {
+            const actualSessionId = await findSessionIdByShareToken(token)
+            if (actualSessionId && actualSessionId !== sessionId) {
+              navigate(`/availability-token/${actualSessionId}/${token}${location.search}`, { replace: true })
+              return
+            }
+            setPhase('error')
+          })()
+          return
+        }
         setPhase('error')
         return
       }
@@ -2937,6 +2951,7 @@ const AvailabilityPage = () => {
       const matchedEntry = token ? shareEntries.find(([, t]) => t === token) : undefined
       setDebugInfo({
         sessionExists: true,
+        sessionId,
         tokenProvided: Boolean(token),
         token,
         shareTokenCount: shareEntries.length,
@@ -3021,7 +3036,7 @@ const AvailabilityPage = () => {
     })
 
     return () => unsub()
-  }, [sessionId, token, personType, personId])
+  }, [sessionId, token, personType, personId, navigate, location.search])
 
   const resolvedTarget = useMemo(() => {
     if (!data) return null

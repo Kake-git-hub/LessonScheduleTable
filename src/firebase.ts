@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
   onSnapshot,
   orderBy,
@@ -80,6 +81,17 @@ export const saveSession = async (sessionId: string, data: SessionData): Promise
     },
   }
   await setDoc(sessionRef(sessionId), next)
+}
+
+export const findSessionIdByShareToken = async (token: string): Promise<string | null> => {
+  if (!token) return null
+  const snapshot = await getDocs(collection(db, 'sessions'))
+  for (const docSnap of snapshot.docs) {
+    const value = docSnap.data() as SessionData
+    const hasToken = Object.values(value.shareTokens ?? {}).some((t) => t === token)
+    if (hasToken) return docSnap.id
+  }
+  return null
 }
 
 export const deleteSession = async (sessionId: string): Promise<void> => {
