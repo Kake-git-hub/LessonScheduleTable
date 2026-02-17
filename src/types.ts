@@ -77,6 +77,7 @@ export type SessionData = {
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
   teacherSubmittedAt?: Record<string, number>
+  shareTokens?: Record<string, string>
 }
 
 export type MasterData = {

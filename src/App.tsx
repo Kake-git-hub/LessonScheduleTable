@@ -30,6 +30,13 @@ const createId = (): string => {
   return Math.random().toString(36).slice(2, 10)
 }
 
+const createShareToken = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '').slice(0, 20)
+  }
+  return Math.random().toString(36).slice(2, 22)
+}
+
 const emptySession = (): SessionData => ({
   settings: {
     name: '夏期講習',
@@ -48,6 +55,7 @@ const emptySession = (): SessionData => ({
   availability: {},
   assignments: {},
   regularLessons: [],
+  shareTokens: {},
 })
 
 const createTemplateSession = (): SessionData => {
@@ -1412,12 +1420,24 @@ const AdminPage = () => {
       return () => clearTimeout(timer)
     }
   }, [data])
-  const copyUrl = async (path: string, personName?: string): Promise<void> => {
+  const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
+    if (!data) return
+    const key = personKey(personType, personId)
+    const existing = data.shareTokens?.[key]
+    const token = existing || createShareToken()
+
+    if (!existing) {
+      await update((current) => ({
+        ...current,
+        shareTokens: {
+          ...(current.shareTokens ?? {}),
+          [key]: token,
+        },
+      }))
+    }
+
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    // Path-based URL: GitHub Pages 404.html redirects to hash route
-    // This survives messaging apps (LINE etc.) that strip hash fragments
-    const hint = personName ? `~${encodeURIComponent(personName)}` : ''
-    const url = base.replace(/\/$/, '') + path + hint
+    const url = base.replace(/\/$/, '') + `/availability-token/${sessionId}/${token}`
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
@@ -1972,7 +1992,7 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`, teacher.name)}>URLコピー</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('teacher', teacher.id)}>URLコピー</button></td>
                   </tr>
                   )
                 })}
@@ -2023,7 +2043,7 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/student/${student.id}`, student.name)}>URLコピー</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('student', student.id)}>URLコピー</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -2858,21 +2878,25 @@ const StudentInputPage = ({
 }
 
 const AvailabilityPage = () => {
-  const { sessionId = 'main', personType = 'teacher', personId: rawPersonId = '' } = useParams()
-  const personId = useMemo(() => rawPersonId.split('~')[0].split(/[?&]/)[0], [rawPersonId])
-  const personHintName = useMemo(() => {
-    const encoded = rawPersonId.split('~')[1] ?? ''
-    if (!encoded) return ''
-    try {
-      return decodeURIComponent(encoded)
-    } catch {
-      return encoded
-    }
-  }, [rawPersonId])
+  const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '', token = '' } = useParams()
+  const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
+  const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
   const [data, setData] = useState<SessionData | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
   const syncingRef = useRef(false)
   const syncDoneRef = useRef(false)
+
+  const resolveTarget = (value: SessionData): { personType: PersonType; personId: string } | null => {
+    if (token) {
+      const matched = Object.entries(value.shareTokens ?? {}).find(([, t]) => t === token)
+      if (!matched) return null
+      const [key] = matched
+      const [ptype, pid] = key.split(':')
+      if ((ptype !== 'teacher' && ptype !== 'student') || !pid) return null
+      return { personType: ptype as PersonType, personId: pid }
+    }
+    return { personType, personId }
+  }
 
   useEffect(() => {
     setPhase('loading')
@@ -2887,10 +2911,12 @@ const AvailabilityPage = () => {
         return
       }
 
-      // Check if person exists in this session data (id first, then name hint fallback)
-      const found = personType === 'teacher'
-        ? value.teachers.find((t) => t.id === personId) ?? (personHintName ? value.teachers.find((t) => t.name === personHintName) : undefined)
-        : value.students.find((s) => s.id === personId) ?? (personHintName ? value.students.find((s) => s.name === personHintName) : undefined)
+      const target = resolveTarget(value)
+      const found = target
+        ? (target.personType === 'teacher'
+            ? value.teachers.find((t) => t.id === target.personId)
+            : value.students.find((s) => s.id === target.personId))
+        : null
 
       if (found) {
         // Person found — show the form
@@ -2958,17 +2984,20 @@ const AvailabilityPage = () => {
     })
 
     return () => unsub()
-  }, [sessionId, personType, personId, personHintName])
+  }, [sessionId, token, personType, personId])
+
+  const resolvedTarget = useMemo(() => {
+    if (!data) return null
+    return resolveTarget(data)
+  }, [data, token, personType, personId])
 
   const currentPerson = useMemo(() => {
-    if (!data) return null
-    if (personType === 'teacher') {
-      return data.teachers.find((teacher) => teacher.id === personId)
-        ?? (personHintName ? data.teachers.find((teacher) => teacher.name === personHintName) ?? null : null)
+    if (!data || !resolvedTarget) return null
+    if (resolvedTarget.personType === 'teacher') {
+      return data.teachers.find((teacher) => teacher.id === resolvedTarget.personId) ?? null
     }
-    return data.students.find((student) => student.id === personId)
-      ?? (personHintName ? data.students.find((student) => student.name === personHintName) ?? null : null)
-  }, [data, personId, personType, personHintName])
+    return data.students.find((student) => student.id === resolvedTarget.personId) ?? null
+  }, [data, resolvedTarget])
 
   if (phase === 'loading') {
     return (
@@ -2978,7 +3007,7 @@ const AvailabilityPage = () => {
     )
   }
 
-  if (phase === 'error' || !data || !currentPerson) {
+  if (phase === 'error' || !data || !resolvedTarget || !currentPerson) {
     return (
       <div className="app-shell">
         <div className="panel">
@@ -2990,12 +3019,12 @@ const AvailabilityPage = () => {
     )
   }
 
-  if (personType === 'teacher') {
+  if (resolvedTarget.personType === 'teacher') {
     // Runtime type check for Teacher
     if ('subjects' in currentPerson && Array.isArray(currentPerson.subjects)) {
       return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
     }
-  } else if (personType === 'student') {
+  } else if (resolvedTarget.personType === 'student') {
     // Runtime type check for Student
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
       return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
@@ -3054,6 +3083,7 @@ function App() {
         <Route path="/boot" element={<BootPage />} />
         <Route path="/admin/:sessionId" element={<AdminPage />} />
         <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
+        <Route path="/availability-token/:sessionId/:token" element={<AvailabilityPage />} />
         <Route path="/complete/:sessionId" element={<CompletionPage />} />
       </Routes>
     </>
