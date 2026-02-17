@@ -2913,6 +2913,16 @@ const AvailabilityPage = () => {
 
         if (token) {
           void (async () => {
+            // Deterministic fallback: try main session first
+            if (sessionId !== 'main') {
+              const main = await loadSession('main')
+              const hasInMain = Object.values(main?.shareTokens ?? {}).some((t) => t === token)
+              if (hasInMain) {
+                navigate(`/availability-token/main/${token}${location.search}`, { replace: true })
+                return
+              }
+            }
+
             const actualSessionId = await findSessionIdByShareToken(token)
             if (actualSessionId && actualSessionId !== sessionId) {
               navigate(`/availability-token/${actualSessionId}/${token}${location.search}`, { replace: true })
@@ -2925,6 +2935,18 @@ const AvailabilityPage = () => {
 
         if (personId) {
           void (async () => {
+            // Deterministic fallback: try main session first
+            if (sessionId !== 'main') {
+              const main = await loadSession('main')
+              const existsInMain = personType === 'teacher'
+                ? main?.teachers.some((t) => t.id === personId)
+                : main?.students.some((s) => s.id === personId)
+              if (existsInMain) {
+                navigate(`/availability/main/${personType}/${personId}${location.search}`, { replace: true })
+                return
+              }
+            }
+
             const actualSessionId = await findSessionIdByPerson(personType, personId)
             if (actualSessionId && actualSessionId !== sessionId) {
               navigate(`/availability/${actualSessionId}/${personType}/${personId}${location.search}`, { replace: true })
