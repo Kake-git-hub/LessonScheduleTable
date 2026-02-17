@@ -1796,6 +1796,12 @@ const AdminPage = () => {
       // Check teacher not already in target
       if (moved.teacherId && targetAssignments.some((a) => a.teacherId === moved.teacherId)) return current
 
+      // Check students not already assigned in target slot
+      if (moved.studentIds.some((sid) => targetAssignments.some((a) => a.studentIds.includes(sid)))) return current
+
+      // Check teacher has availability for target slot
+      if (moved.teacherId && !hasAvailability(current.availability, 'teacher', moved.teacherId, targetSlot)) return current
+
       // Check all assigned students are available in target slot
       const movedStudents = current.students.filter((s) => moved.studentIds.includes(s.id))
       if (movedStudents.some((student) => !isStudentAvailable(student, targetSlot))) return current
@@ -1811,6 +1817,94 @@ const AdminPage = () => {
       }
       nextAssignments[targetSlot] = targetAssignments
       return { ...current, assignments: nextAssignments }
+    })
+  }
+
+  const fillRandomInputsAll = async (): Promise<void> => {
+    const now = Date.now()
+
+    await update((current) => {
+      const dates = getDatesInRange(current.settings)
+      const totalSlots = dates.length * current.settings.slotsPerDay
+      const nextAvailability = { ...current.availability }
+      const nextTeacherSubmittedAt: Record<string, number> = { ...(current.teacherSubmittedAt ?? {}) }
+
+      for (const teacher of current.teachers) {
+        const teacherRegularKeys = new Set<string>()
+        const teacherLessons = current.regularLessons.filter((l) => l.teacherId === teacher.id)
+        for (const date of dates) {
+          const dayOfWeek = new Date(`${date}T00:00:00`).getDay()
+          for (const lesson of teacherLessons) {
+            if (lesson.dayOfWeek === dayOfWeek) teacherRegularKeys.add(`${date}_${lesson.slotNumber}`)
+          }
+        }
+
+        const slots = new Set<string>(teacherRegularKeys)
+        for (const date of dates) {
+          for (let s = 1; s <= current.settings.slotsPerDay; s++) {
+            const sk = `${date}_${s}`
+            if (!teacherRegularKeys.has(sk) && Math.random() < 0.6) slots.add(sk)
+          }
+        }
+        nextAvailability[personKey('teacher', teacher.id)] = Array.from(slots)
+        nextTeacherSubmittedAt[teacher.id] = now
+      }
+
+      const nextStudents = current.students.map((student) => {
+        const unavailable = new Set<string>()
+        for (const date of dates) {
+          for (let s = 1; s <= current.settings.slotsPerDay; s++) {
+            if (Math.random() < 0.2) unavailable.add(`${date}_${s}`)
+          }
+        }
+
+        const availableCount = Math.max(1, totalSlots - unavailable.size)
+        const maxDesired = Math.min(6, availableCount)
+        const totalDesired = 1 + Math.floor(Math.random() * maxDesired)
+
+        const shuffled = [...FIXED_SUBJECTS].sort(() => Math.random() - 0.5)
+        const subjectCount = Math.min(shuffled.length, 1 + Math.floor(Math.random() * 3))
+        const selectedSubjects = shuffled.slice(0, subjectCount)
+
+        let remain = totalDesired
+        const subjectSlots: Record<string, number> = {}
+        selectedSubjects.forEach((subj, index) => {
+          const leftSubjects = selectedSubjects.length - index
+          const minForThis = 1
+          const maxForThis = remain - (leftSubjects - 1)
+          const value = index === selectedSubjects.length - 1
+            ? remain
+            : minForThis + Math.floor(Math.random() * Math.max(1, maxForThis - minForThis + 1))
+          subjectSlots[subj] = value
+          remain -= value
+        })
+
+        const dateSlotCounts = new Map<string, number>()
+        for (const sk of unavailable) {
+          const d = sk.split('_')[0]
+          dateSlotCounts.set(d, (dateSlotCounts.get(d) ?? 0) + 1)
+        }
+        const unavailableDates = [...dateSlotCounts.entries()]
+          .filter(([, count]) => count >= current.settings.slotsPerDay)
+          .map(([d]) => d)
+
+        return {
+          ...student,
+          subjects: selectedSubjects,
+          subjectSlots,
+          unavailableSlots: Array.from(unavailable),
+          unavailableDates,
+          preferredSlots: [],
+          submittedAt: now,
+        }
+      })
+
+      return {
+        ...current,
+        availability: nextAvailability,
+        teacherSubmittedAt: nextTeacherSubmittedAt,
+        students: nextStudents,
+      }
     })
   }
 
@@ -2075,6 +2169,9 @@ const AdminPage = () => {
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案
               </button>
+              <button className="btn secondary" type="button" onClick={() => void fillRandomInputsAll()}>
+                🎲 ダミー入力
+              </button>
               <button className="btn" type="button" onClick={exportScheduleExcel}>
                 Excel出力
               </button>
@@ -2099,7 +2196,9 @@ const AdminPage = () => {
                 const isTeacherConflict = isDragActive && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
                 const draggedStudents = isDragActive ? data.students.filter((s) => dragInfo.studentIds.includes(s.id)) : []
                 const hasUnavailableStudent = isDragActive && draggedStudents.some((student) => !isStudentAvailable(student, slot))
-                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent
+                const hasStudentConflict = isDragActive && dragInfo.studentIds.some((sid) => slotAssignments.some((a) => a.studentIds.includes(sid)))
+                const hasTeacherUnavailable = isDragActive && dragInfo.teacherId ? !hasAvailability(data.availability, 'teacher', dragInfo.teacherId, slot) : false
+                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
                 const slotDragClass = isDragActive ? (isSameSlot ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
 
                 return (
@@ -2113,9 +2212,15 @@ const AdminPage = () => {
                       }
                       try {
                         const raw = e.dataTransfer.getData('text/plain')
-                        if (!raw) return
+                        if (!raw) {
+                          setDragInfo(null)
+                          return
+                        }
                         const { sourceSlot, sourceIdx } = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number }
-                        if (sourceSlot === slot) return
+                        if (sourceSlot === slot) {
+                          setDragInfo(null)
+                          return
+                        }
                         void moveAssignment(sourceSlot, sourceIdx, slot)
                       } catch { /* ignore */ }
                       setDragInfo(null)
@@ -2369,7 +2474,7 @@ const TeacherInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
-  const showDevRandom = import.meta.env.DEV || /[?&]dev=1(?:&|$)/.test(window.location.search + '&' + (window.location.hash.split('?')[1] ?? ''))
+  const showDevRandom = true
 
   // Find regular lesson slots for this teacher (date_slotNum keys)
   const regularSlotKeys = useMemo(() => {
@@ -2551,7 +2656,7 @@ const StudentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
-  const showDevRandom = import.meta.env.DEV || /[?&]dev=1(?:&|$)/.test(window.location.search + '&' + (window.location.hash.split('?')[1] ?? ''))
+  const showDevRandom = true
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -2843,7 +2948,8 @@ const StudentInputPage = ({
 }
 
 const AvailabilityPage = () => {
-  const { sessionId = 'main', personType = 'teacher', personId = '' } = useParams()
+  const { sessionId = 'main', personType = 'teacher', personId: rawPersonId = '' } = useParams()
+  const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
   const [data, setData] = useState<SessionData | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
   const syncingRef = useRef(false)
