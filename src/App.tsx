@@ -1368,6 +1368,7 @@ const HomePage = () => {
 
 const AdminPage = () => {
   const { sessionId = 'main' } = useParams()
+  const navigate = useNavigate()
   const location = useLocation()
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading } = useSessionData(sessionId)
@@ -1420,8 +1421,13 @@ const AdminPage = () => {
       return () => clearTimeout(timer)
     }
   }, [data])
-  const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
-    if (!data) return
+  const buildTokenUrl = (token: string): string => {
+    const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
+    return base.replace(/\/$/, '') + `/availability-token/${sessionId}/${token}`
+  }
+
+  const ensureShareToken = async (personType: PersonType, personId: string): Promise<string | null> => {
+    if (!data) return null
     const key = personKey(personType, personId)
     const existing = data.shareTokens?.[key]
     const token = existing || createShareToken()
@@ -1429,29 +1435,46 @@ const AdminPage = () => {
     // Ensure token is persisted to Firestore before sharing URL
     let persisted = false
     for (let i = 0; i < 3 && !persisted; i += 1) {
-      await update((current) => ({
-        ...current,
-        shareTokens: {
-          ...(current.shareTokens ?? {}),
-          [key]: token,
-        },
-      }))
+      try {
+        await update((current) => ({
+          ...current,
+          shareTokens: {
+            ...(current.shareTokens ?? {}),
+            [key]: token,
+          },
+        }))
+      } catch {
+        // retry
+      }
       const fresh = await loadSession(sessionId)
       persisted = fresh?.shareTokens?.[key] === token
     }
-    if (!persisted) {
+    return persisted ? token : null
+  }
+
+  const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
+    const token = await ensureShareToken(personType, personId)
+    if (!token) {
       alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
       return
     }
 
-    const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    const url = base.replace(/\/$/, '') + `/availability-token/${sessionId}/${token}`
+    const url = buildTokenUrl(token)
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
     } catch {
       window.prompt('URLをコピーしてください:', url)
     }
+  }
+
+  const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
+    const token = await ensureShareToken(personType, personId)
+    if (!token) {
+      alert('入力ページを開けませんでした。通信状態を確認して再度お試しください。')
+      return
+    }
+    navigate(`/availability-token/${sessionId}/${token}`)
   }
 
   useEffect(() => {
@@ -1999,7 +2022,7 @@ const AdminPage = () => {
                         <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
                       )}
                     </td>
-                    <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void openInputPage('teacher', teacher.id)}>入力ページ</button></td>
                     <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('teacher', teacher.id)}>URLコピー</button></td>
                   </tr>
                   )
@@ -2050,7 +2073,7 @@ const AdminPage = () => {
                         <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
                       )}
                     </td>
-                    <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void openInputPage('student', student.id)}>入力ページ</button></td>
                     <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('student', student.id)}>URLコピー</button></td>
                   </tr>
                 ))}
