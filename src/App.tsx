@@ -1426,7 +1426,9 @@ const AdminPage = () => {
     const existing = data.shareTokens?.[key]
     const token = existing || createShareToken()
 
-    if (!existing) {
+    // Ensure token is persisted to Firestore before sharing URL
+    let persisted = false
+    for (let i = 0; i < 3 && !persisted; i += 1) {
       await update((current) => ({
         ...current,
         shareTokens: {
@@ -1434,6 +1436,12 @@ const AdminPage = () => {
           [key]: token,
         },
       }))
+      const fresh = await loadSession(sessionId)
+      persisted = fresh?.shareTokens?.[key] === token
+    }
+    if (!persisted) {
+      alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
+      return
     }
 
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
@@ -2879,10 +2887,19 @@ const StudentInputPage = ({
 
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '', token = '' } = useParams()
+  const location = useLocation()
   const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
+  const isDebugMode = useMemo(() => {
+    const sp = new URLSearchParams(location.search)
+    if (sp.get('debug') === '1') return true
+    const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?')[1] : ''
+    const hp = new URLSearchParams(hashQuery)
+    return hp.get('debug') === '1'
+  }, [location.search])
   const [data, setData] = useState<SessionData | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [debugInfo, setDebugInfo] = useState<Record<string, string | number | boolean>>({})
   const syncingRef = useRef(false)
   const syncDoneRef = useRef(false)
 
@@ -2907,9 +2924,29 @@ const AvailabilityPage = () => {
     const unsub = watchSession(sessionId, (value) => {
       if (!value) {
         // Session doesn't exist
+        setDebugInfo((prev) => ({
+          ...prev,
+          sessionExists: false,
+          token,
+        }))
         setPhase('error')
         return
       }
+
+      const shareEntries = Object.entries(value.shareTokens ?? {})
+      const matchedEntry = token ? shareEntries.find(([, t]) => t === token) : undefined
+      setDebugInfo({
+        sessionExists: true,
+        tokenProvided: Boolean(token),
+        token,
+        shareTokenCount: shareEntries.length,
+        tokenMatched: Boolean(matchedEntry),
+        matchedKey: matchedEntry?.[0] ?? '',
+        personType,
+        personId,
+        teacherCount: value.teachers.length,
+        studentCount: value.students.length,
+      })
 
       const target = resolveTarget(value)
       const found = target
@@ -3014,6 +3051,14 @@ const AvailabilityPage = () => {
           入力対象が見つかりません。管理者にURLを確認してください。
           <br />
           <Link to="/">ホームに戻る</Link>
+          {isDebugMode && (
+            <>
+              <hr style={{ margin: '12px 0' }} />
+              <div style={{ fontSize: '12px', color: '#374151', whiteSpace: 'pre-wrap' }}>
+                {JSON.stringify(debugInfo, null, 2)}
+              </div>
+            </>
+          )}
         </div>
       </div>
     )
