@@ -1366,7 +1366,7 @@ const AdminPage = () => {
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
-  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; teacherId: string } | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
 
   // Track real-time changes to show "just updated" indicators for teachers/students
@@ -1796,6 +1796,10 @@ const AdminPage = () => {
       // Check teacher not already in target
       if (moved.teacherId && targetAssignments.some((a) => a.teacherId === moved.teacherId)) return current
 
+      // Check all assigned students are available in target slot
+      const movedStudents = current.students.filter((s) => moved.studentIds.includes(s.id))
+      if (movedStudents.some((student) => !isStudentAvailable(student, targetSlot))) return current
+
       // Move
       srcAssignments.splice(sourceIdx, 1)
       targetAssignments.push(moved)
@@ -2093,16 +2097,20 @@ const AdminPage = () => {
                 const isSameSlot = isDragActive && dragInfo.sourceSlot === slot
                 const isDeskFull = isDragActive && deskCount > 0 && slotAssignments.length >= deskCount
                 const isTeacherConflict = isDragActive && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
-                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict
+                const draggedStudents = isDragActive ? data.students.filter((s) => dragInfo.studentIds.includes(s.id)) : []
+                const hasUnavailableStudent = isDragActive && draggedStudents.some((student) => !isStudentAvailable(student, slot))
+                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent
                 const slotDragClass = isDragActive ? (isSameSlot ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
 
                 return (
                   <div className={`slot-card${slotDragClass}`} key={slot}
-                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = isDropValid ? 'move' : 'none'; (e.currentTarget as HTMLElement).classList.add('drag-over') }}
-                    onDragLeave={(e) => { (e.currentTarget as HTMLElement).classList.remove('drag-over') }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = isDropValid ? 'move' : 'none' }}
                     onDrop={(e) => {
                       e.preventDefault()
-                      ;(e.currentTarget as HTMLElement).classList.remove('drag-over')
+                      if (!isDropValid) {
+                        setDragInfo(null)
+                        return
+                      }
                       try {
                         const raw = e.dataTransfer.getData('text/plain')
                         if (!raw) return
@@ -2110,6 +2118,7 @@ const AdminPage = () => {
                         if (sourceSlot === slot) return
                         void moveAssignment(sourceSlot, sourceIdx, slot)
                       } catch { /* ignore */ }
+                      setDragInfo(null)
                     }}
                   >
                     <div className="slot-title">
@@ -2147,7 +2156,7 @@ const AdminPage = () => {
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
                               e.dataTransfer.setData('text/plain', payload)
                               e.dataTransfer.effectAllowed = 'move'
-                              setDragInfo({ sourceSlot: slot, teacherId: assignment.teacherId })
+                              setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
                             }}
                             onDragEnd={() => setDragInfo(null)}
                             style={{ position: 'relative' }}
@@ -2360,6 +2369,7 @@ const TeacherInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const showDevRandom = import.meta.env.DEV || /[?&]dev=1(?:&|$)/.test(window.location.search + '&' + (window.location.hash.split('?')[1] ?? ''))
 
   // Find regular lesson slots for this teacher (date_slotNum keys)
   const regularSlotKeys = useMemo(() => {
@@ -2497,7 +2507,7 @@ const TeacherInputPage = ({
       </div>
 
       <div className="submit-section">
-        {import.meta.env.DEV && (
+        {showDevRandom && (
           <button
             className="btn secondary"
             type="button"
@@ -2541,6 +2551,7 @@ const StudentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const showDevRandom = import.meta.env.DEV || /[?&]dev=1(?:&|$)/.test(window.location.search + '&' + (window.location.hash.split('?')[1] ?? ''))
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -2772,7 +2783,7 @@ const StudentInputPage = ({
       </div>
 
       <div className="submit-section">
-        {import.meta.env.DEV && (
+        {showDevRandom && (
           <button
             className="btn secondary"
             type="button"
@@ -2902,6 +2913,9 @@ const AvailabilityPage = () => {
             gradeConstraints: master.gradeConstraints ?? [],
             regularLessons: master.regularLessons,
           }
+          // Show merged data immediately so shared URL can open even if save fails in this browser
+          setData(next)
+          setPhase('ready')
           return saveSession(sessionId, next)
         })
         .then(() => {
@@ -2912,7 +2926,8 @@ const AvailabilityPage = () => {
         .catch(() => {
           syncDoneRef.current = true
           syncingRef.current = false
-          setData(value)
+          // If session save failed but merged data is already shown, keep current state
+          setData((prev) => prev ?? value)
           setPhase('ready')
         })
     })
