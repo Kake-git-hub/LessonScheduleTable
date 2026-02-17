@@ -13,6 +13,7 @@ import type {
   RegularLesson,
   SessionData,
   Student,
+  SubmissionLogEntry,
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, personKey, slotLabel } from './utils/schedule'
@@ -39,6 +40,8 @@ const emptySession = (): SessionData => ({
     slotsPerDay: 5,
     holidays: [],
     deskCount: 0,
+    submissionStartDate: '',
+    submissionEndDate: '',
   },
   subjects: FIXED_SUBJECTS,
   teachers: [],
@@ -49,6 +52,7 @@ const emptySession = (): SessionData => ({
   assignments: {},
   regularLessons: [],
   shareTokens: {},
+  submissionLog: [],
 })
 
 const createTemplateSession = (): SessionData => {
@@ -57,9 +61,11 @@ const createTemplateSession = (): SessionData => {
     adminPassword: 'admin1234',
     startDate: '2026-07-21',
     endDate: '2026-07-23',
-    slotsPerDay: 3,
+    slotsPerDay: 5,
     holidays: [],
     deskCount: 0,
+    submissionStartDate: '',
+    submissionEndDate: '',
   }
 
   const subjects = FIXED_SUBJECTS
@@ -378,6 +384,19 @@ const buildIncrementalAutoAssignments = (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
+  // Build submission order map: earlier initial submission → higher priority (lower rank number)
+  const submissionOrderMap = new Map<string, number>()
+  if (data.submissionLog) {
+    let rank = 0
+    for (const entry of data.submissionLog) {
+      if (entry.type === 'initial' && entry.personType === 'student' && !submissionOrderMap.has(entry.personId)) {
+        submissionOrderMap.set(entry.personId, rank++)
+      }
+    }
+  }
+  // Students who haven't submitted get lowest priority
+  const maxRank = submissionOrderMap.size
+
   // Phase 1: Clean up existing assignments — handle deleted teachers/students (skip regular lessons)
   for (const slot of slots) {
     const existing = data.assignments[slot]
@@ -635,6 +654,10 @@ const buildIncrementalAutoAssignments = (
           // Prefer students with fewer assigned dates (spread across days)
           const assignedDates = countStudentAssignedDates(result, st.id)
           studentScore -= assignedDates * 5
+
+          // Submission order bonus: earlier submitters get priority (max +15)
+          const submissionRank = submissionOrderMap.get(st.id) ?? maxRank
+          studentScore += Math.max(0, 15 - submissionRank * 2)
         }
 
         // Regular lesson pair bonus: prefer assigning regular-lesson teacher-student combos
@@ -706,6 +729,12 @@ const HomePage = () => {
   const [newTerm, setNewTerm] = useState<'spring' | 'summer' | 'winter'>('summer')
   const [newSessionId, setNewSessionId] = useState('')
   const [newSessionName, setNewSessionName] = useState('')
+  const [newStartDate, setNewStartDate] = useState('')
+  const [newEndDate, setNewEndDate] = useState('')
+  const [newSubmissionStart, setNewSubmissionStart] = useState('')
+  const [newSubmissionEnd, setNewSubmissionEnd] = useState('')
+  const [newDeskCount, setNewDeskCount] = useState(0)
+  const [newHolidays, setNewHolidays] = useState<string[]>([])
 
   // Master data form state
   const [teacherName, setTeacherName] = useState('')
@@ -1079,7 +1108,7 @@ const HomePage = () => {
     const existing = await loadSession(id)
     if (existing) return
     const seed = createTemplateSession()
-    seed.settings.name = '開発用セッション'
+    seed.settings.name = '開発用特別講習'
     seed.settings.adminPassword = adminPassword
     await saveSession(id, seed)
   }
@@ -1093,29 +1122,41 @@ const HomePage = () => {
   const onCreateSession = async (): Promise<void> => {
     const id = newSessionId.trim()
     if (!id) return
+    if (!masterData || (masterData.teachers.length === 0 && masterData.students.length === 0)) {
+      alert('管理データ（講師・生徒）が未登録です。先に管理データを登録してください。')
+      return
+    }
     if (sessions.some((s) => s.id === id)) {
-      alert('同じセッションIDが既に存在します。別のIDにしてください。')
+      alert('同じIDの特別講習が既に存在します。別のIDにしてください。')
+      return
+    }
+    if (!newStartDate || !newEndDate) {
+      alert('講習期間（開始日・終了日）を入力してください。')
       return
     }
     const seed = emptySession()
     seed.settings.name = newSessionName.trim() || id
     seed.settings.adminPassword = adminPassword
-    if (masterData) {
-      seed.teachers = masterData.teachers
-      seed.students = masterData.students.map((s) => ({
-        ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
-      }))
-      seed.constraints = masterData.constraints
-      seed.gradeConstraints = masterData.gradeConstraints
-      seed.regularLessons = masterData.regularLessons
-    }
+    seed.settings.startDate = newStartDate
+    seed.settings.endDate = newEndDate
+    seed.settings.submissionStartDate = newSubmissionStart
+    seed.settings.submissionEndDate = newSubmissionEnd
+    seed.settings.deskCount = newDeskCount
+    seed.settings.holidays = [...newHolidays]
+    seed.teachers = masterData.teachers
+    seed.students = masterData.students.map((s) => ({
+      ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
+    }))
+    seed.constraints = masterData.constraints
+    seed.gradeConstraints = masterData.gradeConstraints
+    seed.regularLessons = masterData.regularLessons
     try {
       const verified = await saveAndVerify(id, seed)
       if (!verified) {
-        alert('セッション作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
+        alert('特別講習の作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
       }
     } catch (e) {
-      alert(`セッション作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}`)
+      alert(`特別講習の作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -1125,7 +1166,7 @@ const HomePage = () => {
   }
 
   const handleDeleteSession = async (sessionId: string, sessionName: string): Promise<void> => {
-    const confirmed = window.confirm(`セッション「${sessionName || sessionId}」を削除しますか？\nこの操作は元に戻せません。`)
+    const confirmed = window.confirm(`特別講習「${sessionName || sessionId}」を削除しますか？\nこの操作は元に戻せません。`)
     if (!confirmed) return
     const password = window.prompt('削除パスワードを入力してください:')
     if (password !== adminPassword) {
@@ -1133,7 +1174,7 @@ const HomePage = () => {
       return
     }
     await deleteSession(sessionId)
-    alert('セッションを削除しました。')
+    alert('特別講習を削除しました。')
   }
 
   const formatDate = (ms: number): string => {
@@ -1146,7 +1187,7 @@ const HomePage = () => {
     <div className="app-shell">
       <div className="panel">
         <h2>講習コマ割りアプリ</h2>
-        <p className="muted">管理データ（講師・生徒・制約）はここで一元管理し、セッションごとに希望コマ数とコマ割りを管理します。</p>
+        <p className="muted">管理データ（講師・生徒・制約）はここで一元管理し、特別講習ごとに希望コマ数とコマ割りを管理します。</p>
 
         {!unlocked ? (
           <>
@@ -1168,28 +1209,127 @@ const HomePage = () => {
           <>
             {/* --- Session management --- */}
             <div className="panel">
-              <h3>新規セッション追加</h3>
-              <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
-              <div className="row">
-                <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 120 }} />
-                <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
-                  <option value="spring">春期講習</option>
-                  <option value="summer">夏期講習</option>
-                  <option value="winter">冬期講習</option>
-                </select>
-                <input value={newSessionId} onChange={(e) => setNewSessionId(e.target.value)} placeholder="sessionId (例: 2026-summer)" />
-                <input value={newSessionName} onChange={(e) => setNewSessionName(e.target.value)} placeholder="表示名 (例: 2026 夏期講習)" />
-                <button className="btn" type="button" onClick={() => void onCreateSession()}>追加</button>
-              </div>
+              <h3>新規特別講習を追加</h3>
+              {(!masterData || (masterData.teachers.length === 0 && masterData.students.length === 0)) ? (
+                <p style={{ color: '#dc2626', fontWeight: 600 }}>⚠ 管理データ（講師・生徒）が未登録のため、特別講習を追加できません。先に下部の管理データを登録してください。</p>
+              ) : (
+                <>
+                  <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
+                  <div className="row">
+                    <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 80 }} />
+                    <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
+                      <option value="spring">春期講習</option>
+                      <option value="summer">夏期講習</option>
+                      <option value="winter">冬期講習</option>
+                    </select>
+                    <input value={newSessionId} onChange={(e) => setNewSessionId(e.target.value)} placeholder="ID (例: 2026-summer)" style={{ width: 160 }} />
+                    <input value={newSessionName} onChange={(e) => setNewSessionName(e.target.value)} placeholder="表示名 (例: 2026 夏期講習)" />
+                  </div>
+                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      講習期間:
+                      <input type="date" value={newStartDate} onChange={(e) => setNewStartDate(e.target.value)} />
+                      〜
+                      <input type="date" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} />
+                    </label>
+                  </div>
+                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      提出期間:
+                      <input type="date" value={newSubmissionStart} onChange={(e) => setNewSubmissionStart(e.target.value)} />
+                      〜
+                      <input type="date" value={newSubmissionEnd} onChange={(e) => setNewSubmissionEnd(e.target.value)} />
+                    </label>
+                    <span className="muted" style={{ fontSize: '11px' }}>※この期間のみ希望URLが有効になります</span>
+                  </div>
+                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      机の数:
+                      <input type="number" min={0} value={newDeskCount} onChange={(e) => setNewDeskCount(Math.max(0, Number(e.target.value) || 0))} style={{ width: '60px' }} />
+                      <span style={{ fontSize: '11px' }}>0=無制限</span>
+                    </label>
+                  </div>
+                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <span className="muted">休日:</span>
+                    <input
+                      type="date"
+                      onChange={(e) => {
+                        const val = e.target.value
+                        if (val && !newHolidays.includes(val)) {
+                          setNewHolidays((prev) => [...prev, val].sort())
+                        }
+                        e.target.value = ''
+                      }}
+                    />
+                    {newHolidays.map((h) => (
+                      <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => setNewHolidays((prev) => prev.filter((d) => d !== h))}>
+                        {formatShortDate(h)} ×
+                      </span>
+                    ))}
+                  </div>
+                  <div className="row" style={{ marginTop: '12px' }}>
+                    <button className="btn" type="button" onClick={() => void onCreateSession()}>特別講習を作成</button>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="panel">
               <div className="row" style={{ justifyContent: 'space-between' }}>
-                <h3>セッション一覧（新しい順）</h3>
+                <h3>特別講習一覧（新しい順）</h3>
                 <button className="btn secondary" type="button" onClick={() => setUnlocked(false)}>ロック</button>
               </div>
+              <div className="row" style={{ marginBottom: '8px', gap: '8px' }}>
+                <button className="btn secondary" type="button" onClick={() => {
+                  // Backup: export all sessions as JSON
+                  const payload = { sessions: sessions.map((s) => s.id), exportedAt: Date.now() }
+                  const promises = sessions.map((s) => loadSession(s.id).then((d) => ({ id: s.id, data: d })))
+                  void Promise.all(promises).then((results) => {
+                    const backup = { ...payload, data: Object.fromEntries(results.map((r) => [r.id, r.data])) }
+                    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `特別講習バックアップ_${new Date().toISOString().slice(0, 10)}.json`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  })
+                }}>📥 全データバックアップ</button>
+                <button className="btn secondary" type="button" onClick={() => {
+                  const input = document.createElement('input')
+                  input.type = 'file'
+                  input.accept = '.json'
+                  input.onchange = async () => {
+                    const file = input.files?.[0]
+                    if (!file) return
+                    try {
+                      const text = await file.text()
+                      const backup = JSON.parse(text) as { data: Record<string, SessionData> }
+                      if (!backup.data || typeof backup.data !== 'object') {
+                        alert('バックアップファイルの形式が正しくありません。')
+                        return
+                      }
+                      const ids = Object.keys(backup.data)
+                      const existingIds = sessions.map((s) => s.id)
+                      const newIds = ids.filter((id) => !existingIds.includes(id))
+                      const overwriteIds = ids.filter((id) => existingIds.includes(id))
+                      let msg = `取り込み対象: ${ids.length}件の特別講習`
+                      if (newIds.length > 0) msg += `\n  新規: ${newIds.join(', ')}`
+                      if (overwriteIds.length > 0) msg += `\n  上書き: ${overwriteIds.join(', ')}`
+                      if (!window.confirm(msg + '\n\n取り込みますか？')) return
+                      for (const [id, data] of Object.entries(backup.data)) {
+                        if (data) await saveSession(id, data as SessionData)
+                      }
+                      alert(`${ids.length}件の特別講習を取り込みました。`)
+                    } catch (e) {
+                      alert(`取り込みエラー: ${e instanceof Error ? e.message : String(e)}`)
+                    }
+                  }
+                  input.click()
+                }}>📤 バックアップ取り込み</button>
+              </div>
               <table className="table">
-                <thead><tr><th>セッションID</th><th>名称</th><th>作成</th><th>更新</th><th /><th /></tr></thead>
+                <thead><tr><th>ID</th><th>名称</th><th>作成</th><th>更新</th><th /><th /></tr></thead>
                 <tbody>
                   {sessions.map((s) => (
                     <tr key={s.id}>
@@ -1383,7 +1523,6 @@ const AdminPage = () => {
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
   const { data, setData, loading, error: sessionError } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
-  const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -1473,10 +1612,10 @@ const AdminPage = () => {
     try {
       const verified = await saveAndVerify(sessionId, seed)
       if (!verified) {
-        alert('セッションの作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
+        alert('特別講習の作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
       }
     } catch (e) {
-      alert(`セッションの作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}\n\nFirebase ConsoleでAuthentication（匿名）とFirestoreルールを確認してください。`)
+      alert(`特別講習の作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}\n\nFirebase ConsoleでAuthentication（匿名）とFirestoreルールを確認してください。`)
     }
   }
 
@@ -1570,36 +1709,12 @@ const AdminPage = () => {
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
     const { assignments: nextAssignments, changeLog } = buildIncrementalAutoAssignments(data, slotKeys)
-    setLastChangeLog(changeLog)
     await update((current) => ({ ...current, assignments: nextAssignments }))
     if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更があります。\n「変更履歴出力」で詳細を確認できます。`)
+      alert(`自動提案完了: ${changeLog.length}件の変更がありました。`)
     } else {
       alert('自動提案完了: 変更はありませんでした。')
     }
-  }
-
-  const downloadChangeLog = (): void => {
-    if (lastChangeLog.length === 0) {
-      alert('変更履歴がありません。先に「自動提案」を実行してください。')
-      return
-    }
-    const lines = [
-      `コマ割り変更履歴 — ${data?.settings.name ?? sessionId}`,
-      `出力日時: ${new Date().toLocaleString('ja-JP')}`,
-      '='.repeat(60),
-      '',
-      ...lastChangeLog.map((entry) => `[${slotLabel(entry.slot)}] ${entry.action}: ${entry.detail}`),
-      '',
-      `合計: ${lastChangeLog.length}件の変更`,
-    ]
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `変更履歴_${sessionId}.txt`
-    a.click()
-    URL.revokeObjectURL(url)
   }
 
   /** Export schedule to Excel: weekly sheets (Mon–Sun) */
@@ -1890,10 +2005,10 @@ service cloud.firestore {
     return (
       <div className="app-shell">
         <div className="panel">
-          <h2>セッション: {sessionId}</h2>
+          <h2>特別講習: {sessionId}</h2>
           <div className="row">
             <button className="btn" type="button" onClick={createSession}>
-              空のセッションを作成
+              空の特別講習を作成
             </button>
           </div>
           <p className="muted">作成後に管理パスワードや期間を変更してください。</p>
@@ -1941,7 +2056,7 @@ service cloud.firestore {
         <div className="panel">
           <h3>管理者パスワードが一致しません</h3>
           <p className="muted">
-            トップ画面で管理者パスワードを入力し「続行」してから、もう一度このセッションを開いてください。
+            トップ画面で管理者パスワードを入力し「続行」してから、もう一度この特別講習を開いてください。
           </p>
           <Link to="/">トップへ戻る</Link>
         </div>
@@ -1960,70 +2075,52 @@ service cloud.firestore {
                 }}
                 placeholder="講習名"
               />
-              <input
-                type="date"
-                value={data.settings.startDate}
-                onChange={(e) => {
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, startDate: e.target.value },
-                  }))
-                }}
-              />
-              <input
-                type="date"
-                value={data.settings.endDate}
-                onChange={(e) => {
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, endDate: e.target.value },
-                  }))
-                }}
-              />
-              <span className="muted" style={{ marginLeft: '4px' }}>休日:</span>
-              <input
-                type="date"
-                onChange={(e) => {
-                  const val = e.target.value
-                  if (val && !data.settings.holidays.includes(val)) {
-                    void update((current) => ({
-                      ...current,
-                      settings: { ...current.settings, holidays: [...current.settings.holidays, val].sort() },
-                    }))
-                  }
-                  e.target.value = ''
-                }}
-              />
-              {data.settings.holidays.slice().sort().map((h) => (
-                <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => {
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, holidays: current.settings.holidays.filter((d) => d !== h) },
-                  }))
-                }}>
-                  {formatShortDate(h)} ×
-                </span>
-              ))}
+              <span className="muted">期間: {data.settings.startDate || '未設定'} 〜 {data.settings.endDate || '未設定'}</span>
+              <span className="muted">机: {data.settings.deskCount || '無制限'}</span>
             </div>
-            <div className="row" style={{ marginTop: '8px' }}>
-              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                机の数:
+            <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                提出期間:
                 <input
-                  type="number"
-                  min={0}
-                  value={data.settings.deskCount ?? 0}
+                  type="date"
+                  value={data.settings.submissionStartDate ?? ''}
                   onChange={(e) => {
-                    const val = Math.max(0, Number(e.target.value) || 0)
                     void update((current) => ({
                       ...current,
-                      settings: { ...current.settings, deskCount: val },
+                      settings: { ...current.settings, submissionStartDate: e.target.value },
                     }))
                   }}
-                  style={{ width: '60px' }}
                 />
-                <span className="muted" style={{ fontSize: '12px' }}>0=無制限　各コマの通常+特別講習ペア数がこの数以下になります</span>
+                〜
+                <input
+                  type="date"
+                  value={data.settings.submissionEndDate ?? ''}
+                  onChange={(e) => {
+                    void update((current) => ({
+                      ...current,
+                      settings: { ...current.settings, submissionEndDate: e.target.value },
+                    }))
+                  }}
+                />
               </label>
+              {(() => {
+                const now = new Date().toISOString().slice(0, 10)
+                const start = data.settings.submissionStartDate
+                const end = data.settings.submissionEndDate
+                if (!start && !end) return <span className="badge warn">提出期間未設定（常時受付中）</span>
+                if (start && now < start) return <span className="badge warn">提出期間前</span>
+                if (end && now > end) return <span className="badge" style={{ background: '#dc2626', color: '#fff' }}>提出期間終了</span>
+                return <span className="badge ok">提出受付中</span>
+              })()}
             </div>
+            {data.settings.holidays.length > 0 && (
+              <div className="row" style={{ marginTop: '4px' }}>
+                <span className="muted">休日:</span>
+                {data.settings.holidays.map((h) => (
+                  <span key={h} className="badge warn">{formatShortDate(h)}</span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="panel">
@@ -2166,11 +2263,6 @@ service cloud.firestore {
               <button className="btn" type="button" onClick={exportScheduleExcel}>
                 Excel出力
               </button>
-              {lastChangeLog.length > 0 && (
-                <button className="btn" type="button" onClick={downloadChangeLog}>
-                  変更履歴出力
-                </button>
-              )}
             </div>
             <p className="muted">通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
             <p className="muted" style={{ fontSize: '12px' }}>★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可</p>
@@ -2526,16 +2618,29 @@ const TeacherInputPage = ({
     // Ensure regular lesson slots are always included
     const merged = new Set(localAvailability)
     for (const rk of regularSlotKeys) merged.add(rk)
+    const availabilityArray = Array.from(merged)
+
+    // Determine if this is initial or update submission
+    const isUpdate = !!(data.teacherSubmittedAt?.[teacher.id])
+    const logEntry: SubmissionLogEntry = {
+      personId: teacher.id,
+      personType: 'teacher',
+      submittedAt: Date.now(),
+      type: isUpdate ? 'update' : 'initial',
+      availability: availabilityArray,
+    }
+
     const next: SessionData = {
       ...data,
       availability: {
         ...data.availability,
-        [key]: Array.from(merged),
+        [key]: availabilityArray,
       },
       teacherSubmittedAt: {
         ...(data.teacherSubmittedAt ?? {}),
         [teacher.id]: Date.now(),
       },
+      submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
     navigate(`/complete/${sessionId}`)
@@ -2729,6 +2834,18 @@ const StudentInputPage = ({
       .filter(([, count]) => count >= data.settings.slotsPerDay)
       .map(([d]) => d)
 
+    // Determine if this is initial or update submission
+    const isUpdate = !!(student.submittedAt)
+    const logEntry: SubmissionLogEntry = {
+      personId: student.id,
+      personType: 'student',
+      submittedAt: Date.now(),
+      type: isUpdate ? 'update' : 'initial',
+      subjects,
+      subjectSlots,
+      unavailableSlots: Array.from(unavailableSlots),
+    }
+
     const updatedStudents = data.students.map((s) =>
       s.id === student.id
         ? {
@@ -2746,6 +2863,7 @@ const StudentInputPage = ({
     const next: SessionData = {
       ...data,
       students: updatedStudents,
+      submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
     navigate(`/complete/${sessionId}`)
@@ -2970,7 +3088,7 @@ const AvailabilityPage = () => {
         clearTimeout(timer)
 
         if (!value) {
-          setErrorDetail(`セッション「${sessionId}」がFirebaseに見つかりません。`)
+          setErrorDetail(`特別講習「${sessionId}」がFirebaseに見つかりません。`)
           setPhase('not-found')
           return
         }
@@ -3094,16 +3212,16 @@ service cloud.firestore {
     return (
       <div className="app-shell">
         <div className="panel">
-          <h3>セッションが見つかりません</h3>
+          <h3>特別講習が見つかりません</h3>
           <p>{errorDetail}</p>
           <p className="muted">
             考えられる原因：<br />
-            ・管理者がまだセッションを作成していない<br />
-            ・セッションIDが間違っている<br />
+            ・管理者がまだ特別講習を作成していない<br />
+            ・IDが間違っている<br />
             ・Firestoreへのデータ保存に失敗している
           </p>
           <p className="muted" style={{ fontSize: '11px' }}>
-            セッションID: {sessionId} / {personType} / {personId}
+            特別講習ID: {sessionId} / {personType} / {personId}
           </p>
           <Link to="/">ホームに戻る</Link>
         </div>
@@ -3132,7 +3250,7 @@ service cloud.firestore {
           入力対象が見つかりません。管理者にURLを確認してください。
           <br />
           <p className="muted" style={{ fontSize: '11px' }}>
-            セッションID: {sessionId} / {personType} / {personId}
+            特別講習ID: {sessionId} / {personType} / {personId}
           </p>
           <Link to="/">ホームに戻る</Link>
         </div>
@@ -3142,10 +3260,66 @@ service cloud.firestore {
 
   if (personType === 'teacher') {
     if ('subjects' in currentPerson && Array.isArray(currentPerson.subjects)) {
+      // Check submission period for teachers too
+      const now = new Date()
+      const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
+      const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
+      if (startDate && now < startDate) {
+        return (
+          <div className="app-shell">
+            <div className="panel">
+              <h3>提出期間前です</h3>
+              <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
+              <p className="muted">提出期間になるまでお待ちください。</p>
+              <Link to="/">ホームに戻る</Link>
+            </div>
+          </div>
+        )
+      }
+      if (endDate && now > endDate) {
+        return (
+          <div className="app-shell">
+            <div className="panel">
+              <h3>提出期間は終了しました</h3>
+              <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
+              <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
+              <Link to="/">ホームに戻る</Link>
+            </div>
+          </div>
+        )
+      }
       return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
     }
   } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
+      // Check submission period for students
+      const now = new Date()
+      const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
+      const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
+      if (startDate && now < startDate) {
+        return (
+          <div className="app-shell">
+            <div className="panel">
+              <h3>提出期間前です</h3>
+              <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
+              <p className="muted">提出期間になるまでお待ちください。</p>
+              <Link to="/">ホームに戻る</Link>
+            </div>
+          </div>
+        )
+      }
+      if (endDate && now > endDate) {
+        return (
+          <div className="app-shell">
+            <div className="panel">
+              <h3>提出期間は終了しました</h3>
+              <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
+              <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
+              <Link to="/">ホームに戻る</Link>
+            </div>
+          </div>
+        )
+      }
       return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
     }
   }

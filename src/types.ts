@@ -62,8 +62,25 @@ export type SessionSettings = {
   slotsPerDay: number
   holidays: string[]
   deskCount?: number
+  submissionStartDate?: string
+  submissionEndDate?: string
   createdAt?: number
   updatedAt?: number
+}
+
+/** A snapshot of a student's submission (or change delta). */
+export type SubmissionLogEntry = {
+  personId: string
+  personType: 'student' | 'teacher'
+  submittedAt: number
+  /** 'initial' for first submission, 'update' for subsequent changes */
+  type: 'initial' | 'update'
+  /** The data snapshot at time of submission (student) */
+  subjects?: string[]
+  subjectSlots?: SubjectSlotRequest
+  unavailableSlots?: string[]
+  /** Teacher availability snapshot */
+  availability?: string[]
 }
 
 export type SessionData = {
@@ -78,6 +95,7 @@ export type SessionData = {
   regularLessons: RegularLesson[]
   teacherSubmittedAt?: Record<string, number>
   shareTokens?: Record<string, string>
+  submissionLog?: SubmissionLogEntry[]
 }
 
 export type MasterData = {
