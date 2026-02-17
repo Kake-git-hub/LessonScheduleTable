@@ -1412,11 +1412,12 @@ const AdminPage = () => {
       return () => clearTimeout(timer)
     }
   }, [data])
-  const copyUrl = async (path: string): Promise<void> => {
+  const copyUrl = async (path: string, personName?: string): Promise<void> => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
     // Path-based URL: GitHub Pages 404.html redirects to hash route
     // This survives messaging apps (LINE etc.) that strip hash fragments
-    const url = base.replace(/\/$/, '') + path
+    const hint = personName ? `~${encodeURIComponent(personName)}` : ''
+    const url = base.replace(/\/$/, '') + path + hint
     try {
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
@@ -1820,94 +1821,6 @@ const AdminPage = () => {
     })
   }
 
-  const fillRandomInputsAll = async (): Promise<void> => {
-    const now = Date.now()
-
-    await update((current) => {
-      const dates = getDatesInRange(current.settings)
-      const totalSlots = dates.length * current.settings.slotsPerDay
-      const nextAvailability = { ...current.availability }
-      const nextTeacherSubmittedAt: Record<string, number> = { ...(current.teacherSubmittedAt ?? {}) }
-
-      for (const teacher of current.teachers) {
-        const teacherRegularKeys = new Set<string>()
-        const teacherLessons = current.regularLessons.filter((l) => l.teacherId === teacher.id)
-        for (const date of dates) {
-          const dayOfWeek = new Date(`${date}T00:00:00`).getDay()
-          for (const lesson of teacherLessons) {
-            if (lesson.dayOfWeek === dayOfWeek) teacherRegularKeys.add(`${date}_${lesson.slotNumber}`)
-          }
-        }
-
-        const slots = new Set<string>(teacherRegularKeys)
-        for (const date of dates) {
-          for (let s = 1; s <= current.settings.slotsPerDay; s++) {
-            const sk = `${date}_${s}`
-            if (!teacherRegularKeys.has(sk) && Math.random() < 0.6) slots.add(sk)
-          }
-        }
-        nextAvailability[personKey('teacher', teacher.id)] = Array.from(slots)
-        nextTeacherSubmittedAt[teacher.id] = now
-      }
-
-      const nextStudents = current.students.map((student) => {
-        const unavailable = new Set<string>()
-        for (const date of dates) {
-          for (let s = 1; s <= current.settings.slotsPerDay; s++) {
-            if (Math.random() < 0.2) unavailable.add(`${date}_${s}`)
-          }
-        }
-
-        const availableCount = Math.max(1, totalSlots - unavailable.size)
-        const maxDesired = Math.min(6, availableCount)
-        const totalDesired = 1 + Math.floor(Math.random() * maxDesired)
-
-        const shuffled = [...FIXED_SUBJECTS].sort(() => Math.random() - 0.5)
-        const subjectCount = Math.min(shuffled.length, 1 + Math.floor(Math.random() * 3))
-        const selectedSubjects = shuffled.slice(0, subjectCount)
-
-        let remain = totalDesired
-        const subjectSlots: Record<string, number> = {}
-        selectedSubjects.forEach((subj, index) => {
-          const leftSubjects = selectedSubjects.length - index
-          const minForThis = 1
-          const maxForThis = remain - (leftSubjects - 1)
-          const value = index === selectedSubjects.length - 1
-            ? remain
-            : minForThis + Math.floor(Math.random() * Math.max(1, maxForThis - minForThis + 1))
-          subjectSlots[subj] = value
-          remain -= value
-        })
-
-        const dateSlotCounts = new Map<string, number>()
-        for (const sk of unavailable) {
-          const d = sk.split('_')[0]
-          dateSlotCounts.set(d, (dateSlotCounts.get(d) ?? 0) + 1)
-        }
-        const unavailableDates = [...dateSlotCounts.entries()]
-          .filter(([, count]) => count >= current.settings.slotsPerDay)
-          .map(([d]) => d)
-
-        return {
-          ...student,
-          subjects: selectedSubjects,
-          subjectSlots,
-          unavailableSlots: Array.from(unavailable),
-          unavailableDates,
-          preferredSlots: [],
-          submittedAt: now,
-        }
-      })
-
-      return {
-        ...current,
-        availability: nextAvailability,
-        teacherSubmittedAt: nextTeacherSubmittedAt,
-        students: nextStudents,
-      }
-    })
-  }
-
   if (loading) {
     return (
       <div className="app-shell">
@@ -2059,7 +1972,7 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/teacher/${teacher.id}`}>入力ページ</Link></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`)}>URLコピー</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/teacher/${teacher.id}`, teacher.name)}>URLコピー</button></td>
                   </tr>
                   )
                 })}
@@ -2110,7 +2023,7 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td><Link to={`/availability/${sessionId}/student/${student.id}`}>入力ページ</Link></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/student/${student.id}`)}>URLコピー</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyUrl(`/availability/${sessionId}/student/${student.id}`, student.name)}>URLコピー</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -2168,9 +2081,6 @@ const AdminPage = () => {
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案
-              </button>
-              <button className="btn secondary" type="button" onClick={() => void fillRandomInputsAll()}>
-                🎲 ダミー入力
               </button>
               <button className="btn" type="button" onClick={exportScheduleExcel}>
                 Excel出力
@@ -2949,7 +2859,16 @@ const StudentInputPage = ({
 
 const AvailabilityPage = () => {
   const { sessionId = 'main', personType = 'teacher', personId: rawPersonId = '' } = useParams()
-  const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
+  const personId = useMemo(() => rawPersonId.split('~')[0].split(/[?&]/)[0], [rawPersonId])
+  const personHintName = useMemo(() => {
+    const encoded = rawPersonId.split('~')[1] ?? ''
+    if (!encoded) return ''
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }, [rawPersonId])
   const [data, setData] = useState<SessionData | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
   const syncingRef = useRef(false)
@@ -2968,10 +2887,10 @@ const AvailabilityPage = () => {
         return
       }
 
-      // Check if person exists in this session data
+      // Check if person exists in this session data (id first, then name hint fallback)
       const found = personType === 'teacher'
-        ? value.teachers.find((t) => t.id === personId)
-        : value.students.find((s) => s.id === personId)
+        ? value.teachers.find((t) => t.id === personId) ?? (personHintName ? value.teachers.find((t) => t.name === personHintName) : undefined)
+        : value.students.find((s) => s.id === personId) ?? (personHintName ? value.students.find((s) => s.name === personHintName) : undefined)
 
       if (found) {
         // Person found — show the form
@@ -3039,15 +2958,17 @@ const AvailabilityPage = () => {
     })
 
     return () => unsub()
-  }, [sessionId, personType, personId])
+  }, [sessionId, personType, personId, personHintName])
 
   const currentPerson = useMemo(() => {
     if (!data) return null
     if (personType === 'teacher') {
-      return data.teachers.find((teacher) => teacher.id === personId) ?? null
+      return data.teachers.find((teacher) => teacher.id === personId)
+        ?? (personHintName ? data.teachers.find((teacher) => teacher.name === personHintName) ?? null : null)
     }
-    return data.students.find((student) => student.id === personId) ?? null
-  }, [data, personId, personType])
+    return data.students.find((student) => student.id === personId)
+      ?? (personHintName ? data.students.find((student) => student.name === personHintName) ?? null : null)
+  }, [data, personId, personType, personHintName])
 
   if (phase === 'loading') {
     return (
