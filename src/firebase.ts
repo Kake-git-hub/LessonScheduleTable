@@ -94,6 +94,22 @@ export const findSessionIdByShareToken = async (token: string): Promise<string |
   return null
 }
 
+export const findSessionIdByPerson = async (
+  personType: 'teacher' | 'student',
+  personId: string,
+): Promise<string | null> => {
+  if (!personId) return null
+  const snapshot = await getDocs(collection(db, 'sessions'))
+  for (const docSnap of snapshot.docs) {
+    const value = docSnap.data() as SessionData
+    const exists = personType === 'teacher'
+      ? value.teachers.some((t) => t.id === personId)
+      : value.students.some((s) => s.id === personId)
+    if (exists) return docSnap.id
+  }
+  return null
+}
+
 export const deleteSession = async (sessionId: string): Promise<void> => {
   await deleteDoc(sessionRef(sessionId))
 }

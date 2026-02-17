@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import './App.css'
-import { deleteSession, findSessionIdByShareToken, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { deleteSession, findSessionIdByPerson, findSessionIdByShareToken, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -1446,35 +1446,48 @@ const AdminPage = () => {
       } catch {
         // retry
       }
-      const fresh = await loadSession(sessionId)
-      persisted = fresh?.shareTokens?.[key] === token
+      try {
+        const fresh = await loadSession(sessionId)
+        persisted = fresh?.shareTokens?.[key] === token
+      } catch {
+        // retry
+      }
     }
     return persisted ? token : null
   }
 
   const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
-    const token = await ensureShareToken(personType, personId)
-    if (!token) {
-      alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
-      return
-    }
-
-    const url = buildTokenUrl(token)
     try {
+      const token = await ensureShareToken(personType, personId)
+      if (!token) {
+        alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
+        return
+      }
+      const url = buildTokenUrl(token)
       await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
     } catch {
+      const token = await ensureShareToken(personType, personId)
+      if (!token) {
+        alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
+        return
+      }
+      const url = buildTokenUrl(token)
       window.prompt('URLをコピーしてください:', url)
     }
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
-    const token = await ensureShareToken(personType, personId)
-    if (!token) {
+    try {
+      const token = await ensureShareToken(personType, personId)
+      if (!token) {
+        alert('入力ページを開けませんでした。通信状態を確認して再度お試しください。')
+        return
+      }
+      navigate(`/availability-token/${sessionId}/${token}`)
+    } catch {
       alert('入力ページを開けませんでした。通信状態を確認して再度お試しください。')
-      return
     }
-    navigate(`/availability-token/${sessionId}/${token}`)
   }
 
   useEffect(() => {
@@ -2960,6 +2973,18 @@ const AvailabilityPage = () => {
             const actualSessionId = await findSessionIdByShareToken(token)
             if (actualSessionId && actualSessionId !== sessionId) {
               navigate(`/availability-token/${actualSessionId}/${token}${location.search}`, { replace: true })
+              return
+            }
+            setPhase('error')
+          })()
+          return
+        }
+
+        if (personId) {
+          void (async () => {
+            const actualSessionId = await findSessionIdByPerson(personType, personId)
+            if (actualSessionId && actualSessionId !== sessionId) {
+              navigate(`/availability/${actualSessionId}/${personType}/${personId}${location.search}`, { replace: true })
               return
             }
             setPhase('error')
