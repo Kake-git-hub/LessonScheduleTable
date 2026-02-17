@@ -2869,7 +2869,7 @@ const AvailabilityPage = () => {
   const location = useLocation()
   const navigate = useNavigate()
   const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
-  const personId = useMemo(() => rawPersonId.split(/[?&]/)[0], [rawPersonId])
+  const personId = useMemo(() => rawPersonId.split(/[?:&]/)[0], [rawPersonId])
   const isDebugMode = useMemo(() => {
     const sp = new URLSearchParams(location.search)
     if (sp.get('debug') === '1') return true
@@ -2882,6 +2882,17 @@ const AvailabilityPage = () => {
   const [debugInfo, setDebugInfo] = useState<Record<string, string | number | boolean>>({})
   const syncingRef = useRef(false)
   const syncDoneRef = useRef(false)
+
+  const withTimeout = async <T,>(promise: Promise<T>, ms = 5000): Promise<T | null> => {
+    try {
+      return await Promise.race<T | null>([
+        promise,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ])
+    } catch {
+      return null
+    }
+  }
 
   const resolveTarget = (value: SessionData): { personType: PersonType; personId: string } | null => {
     if (token) {
@@ -2915,7 +2926,7 @@ const AvailabilityPage = () => {
           void (async () => {
             // Deterministic fallback: try main session first
             if (sessionId !== 'main') {
-              const main = await loadSession('main')
+              const main = await withTimeout(loadSession('main'))
               const hasInMain = Object.values(main?.shareTokens ?? {}).some((t) => t === token)
               if (hasInMain) {
                 navigate(`/availability-token/main/${token}${location.search}`, { replace: true })
@@ -2923,7 +2934,7 @@ const AvailabilityPage = () => {
               }
             }
 
-            const actualSessionId = await findSessionIdByShareToken(token)
+            const actualSessionId = await withTimeout(findSessionIdByShareToken(token))
             if (actualSessionId && actualSessionId !== sessionId) {
               navigate(`/availability-token/${actualSessionId}/${token}${location.search}`, { replace: true })
               return
@@ -2937,7 +2948,7 @@ const AvailabilityPage = () => {
           void (async () => {
             // Deterministic fallback: try main session first
             if (sessionId !== 'main') {
-              const main = await loadSession('main')
+              const main = await withTimeout(loadSession('main'))
               const existsInMain = personType === 'teacher'
                 ? main?.teachers.some((t) => t.id === personId)
                 : main?.students.some((s) => s.id === personId)
@@ -2947,7 +2958,7 @@ const AvailabilityPage = () => {
               }
             }
 
-            const actualSessionId = await findSessionIdByPerson(personType, personId)
+            const actualSessionId = await withTimeout(findSessionIdByPerson(personType, personId))
             if (actualSessionId && actualSessionId !== sessionId) {
               navigate(`/availability/${actualSessionId}/${personType}/${personId}${location.search}`, { replace: true })
               return
