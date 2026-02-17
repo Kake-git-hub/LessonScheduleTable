@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import './App.css'
-import { deleteSession, findSessionIdByPerson, findSessionIdByShareToken, loadMasterData, loadSession, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { deleteSession, diagnoseFirestore, initAuth, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -161,17 +161,27 @@ const createTemplateSession = (): SessionData => {
 const useSessionData = (sessionId: string) => {
   const [data, setData] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
-    const unsub = watchSession(sessionId, (value) => {
-      setData(value)
-      setLoading(false)
-    })
+    setError(null)
+    const unsub = watchSession(
+      sessionId,
+      (value) => {
+        setData(value)
+        setLoading(false)
+      },
+      (err) => {
+        console.error('watchSession error:', err)
+        setError(err.message)
+        setLoading(false)
+      },
+    )
     return () => unsub()
   }, [sessionId])
 
-  return { data, setData, loading }
+  return { data, setData, loading, error }
 }
 
 const constraintFor = (
@@ -1099,7 +1109,14 @@ const HomePage = () => {
       seed.gradeConstraints = masterData.gradeConstraints
       seed.regularLessons = masterData.regularLessons
     }
-    await saveSession(id, seed)
+    try {
+      const verified = await saveAndVerify(id, seed)
+      if (!verified) {
+        alert('セッション作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
+      }
+    } catch (e) {
+      alert(`セッション作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   const openAdmin = (sessionId: string): void => {
@@ -1364,12 +1381,14 @@ const AdminPage = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
-  const { data, setData, loading } = useSessionData(sessionId)
+  const { data, setData, loading, error: sessionError } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [lastChangeLog, setLastChangeLog] = useState<ChangeLogEntry[]>([])
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
+  const [diagResult, setDiagResult] = useState<string | null>(null)
+  const [diagRunning, setDiagRunning] = useState(false)
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -1414,18 +1433,18 @@ const AdminPage = () => {
       return () => clearTimeout(timer)
     }
   }, [data])
-  const buildLegacyUrl = (personType: PersonType, personId: string): string => {
-    const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    return base.replace(/\/$/, '') + `/availability/${sessionId}/${personType}/${personId}`
+  const buildInputUrl = (personType: PersonType, personId: string): string => {
+    const base = window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
+    return `${base}/#/availability/${sessionId}/${personType}/${personId}`
   }
 
   const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
-    const fallbackUrl = buildLegacyUrl(personType, personId)
+    const url = buildInputUrl(personType, personId)
     try {
-      await navigator.clipboard.writeText(fallbackUrl)
+      await navigator.clipboard.writeText(url)
       alert('URLをコピーしました')
     } catch {
-      window.prompt('URLをコピーしてください:', fallbackUrl)
+      window.prompt('URLをコピーしてください:', url)
     }
   }
 
@@ -1451,7 +1470,14 @@ const AdminPage = () => {
 
   const createSession = async (): Promise<void> => {
     const seed = emptySession()
-    await saveSession(sessionId, seed)
+    try {
+      const verified = await saveAndVerify(sessionId, seed)
+      if (!verified) {
+        alert('セッションの作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
+      }
+    } catch (e) {
+      alert(`セッションの作成に失敗しました:\n${e instanceof Error ? e.message : String(e)}\n\nFirebase ConsoleでAuthentication（匿名）とFirestoreルールを確認してください。`)
+    }
   }
 
   useEffect(() => {
@@ -1836,6 +1862,30 @@ const AdminPage = () => {
     )
   }
 
+  if (sessionError) {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h2>Firebaseエラー</h2>
+          <p style={{ color: '#dc2626' }}>{sessionError}</p>
+          <p className="muted">Firestoreのセキュリティルールを確認してください。<br />Firebase Console → Firestore Database → ルール</p>
+          <pre style={{ fontSize: '11px', background: '#f3f4f6', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}`}
+          </pre>
+          <p className="muted">上記ルールを設定し、Firebase Console → Authentication → Sign-in method で「匿名」を有効にしてください。</p>
+          <Link to="/">ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
   if (!data) {
     return (
       <div className="app-shell">
@@ -1861,6 +1911,30 @@ const AdminPage = () => {
           <Link to="/">ホーム</Link>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
+        <div className="row" style={{ marginTop: '8px' }}>
+          <button
+            className="btn secondary"
+            type="button"
+            disabled={diagRunning}
+            onClick={async () => {
+              setDiagRunning(true)
+              setDiagResult(null)
+              try {
+                const d = await diagnoseFirestore(sessionId)
+                setDiagResult(JSON.stringify(d, null, 2))
+              } catch (e) {
+                setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`)
+              } finally {
+                setDiagRunning(false)
+              }
+            }}
+          >
+            {diagRunning ? '診断中...' : '🔍 Firebase接続診断'}
+          </button>
+        </div>
+        {diagResult && (
+          <pre style={{ fontSize: '11px', background: '#f3f4f6', padding: '8px', borderRadius: '4px', margin: '8px 0', whiteSpace: 'pre-wrap' }}>{diagResult}</pre>
+        )}
       </div>
 
       {!authorized ? (
@@ -2865,215 +2939,119 @@ const StudentInputPage = ({
 }
 
 const AvailabilityPage = () => {
-  const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '', token = '' } = useParams()
-  const location = useLocation()
-  const navigate = useNavigate()
+  const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
   const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?:&]/)[0], [rawPersonId])
-  const isDebugMode = useMemo(() => {
-    const sp = new URLSearchParams(location.search)
-    if (sp.get('debug') === '1') return true
-    const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?')[1] : ''
-    const hp = new URLSearchParams(hashQuery)
-    return hp.get('debug') === '1'
-  }, [location.search])
   const [data, setData] = useState<SessionData | null>(null)
-  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading')
-  const [debugInfo, setDebugInfo] = useState<Record<string, string | number | boolean>>({})
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'not-found' | 'permission-error' | 'timeout'>('loading')
+  const [errorDetail, setErrorDetail] = useState('')
   const syncingRef = useRef(false)
   const syncDoneRef = useRef(false)
-
-  const withTimeout = async <T,>(promise: Promise<T>, ms = 5000): Promise<T | null> => {
-    try {
-      return await Promise.race<T | null>([
-        promise,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-      ])
-    } catch {
-      return null
-    }
-  }
-
-  const resolveTarget = (value: SessionData): { personType: PersonType; personId: string } | null => {
-    if (token) {
-      const matched = Object.entries(value.shareTokens ?? {}).find(([, t]) => t === token)
-      if (!matched) return null
-      const [key] = matched
-      const [ptype, pid] = key.split(':')
-      if ((ptype !== 'teacher' && ptype !== 'student') || !pid) return null
-      return { personType: ptype as PersonType, personId: pid }
-    }
-    return { personType, personId }
-  }
 
   useEffect(() => {
     setPhase('loading')
     setData(null)
+    setErrorDetail('')
     syncingRef.current = false
     syncDoneRef.current = false
 
-    const unsub = watchSession(sessionId, (value) => {
-      if (!value) {
-        // Session doesn't exist
-        setDebugInfo((prev) => ({
-          ...prev,
-          sessionExists: false,
-          sessionId,
-          token,
-        }))
+    // Timeout: if nothing loads within 10 seconds, show error
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      setErrorDetail('読み込みがタイムアウトしました。ネットワーク接続を確認してください。')
+      setPhase('timeout')
+    }, 10000)
 
-        if (token) {
-          void (async () => {
-            // Deterministic fallback: try main session first
-            if (sessionId !== 'main') {
-              const main = await withTimeout(loadSession('main'))
-              const hasInMain = Object.values(main?.shareTokens ?? {}).some((t) => t === token)
-              if (hasInMain) {
-                navigate(`/availability-token/main/${token}${location.search}`, { replace: true })
-                return
-              }
-            }
+    const unsub = watchSession(
+      sessionId,
+      (value) => {
+        if (timedOut) return
+        clearTimeout(timer)
 
-            const actualSessionId = await withTimeout(findSessionIdByShareToken(token))
-            if (actualSessionId && actualSessionId !== sessionId) {
-              navigate(`/availability-token/${actualSessionId}/${token}${location.search}`, { replace: true })
-              return
-            }
-            setPhase('error')
-          })()
+        if (!value) {
+          setErrorDetail(`セッション「${sessionId}」がFirebaseに見つかりません。`)
+          setPhase('not-found')
           return
         }
 
-        if (personId) {
-          void (async () => {
-            // Deterministic fallback: try main session first
-            if (sessionId !== 'main') {
-              const main = await withTimeout(loadSession('main'))
-              const existsInMain = personType === 'teacher'
-                ? main?.teachers.some((t) => t.id === personId)
-                : main?.students.some((s) => s.id === personId)
-              if (existsInMain) {
-                navigate(`/availability/main/${personType}/${personId}${location.search}`, { replace: true })
-                return
-              }
-            }
+        // Session found — check if the person exists
+        const found = personType === 'teacher'
+          ? value.teachers.find((t) => t.id === personId)
+          : value.students.find((s) => s.id === personId)
 
-            const actualSessionId = await withTimeout(findSessionIdByPerson(personType, personId))
-            if (actualSessionId && actualSessionId !== sessionId) {
-              navigate(`/availability/${actualSessionId}/${personType}/${personId}${location.search}`, { replace: true })
-              return
-            }
-            setPhase('error')
-          })()
+        if (found) {
+          setData(value)
+          setPhase('ready')
           return
         }
-        setPhase('error')
-        return
-      }
 
-      const shareEntries = Object.entries(value.shareTokens ?? {})
-      const matchedEntry = token ? shareEntries.find(([, t]) => t === token) : undefined
-      setDebugInfo({
-        sessionExists: true,
-        sessionId,
-        tokenProvided: Boolean(token),
-        token,
-        shareTokenCount: shareEntries.length,
-        tokenMatched: Boolean(matchedEntry),
-        matchedKey: matchedEntry?.[0] ?? '',
-        personType,
-        personId,
-        teacherCount: value.teachers.length,
-        studentCount: value.students.length,
-      })
+        // Person not found — try syncing master data once
+        if (syncDoneRef.current) {
+          setData(value)
+          setPhase('ready')
+          return
+        }
+        if (syncingRef.current) return
 
-      const target = resolveTarget(value)
-      const found = target
-        ? (target.personType === 'teacher'
-            ? value.teachers.find((t) => t.id === target.personId)
-            : value.students.find((s) => s.id === target.personId))
-        : null
-
-      if (found) {
-        // Person found — show the form
-        setData(value)
-        setPhase('ready')
-        return
-      }
-
-      // Person NOT found — try master sync (once)
-      if (syncDoneRef.current) {
-        // Already tried sync, still not found — show error
-        setData(value)
-        setPhase('ready')
-        return
-      }
-      if (syncingRef.current) {
-        // Sync in progress — keep showing loading
-        return
-      }
-
-      syncingRef.current = true
-      // Keep phase as 'loading' while syncing
-
-      loadMasterData()
-        .then((master) => {
-          if (!master) {
+        syncingRef.current = true
+        loadMasterData()
+          .then((master) => {
+            if (!master) {
+              syncDoneRef.current = true
+              syncingRef.current = false
+              setData(value)
+              setPhase('ready')
+              return
+            }
+            const mergedStudents = master.students.map((ms) => {
+              const existing = value.students.find((s) => s.id === ms.id)
+              if (existing) {
+                return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+              }
+              return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+            })
+            const next: SessionData = {
+              ...value,
+              teachers: master.teachers,
+              students: mergedStudents,
+              constraints: master.constraints,
+              gradeConstraints: master.gradeConstraints ?? [],
+              regularLessons: master.regularLessons,
+            }
+            setData(next)
+            setPhase('ready')
+            return saveSession(sessionId, next)
+          })
+          .then(() => {
             syncDoneRef.current = true
             syncingRef.current = false
-            setData(value)
-            setPhase('ready')
-            return
-          }
-          const mergedStudents = master.students.map((ms) => {
-            const existing = value.students.find((s) => s.id === ms.id)
-            if (existing) {
-              return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
-            }
-            return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
           })
-          const next: SessionData = {
-            ...value,
-            teachers: master.teachers,
-            students: mergedStudents,
-            constraints: master.constraints,
-            gradeConstraints: master.gradeConstraints ?? [],
-            regularLessons: master.regularLessons,
-          }
-          // Show merged data immediately so shared URL can open even if save fails in this browser
-          setData(next)
-          setPhase('ready')
-          return saveSession(sessionId, next)
-        })
-        .then(() => {
-          syncDoneRef.current = true
-          syncingRef.current = false
-          // watchSession will fire again with updated data
-        })
-        .catch(() => {
-          syncDoneRef.current = true
-          syncingRef.current = false
-          // If session save failed but merged data is already shown, keep current state
-          setData((prev) => prev ?? value)
-          setPhase('ready')
-        })
-    })
+          .catch(() => {
+            syncDoneRef.current = true
+            syncingRef.current = false
+            setData((prev) => prev ?? value)
+            setPhase('ready')
+          })
+      },
+      (error) => {
+        if (timedOut) return
+        clearTimeout(timer)
+        setErrorDetail(`Firebaseアクセスエラー: ${error.message}`)
+        setPhase('permission-error')
+      },
+    )
 
-    return () => unsub()
-  }, [sessionId, token, personType, personId, navigate, location.search])
-
-  const resolvedTarget = useMemo(() => {
-    if (!data) return null
-    return resolveTarget(data)
-  }, [data, token, personType, personId])
+    return () => { unsub(); clearTimeout(timer) }
+  }, [sessionId, personType, personId])
 
   const currentPerson = useMemo(() => {
-    if (!data || !resolvedTarget) return null
-    if (resolvedTarget.personType === 'teacher') {
-      return data.teachers.find((teacher) => teacher.id === resolvedTarget.personId) ?? null
+    if (!data) return null
+    if (personType === 'teacher') {
+      return data.teachers.find((teacher) => teacher.id === personId) ?? null
     }
-    return data.students.find((student) => student.id === resolvedTarget.personId) ?? null
-  }, [data, resolvedTarget])
+    return data.students.find((student) => student.id === personId) ?? null
+  }, [data, personType, personId])
 
   if (phase === 'loading') {
     return (
@@ -3083,39 +3061,95 @@ const AvailabilityPage = () => {
     )
   }
 
-  if (phase === 'error' || !data || !resolvedTarget || !currentPerson) {
+  if (phase === 'permission-error') {
     return (
       <div className="app-shell">
         <div className="panel">
-          入力対象が見つかりません。管理者にURLを確認してください。
-          <br />
+          <h3 style={{ color: '#dc2626' }}>⚠ Firebaseへのアクセスが拒否されました</h3>
+          <p>{errorDetail}</p>
+          <p className="muted">
+            管理者がFirebase Consoleで以下の設定を行う必要があります：
+          </p>
+          <ol style={{ fontSize: '13px', lineHeight: 1.8 }}>
+            <li><strong>Authentication</strong> → Sign-in method → 「匿名」を有効化</li>
+            <li><strong>Firestore Database</strong> → ルール → 以下に書き換え：</li>
+          </ol>
+          <pre style={{ fontSize: '11px', background: '#f3f4f6', padding: '8px', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
+{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}`}
+          </pre>
           <Link to="/">ホームに戻る</Link>
-          {isDebugMode && (
-            <>
-              <hr style={{ margin: '12px 0' }} />
-              <div style={{ fontSize: '12px', color: '#374151', whiteSpace: 'pre-wrap' }}>
-                {JSON.stringify(debugInfo, null, 2)}
-              </div>
-            </>
-          )}
         </div>
       </div>
     )
   }
 
-  if (resolvedTarget.personType === 'teacher') {
-    // Runtime type check for Teacher
+  if (phase === 'not-found') {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h3>セッションが見つかりません</h3>
+          <p>{errorDetail}</p>
+          <p className="muted">
+            考えられる原因：<br />
+            ・管理者がまだセッションを作成していない<br />
+            ・セッションIDが間違っている<br />
+            ・Firestoreへのデータ保存に失敗している
+          </p>
+          <p className="muted" style={{ fontSize: '11px' }}>
+            セッションID: {sessionId} / {personType} / {personId}
+          </p>
+          <Link to="/">ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (phase === 'timeout') {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h3>タイムアウト</h3>
+          <p>{errorDetail}</p>
+          <button className="btn" type="button" onClick={() => window.location.reload()}>再読み込み</button>
+          <br />
+          <Link to="/">ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (!data || !currentPerson) {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          入力対象が見つかりません。管理者にURLを確認してください。
+          <br />
+          <p className="muted" style={{ fontSize: '11px' }}>
+            セッションID: {sessionId} / {personType} / {personId}
+          </p>
+          <Link to="/">ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
+  if (personType === 'teacher') {
     if ('subjects' in currentPerson && Array.isArray(currentPerson.subjects)) {
       return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
     }
-  } else if (resolvedTarget.personType === 'student') {
-    // Runtime type check for Student
+  } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
       return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
     }
   }
 
-  // Fallback if person type doesn't match
   return (
     <div className="app-shell">
       <div className="panel">
@@ -3159,6 +3193,20 @@ const CompletionPage = () => {
 }
 
 function App() {
+  const [authReady, setAuthReady] = useState(false)
+
+  useEffect(() => {
+    initAuth().finally(() => setAuthReady(true))
+  }, [])
+
+  if (!authReady) {
+    return (
+      <div className="app-shell">
+        <div className="panel">接続中...</div>
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="version-badge">v{APP_VERSION}</div>
@@ -3167,7 +3215,6 @@ function App() {
         <Route path="/boot" element={<BootPage />} />
         <Route path="/admin/:sessionId" element={<AdminPage />} />
         <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
-        <Route path="/availability-token/:sessionId/:token" element={<AvailabilityPage />} />
         <Route path="/complete/:sessionId" element={<CompletionPage />} />
       </Routes>
     </>
