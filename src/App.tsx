@@ -30,13 +30,6 @@ const createId = (): string => {
   return Math.random().toString(36).slice(2, 10)
 }
 
-const createShareToken = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID().replace(/-/g, '').slice(0, 20)
-  }
-  return Math.random().toString(36).slice(2, 22)
-}
-
 const emptySession = (): SessionData => ({
   settings: {
     name: '夏期講習',
@@ -1421,73 +1414,23 @@ const AdminPage = () => {
       return () => clearTimeout(timer)
     }
   }, [data])
-  const buildTokenUrl = (token: string): string => {
+  const buildLegacyUrl = (personType: PersonType, personId: string): string => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/')
-    return base.replace(/\/$/, '') + `/availability-token/${sessionId}/${token}`
-  }
-
-  const ensureShareToken = async (personType: PersonType, personId: string): Promise<string | null> => {
-    if (!data) return null
-    const key = personKey(personType, personId)
-    const existing = data.shareTokens?.[key]
-    const token = existing || createShareToken()
-
-    // Ensure token is persisted to Firestore before sharing URL
-    let persisted = false
-    for (let i = 0; i < 3 && !persisted; i += 1) {
-      try {
-        await update((current) => ({
-          ...current,
-          shareTokens: {
-            ...(current.shareTokens ?? {}),
-            [key]: token,
-          },
-        }))
-      } catch {
-        // retry
-      }
-      try {
-        const fresh = await loadSession(sessionId)
-        persisted = fresh?.shareTokens?.[key] === token
-      } catch {
-        // retry
-      }
-    }
-    return persisted ? token : null
+    return base.replace(/\/$/, '') + `/availability/${sessionId}/${personType}/${personId}`
   }
 
   const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
+    const fallbackUrl = buildLegacyUrl(personType, personId)
     try {
-      const token = await ensureShareToken(personType, personId)
-      if (!token) {
-        alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
-        return
-      }
-      const url = buildTokenUrl(token)
-      await navigator.clipboard.writeText(url)
+      await navigator.clipboard.writeText(fallbackUrl)
       alert('URLをコピーしました')
     } catch {
-      const token = await ensureShareToken(personType, personId)
-      if (!token) {
-        alert('URL生成に失敗しました。通信状態を確認して再度お試しください。')
-        return
-      }
-      const url = buildTokenUrl(token)
-      window.prompt('URLをコピーしてください:', url)
+      window.prompt('URLをコピーしてください:', fallbackUrl)
     }
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
-    try {
-      const token = await ensureShareToken(personType, personId)
-      if (!token) {
-        alert('入力ページを開けませんでした。通信状態を確認して再度お試しください。')
-        return
-      }
-      navigate(`/availability-token/${sessionId}/${token}`)
-    } catch {
-      alert('入力ページを開けませんでした。通信状態を確認して再度お試しください。')
-    }
+    navigate(`/availability/${sessionId}/${personType}/${personId}`)
   }
 
   useEffect(() => {
