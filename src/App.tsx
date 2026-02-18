@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import './App.css'
-import { deleteSession, diagnoseFirestore, initAuth, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { deleteSession, initAuth, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -318,10 +318,14 @@ const isStudentAvailable = (student: Student, slotKey: string): boolean => {
   return !student.unavailableDates.includes(date)
 }
 
+const getIsoDayOfWeek = (isoDate: string): number => {
+  const [year, month, day] = isoDate.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay()
+}
+
 const getSlotDayOfWeek = (slotKey: string): number => {
   const [date] = slotKey.split('_')
-  const [year, month, day] = date.split('-').map(Number)
-  return new Date(year, month - 1, day).getDay()
+  return getIsoDayOfWeek(date)
 }
 
 const getSlotNumber = (slotKey: string): number => {
@@ -357,15 +361,13 @@ const getTeacherStudentSlotsOnDate = (
   return nums.sort((a, b) => a - b)
 }
 
-const findRegularLessonForSlot = (
+const findRegularLessonsForSlot = (
   regularLessons: RegularLesson[],
   slotKey: string,
-): RegularLesson | null => {
+): RegularLesson[] => {
   const dayOfWeek = getSlotDayOfWeek(slotKey)
   const slotNumber = getSlotNumber(slotKey)
-  return (
-    regularLessons.find((lesson) => lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber) ?? null
-  )
+  return regularLessons.filter((lesson) => lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber)
 }
 
 // --- Incremental auto-assign: cleans up deleted people, fills gaps, keeps existing ---
@@ -1092,31 +1094,16 @@ const HomePage = () => {
   }
 
   // --- Session management ---
-  const ensureDevSession = async (): Promise<void> => {
-    const master = await loadMasterData()
-    if (!master) {
-      const template = createTemplateSession()
-      await saveMasterData({
-        teachers: template.teachers,
-        students: template.students,
-        constraints: template.constraints,
-        gradeConstraints: template.gradeConstraints ?? [],
-        regularLessons: template.regularLessons,
-      })
-    }
-    const id = 'dev'
-    const existing = await loadSession(id)
-    if (existing) return
-    const seed = createTemplateSession()
-    seed.settings.name = '開発用特別講習'
-    seed.settings.adminPassword = adminPassword
-    await saveSession(id, seed)
+  const cleanupLegacyDevSession = async (): Promise<void> => {
+    const legacyDev = await loadSession('dev')
+    if (!legacyDev) return
+    await deleteSession('dev')
   }
 
   const onUnlock = async (): Promise<void> => {
     saveAdminPassword(adminPassword)
     setUnlocked(true)
-    await ensureDevSession()
+    await cleanupLegacyDevSession()
   }
 
   const onCreateSession = async (): Promise<void> => {
@@ -1405,6 +1392,52 @@ const HomePage = () => {
                 </div>
 
                 <div className="panel">
+                  <h3>通常授業管理</h3>
+                  <div className="row">
+                    <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
+                      <option value="">講師を選択</option>
+                      {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                    </select>
+                    <select value={regularStudent1Id} onChange={(e) => setRegularStudent1Id(e.target.value)}>
+                      <option value="">生徒1を選択</option>
+                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent2Id}>{s.name}</option>))}
+                    </select>
+                    <select value={regularStudent2Id} onChange={(e) => setRegularStudent2Id(e.target.value)}>
+                      <option value="">生徒2(任意)</option>
+                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent1Id}>{s.name}</option>))}
+                    </select>
+                    <select value={regularSubject} onChange={(e) => setRegularSubject(e.target.value)}>
+                      <option value="">科目を選択</option>
+                      {FIXED_SUBJECTS.map((s) => (<option key={s} value={s}>{s}</option>))}
+                    </select>
+                    <select value={regularDayOfWeek} onChange={(e) => setRegularDayOfWeek(e.target.value)}>
+                      <option value="">曜日を選択</option>
+                      <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
+                      <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
+                    </select>
+                    <input type="number" value={regularSlotNumber} onChange={(e) => setRegularSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
+                    <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
+                  </div>
+                  <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
+                  <table className="table">
+                    <thead><tr><th>講師</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {masterData.regularLessons.map((l) => {
+                        const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                        return (
+                          <tr key={l.id}>
+                            <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
+                            <td>{l.studentIds.map((id) => masterData.students.find((s) => s.id === id)?.name ?? '-').join(', ')}</td>
+                            <td>{l.subject}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                            <td><button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button></td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="panel">
                   <h3>講師×生徒 制約</h3>
                   <div className="row">
                     <select value={constraintTeacherId} onChange={(e) => setConstraintTeacherId(e.target.value)}>
@@ -1463,52 +1496,6 @@ const HomePage = () => {
                     </tbody>
                   </table>
                 </div>
-
-                <div className="panel">
-                  <h3>通常授業管理</h3>
-                  <div className="row">
-                    <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
-                      <option value="">講師を選択</option>
-                      {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
-                    </select>
-                    <select value={regularStudent1Id} onChange={(e) => setRegularStudent1Id(e.target.value)}>
-                      <option value="">生徒1を選択</option>
-                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent2Id}>{s.name}</option>))}
-                    </select>
-                    <select value={regularStudent2Id} onChange={(e) => setRegularStudent2Id(e.target.value)}>
-                      <option value="">生徒2(任意)</option>
-                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent1Id}>{s.name}</option>))}
-                    </select>
-                    <select value={regularSubject} onChange={(e) => setRegularSubject(e.target.value)}>
-                      <option value="">科目を選択</option>
-                      {FIXED_SUBJECTS.map((s) => (<option key={s} value={s}>{s}</option>))}
-                    </select>
-                    <select value={regularDayOfWeek} onChange={(e) => setRegularDayOfWeek(e.target.value)}>
-                      <option value="">曜日を選択</option>
-                      <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
-                      <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
-                    </select>
-                    <input type="number" value={regularSlotNumber} onChange={(e) => setRegularSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
-                    <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
-                  </div>
-                  <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
-                  <table className="table">
-                    <thead><tr><th>講師</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
-                    <tbody>
-                      {masterData.regularLessons.map((l) => {
-                        const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-                        return (
-                          <tr key={l.id}>
-                            <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
-                            <td>{l.studentIds.map((id) => masterData.students.find((s) => s.id === id)?.name ?? '-').join(', ')}</td>
-                            <td>{l.subject}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
-                            <td><button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button></td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
           </>
         )}
       </div>
@@ -1526,8 +1513,6 @@ const AdminPage = () => {
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
-  const [diagResult, setDiagResult] = useState<string | null>(null)
-  const [diagRunning, setDiagRunning] = useState(false)
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -1677,27 +1662,43 @@ const AdminPage = () => {
     const nextAssignments = { ...data.assignments }
 
     for (const slot of slotKeys) {
-      const rl = findRegularLessonForSlot(data.regularLessons, slot)
-      if (!rl) continue
-
       const existing = nextAssignments[slot]
+      const slotRegularLessons = findRegularLessonsForSlot(data.regularLessons, slot)
+
+      if (slotRegularLessons.length === 0) {
+        if (existing && existing.length > 0 && existing.every((a) => a.isRegular)) {
+          delete nextAssignments[slot]
+          changed = true
+        }
+        continue
+      }
+
       // Don't overwrite manual (non-regular) assignments
       if (existing && existing.some((a) => !a.isRegular)) continue
-      // Skip if already correctly filled
-      if (
-        existing?.length === 1 &&
-        existing[0].isRegular &&
-        existing[0].teacherId === rl.teacherId &&
-        existing[0].subject === rl.subject &&
-        JSON.stringify(existing[0].studentIds) === JSON.stringify(rl.studentIds)
-      ) continue
 
-      nextAssignments[slot] = [{
-        teacherId: rl.teacherId,
-        studentIds: rl.studentIds,
-        subject: rl.subject,
+      const expectedRegulars = slotRegularLessons.map((lesson) => ({
+        teacherId: lesson.teacherId,
+        studentIds: lesson.studentIds,
+        subject: lesson.subject,
         isRegular: true,
-      }]
+      }))
+
+      const asSignature = (teacherId: string, subject: string, studentIds: string[]): string =>
+        `${teacherId}|${subject}|${[...studentIds].sort().join('+')}`
+
+      const expectedSig = expectedRegulars
+        .map((a) => asSignature(a.teacherId, a.subject, a.studentIds))
+        .sort()
+      const existingSig = (existing ?? [])
+        .filter((a) => a.isRegular)
+        .map((a) => asSignature(a.teacherId, a.subject, a.studentIds))
+        .sort()
+
+      if (expectedSig.length === existingSig.length && expectedSig.every((sigItem, idx) => sigItem === existingSig[idx])) {
+        continue
+      }
+
+      nextAssignments[slot] = expectedRegulars
       changed = true
     }
 
@@ -1743,7 +1744,7 @@ const AdminPage = () => {
     const weeks: string[][] = []
     let currentWeek: string[] = []
     for (const date of allDates) {
-      const dow = new Date(`${date}T00:00:00`).getDay()
+      const dow = getIsoDayOfWeek(date)
       if (dow === 1 && currentWeek.length > 0) {
         weeks.push(currentWeek)
         currentWeek = []
@@ -1776,7 +1777,7 @@ const AdminPage = () => {
 
         // Pad to full Mon–Sun week
         const fullWeek: (string | null)[] = []
-        const firstDow = new Date(`${firstDate}T00:00:00`).getDay()
+        const firstDow = getIsoDayOfWeek(firstDate)
         const startPad = firstDow === 0 ? 6 : firstDow - 1
         for (let p = 0; p < startPad; p++) fullWeek.push(null)
         for (const d of weekDates) fullWeek.push(d)
@@ -2026,30 +2027,6 @@ service cloud.firestore {
           <Link to="/">ホーム</Link>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
-        <div className="row" style={{ marginTop: '8px' }}>
-          <button
-            className="btn secondary"
-            type="button"
-            disabled={diagRunning}
-            onClick={async () => {
-              setDiagRunning(true)
-              setDiagResult(null)
-              try {
-                const d = await diagnoseFirestore(sessionId)
-                setDiagResult(JSON.stringify(d, null, 2))
-              } catch (e) {
-                setDiagResult(`Error: ${e instanceof Error ? e.message : String(e)}`)
-              } finally {
-                setDiagRunning(false)
-              }
-            }}
-          >
-            {diagRunning ? '診断中...' : '🔍 Firebase接続診断'}
-          </button>
-        </div>
-        {diagResult && (
-          <pre style={{ fontSize: '11px', background: '#f3f4f6', padding: '8px', borderRadius: '4px', margin: '8px 0', whiteSpace: 'pre-wrap' }}>{diagResult}</pre>
-        )}
       </div>
 
       {!authorized ? (
@@ -2062,67 +2039,6 @@ service cloud.firestore {
         </div>
       ) : (
         <>
-          <div className="panel">
-            <h3>講習設定</h3>
-            <div className="row">
-              <input
-                value={data.settings.name}
-                onChange={(e) => {
-                  void update((current) => ({
-                    ...current,
-                    settings: { ...current.settings, name: e.target.value },
-                  }))
-                }}
-                placeholder="講習名"
-              />
-              <span className="muted">期間: {data.settings.startDate || '未設定'} 〜 {data.settings.endDate || '未設定'}</span>
-              <span className="muted">机: {data.settings.deskCount || '無制限'}</span>
-            </div>
-            <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                提出期間:
-                <input
-                  type="date"
-                  value={data.settings.submissionStartDate ?? ''}
-                  onChange={(e) => {
-                    void update((current) => ({
-                      ...current,
-                      settings: { ...current.settings, submissionStartDate: e.target.value },
-                    }))
-                  }}
-                />
-                〜
-                <input
-                  type="date"
-                  value={data.settings.submissionEndDate ?? ''}
-                  onChange={(e) => {
-                    void update((current) => ({
-                      ...current,
-                      settings: { ...current.settings, submissionEndDate: e.target.value },
-                    }))
-                  }}
-                />
-              </label>
-              {(() => {
-                const now = new Date().toISOString().slice(0, 10)
-                const start = data.settings.submissionStartDate
-                const end = data.settings.submissionEndDate
-                if (!start && !end) return <span className="badge warn">提出期間未設定（常時受付中）</span>
-                if (start && now < start) return <span className="badge warn">提出期間前</span>
-                if (end && now > end) return <span className="badge" style={{ background: '#dc2626', color: '#fff' }}>提出期間終了</span>
-                return <span className="badge ok">提出受付中</span>
-              })()}
-            </div>
-            {data.settings.holidays.length > 0 && (
-              <div className="row" style={{ marginTop: '4px' }}>
-                <span className="muted">休日:</span>
-                {data.settings.holidays.map((h) => (
-                  <span key={h} className="badge warn">{formatShortDate(h)}</span>
-                ))}
-              </div>
-            )}
-          </div>
-
           <div className="panel">
             <h3>講師一覧</h3>
             <table className="table">
@@ -2175,26 +2091,9 @@ service cloud.firestore {
                     <td>{student.grade}</td>
                     <td>
                       {student.submittedAt ? (
-                        <span style={{ fontSize: '0.85em', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                          <span style={{ color: '#16a34a' }}>
-                            {new Date(student.submittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                            {' '}提出済
-                          </span>
-                          <button className="btn secondary" type="button" style={{ fontSize: '0.8em', padding: '2px 8px' }} onClick={() => {
-                            const slots = Object.entries(student.subjectSlots)
-                              .filter(([, c]) => c > 0)
-                              .map(([subj, c]) => `  ${subj}: ${c}コマ`)
-                              .join('\n') || '  なし'
-                            const unavailSlots = (student.unavailableSlots ?? [])
-                            const unavailCount = unavailSlots.length
-                            const unavailSummary = unavailCount > 0
-                              ? unavailSlots.map((sk: string) => slotLabel(sk)).join(', ')
-                              : 'なし'
-                            const time = new Date(student.submittedAt).toLocaleString('ja-JP')
-                            alert(`【${student.name}の提出データ】\n\n提出日時: ${time}\n\n希望科目・コマ数:\n${slots}\n\n出席不可コマ (${unavailCount}件): ${unavailSummary}`)
-                          }}>
-                            詳細
-                          </button>
+                        <span style={{ fontSize: '0.85em', color: '#16a34a' }}>
+                          {new Date(student.submittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {' '}提出済
                         </span>
                       ) : (
                         <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
@@ -2564,8 +2463,7 @@ const TeacherInputPage = ({
     const keys = new Set<string>()
     const teacherLessons = data.regularLessons.filter((l) => l.teacherId === teacher.id)
     for (const date of dates) {
-      const dateObj = new Date(`${date}T00:00:00`)
-      const dayOfWeek = dateObj.getDay()
+      const dayOfWeek = getIsoDayOfWeek(date)
       for (const lesson of teacherLessons) {
         if (lesson.dayOfWeek === dayOfWeek) {
           keys.add(`${date}_${lesson.slotNumber}`)
@@ -2775,8 +2673,7 @@ const StudentInputPage = ({
     // Check if this slot has a regular lesson
     const [date, slotNumStr] = slotKey.split('_')
     const slotNum = Number(slotNumStr)
-    const dateObj = new Date(`${date}T00:00:00`)
-    const dow = dateObj.getDay()
+    const dow = getIsoDayOfWeek(date)
     const hasRegular = data.regularLessons.some(
       (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
     )
@@ -2971,8 +2868,7 @@ const StudentInputPage = ({
                       const slotNum = i + 1
                       const slotKey = `${date}_${slotNum}`
                       const isUnavail = unavailableSlots.has(slotKey)
-                      const dateObj = new Date(`${date}T00:00:00`)
-                      const dow = dateObj.getDay()
+                      const dow = getIsoDayOfWeek(date)
                       const hasRegular = data.regularLessons.some(
                         (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
                       )
@@ -3351,16 +3247,11 @@ const BootPage = () => {
 }
 
 const CompletionPage = () => {
-  const { sessionId = 'main' } = useParams()
-
   return (
     <div className="app-shell">
       <div className="panel">
         <h2>入力完了</h2>
         <p>データの送信が完了しました。ありがとうございます。</p>
-        <div className="row">
-          <Link className="btn" to={`/admin/${sessionId}`} state={{ skipAuth: true }}>設定に戻る</Link>
-        </div>
       </div>
     </div>
   )
