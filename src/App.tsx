@@ -333,6 +333,42 @@ const getSlotNumber = (slotKey: string): number => {
   return Number.parseInt(slot, 10)
 }
 
+type TeacherShortageEntry = {
+  slot: string
+  detail: string
+}
+
+const collectTeacherShortages = (
+  data: SessionData,
+  assignments: Record<string, Assignment[]>,
+): TeacherShortageEntry[] => {
+  const shortages: TeacherShortageEntry[] = []
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    for (const assignment of slotAssignments) {
+      if (!assignment.teacherId) {
+        shortages.push({ slot, detail: '講師未設定' })
+        continue
+      }
+
+      const teacher = data.teachers.find((item) => item.id === assignment.teacherId)
+      if (!teacher) {
+        shortages.push({ slot, detail: `講師ID ${assignment.teacherId} が未登録` })
+        continue
+      }
+
+      if (!hasAvailability(data.availability, 'teacher', teacher.id, slot)) {
+        shortages.push({ slot, detail: `${teacher.name} が出席不可` })
+        continue
+      }
+
+      if (assignment.subject && !teacher.subjects.includes(assignment.subject)) {
+        shortages.push({ slot, detail: `${teacher.name} の担当外科目(${assignment.subject})` })
+      }
+    }
+  }
+  return shortages
+}
+
 const assignmentSignature = (assignment: Assignment): string =>
   `${assignment.teacherId}|${assignment.subject}|${[...assignment.studentIds].sort().join('+')}|${assignment.isRegular ? 'R' : 'N'}`
 
@@ -1836,6 +1872,21 @@ const AdminPage = () => {
       })
       .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number }[] }[]
 
+    const overAssignedStudents = data.students
+      .map((student) => {
+        const over = Object.entries(student.subjectSlots)
+          .map(([subject, desired]) => {
+            const assigned = countStudentSubjectLoad(nextAssignments, student.id, subject)
+            return { subject, over: assigned - desired }
+          })
+          .filter((item) => item.over > 0)
+        if (over.length === 0) return null
+        return { studentName: student.name, over }
+      })
+      .filter(Boolean) as { studentName: string; over: { subject: string; over: number }[] }[]
+
+    const shortageEntries = collectTeacherShortages(data, nextAssignments)
+
     await update((current) => ({
       ...current,
       assignments: nextAssignments,
@@ -1846,10 +1897,20 @@ const AdminPage = () => {
           .map((item) => `${item.studentName}: ${item.remaining.map((r) => `${r.subject}残${r.remaining}`).join(', ')}`)
           .join('\n')}`
       : ''
+    const overAssignedMessage = overAssignedStudents.length > 0
+      ? `\n\n過割当の生徒:\n${overAssignedStudents
+          .map((item) => `${item.studentName}: ${item.over.map((r) => `${r.subject}+${r.over}`).join(', ')}`)
+          .join('\n')}`
+      : ''
+    const shortageMessage = shortageEntries.length > 0
+      ? `\n\n講師不足:\n${shortageEntries
+          .map((item) => `${slotLabel(item.slot)} ${item.detail}`)
+          .join('\n')}`
+      : ''
     if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}`)
+      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
     } else {
-      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}`)
+      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
     }
   }
 
@@ -2270,12 +2331,16 @@ service cloud.firestore {
 
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0))
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
+                const teacherShortages = collectTeacherShortages(data, data.assignments)
 
                 const underTooltip = underAssigned
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem > 0).map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
                   .join('\n')
                 const overTooltip = overAssigned
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
+                  .join('\n')
+                const shortageTooltip = teacherShortages
+                  .map((item) => `${slotLabel(item.slot)}: ${item.detail}`)
                   .join('\n')
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
@@ -2295,6 +2360,11 @@ service cloud.firestore {
                     {overAssigned.length > 0 && (
                       <span className="badge" title={overTooltip} style={{ cursor: 'help', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }}>
                         過割当: {overAssigned.length}名
+                      </span>
+                    )}
+                    {teacherShortages.length > 0 && (
+                      <span className="badge" title={shortageTooltip} style={{ cursor: 'help', background: '#fff1f2', color: '#be123c', border: '1px solid #fda4af' }}>
+                        講師不足: {teacherShortages.length}件
                       </span>
                     )}
                   </>
