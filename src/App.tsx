@@ -516,6 +516,54 @@ const buildIncrementalAutoAssignments = (
   }
 
   // Phase 2: Fill empty student positions in existing non-regular assignments
+  // Phase 1.5: Remove excess assignments when requested slots were reduced
+  const specialLoadMap = new Map<string, number>()
+  for (const slot of slots) {
+    const slotAssignments = result[slot] ?? []
+    for (const assignment of slotAssignments) {
+      if (assignment.isRegular) continue
+      for (const studentId of assignment.studentIds) {
+        const key = `${studentId}|${assignment.subject}`
+        specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
+      }
+    }
+  }
+
+  const reverseSlots = [...slots].reverse()
+  for (const slot of reverseSlots) {
+    const slotAssignments = result[slot]
+    if (!slotAssignments || slotAssignments.length === 0) continue
+
+    for (const assignment of slotAssignments) {
+      if (assignment.isRegular || assignment.studentIds.length === 0) continue
+
+      const remainingStudentIds: string[] = []
+      let removedAny = false
+      for (const studentId of assignment.studentIds) {
+        const student = data.students.find((s) => s.id === studentId)
+        const requested = student?.subjectSlots[assignment.subject] ?? 0
+        const key = `${studentId}|${assignment.subject}`
+        const currentLoad = specialLoadMap.get(key) ?? 0
+
+        if (currentLoad > requested) {
+          specialLoadMap.set(key, currentLoad - 1)
+          removedAny = true
+          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${assignment.subject})` })
+          continue
+        }
+        remainingStudentIds.push(studentId)
+      }
+
+      if (removedAny) {
+        assignment.studentIds = remainingStudentIds
+        if (remainingStudentIds.length > 0) {
+          markChangedPair(slot, assignment)
+        }
+      }
+    }
+  }
+
+  // Phase 2: Fill empty student positions in existing non-regular assignments
   for (const slot of slots) {
     if (!result[slot] || result[slot].length === 0) continue
     const slotAssignments = result[slot]
@@ -1763,15 +1811,45 @@ const AdminPage = () => {
     )
     const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
 
+    const mergedHighlights: Record<string, string[]> = {}
+    if (hadNonRegularBefore) {
+      const slotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
+      for (const slot of slotSet) {
+        const signatureSet = new Set<string>([
+          ...(addedPairSignatures[slot] ?? []),
+          ...(changedPairSignatures[slot] ?? []),
+        ])
+        if (signatureSet.size > 0) mergedHighlights[slot] = [...signatureSet]
+      }
+    }
+
+    const remainingStudents = data.students
+      .map((student) => {
+        const remaining = Object.entries(student.subjectSlots)
+          .map(([subject, desired]) => {
+            const assigned = countStudentSubjectLoad(nextAssignments, student.id, subject)
+            return { subject, remaining: desired - assigned }
+          })
+          .filter((item) => item.remaining > 0)
+        if (remaining.length === 0) return null
+        return { studentName: student.name, remaining }
+      })
+      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number }[] }[]
+
     await update((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: hadNonRegularBefore ? (Object.keys(addedPairSignatures).length > 0 ? addedPairSignatures : changedPairSignatures) : {},
+      autoAssignHighlights: hadNonRegularBefore ? mergedHighlights : {},
     }))
+    const remainingMessage = remainingStudents.length > 0
+      ? `\n\n未充足の生徒:\n${remainingStudents
+          .map((item) => `${item.studentName}: ${item.remaining.map((r) => `${r.subject}残${r.remaining}`).join(', ')}`)
+          .join('\n')}`
+      : ''
     if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更がありました。`)
+      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}`)
     } else {
-      alert('自動提案完了: 変更はありませんでした。')
+      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}`)
     }
   }
 
