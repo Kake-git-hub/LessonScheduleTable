@@ -121,6 +121,10 @@
   background: #fef2f2;
 }
 
+.assignment-block-auto-updated {
+  border: 2px solid #dc2626;
+}
+
 .incompatible-badge {
   background: #ef4444;
   color: #fff;
@@ -297,6 +301,31 @@
 .teacher-slot-btn:focus-visible {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
+}
+
+.teacher-table-wrapper.student-no-scroll {
+  overflow-x: hidden;
+}
+
+.teacher-table.compact-grid {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.teacher-table.compact-grid th,
+.teacher-table.compact-grid td {
+  padding: 6px 4px;
+}
+
+.teacher-table.compact-grid .date-cell {
+  font-size: 12px;
+}
+
+.teacher-table.compact-grid .teacher-slot-btn {
+  min-width: 0;
+  height: 34px;
+  font-size: 15px;
+  border-width: 1px;
 }
 
 /* Student Form Layout */

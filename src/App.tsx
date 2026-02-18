@@ -333,6 +333,12 @@ const getSlotNumber = (slotKey: string): number => {
   return Number.parseInt(slot, 10)
 }
 
+const assignmentSignature = (assignment: Assignment): string =>
+  `${assignment.teacherId}|${assignment.subject}|${[...assignment.studentIds].sort().join('+')}|${assignment.isRegular ? 'R' : 'N'}`
+
+const hasMeaningfulManualAssignment = (assignment: Assignment): boolean =>
+  !assignment.isRegular && !!(assignment.teacherId || assignment.subject || assignment.studentIds.length > 0)
+
 const ADMIN_PASSWORD_STORAGE_KEY = 'lst_admin_password_v1'
 const readSavedAdminPassword = (): string => localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY) ?? 'admin1234'
 const saveAdminPassword = (password: string): void => {
@@ -723,6 +729,7 @@ const emptyMasterData = (): MasterData => ({
 
 const HomePage = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const [unlocked, setUnlocked] = useState(false)
   const [adminPassword, setAdminPassword] = useState(readSavedAdminPassword())
   const [sessions, setSessions] = useState<{ id: string; name: string; createdAt: number; updatedAt: number }[]>([])
@@ -763,6 +770,12 @@ const HomePage = () => {
       navigate('/boot', { replace: true })
     }
   }, [navigate])
+
+  useEffect(() => {
+    const directHome = (location.state as { directHome?: boolean } | null)?.directHome === true
+    if (!directHome) return
+    setUnlocked(true)
+  }, [location.state])
 
   useEffect(() => {
     const year = Number.parseInt(newYear, 10)
@@ -1573,7 +1586,7 @@ const AdminPage = () => {
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
-    navigate(`/availability/${sessionId}/${personType}/${personId}`)
+    navigate(`/availability/${sessionId}/${personType}/${personId}`, { state: { fromAdminInput: true } })
   }
 
   useEffect(() => {
@@ -1654,7 +1667,10 @@ const AdminPage = () => {
   const regularFillSigRef = useRef('')
   useEffect(() => {
     if (!data || !authorized || slotKeys.length === 0) return
-    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}`
+    const assignmentStateSig = slotKeys
+      .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
+      .join(',')
+    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${assignmentStateSig}`
     if (sig === regularFillSigRef.current) return
     regularFillSigRef.current = sig
 
@@ -1674,7 +1690,7 @@ const AdminPage = () => {
       }
 
       // Don't overwrite manual (non-regular) assignments
-      if (existing && existing.some((a) => !a.isRegular)) continue
+      if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
 
       const expectedRegulars = slotRegularLessons.map((lesson) => ({
         teacherId: lesson.teacherId,
@@ -1683,15 +1699,12 @@ const AdminPage = () => {
         isRegular: true,
       }))
 
-      const asSignature = (teacherId: string, subject: string, studentIds: string[]): string =>
-        `${teacherId}|${subject}|${[...studentIds].sort().join('+')}`
-
       const expectedSig = expectedRegulars
-        .map((a) => asSignature(a.teacherId, a.subject, a.studentIds))
+        .map((a) => assignmentSignature(a))
         .sort()
       const existingSig = (existing ?? [])
         .filter((a) => a.isRegular)
-        .map((a) => asSignature(a.teacherId, a.subject, a.studentIds))
+        .map((a) => assignmentSignature(a))
         .sort()
 
       if (expectedSig.length === existingSig.length && expectedSig.every((sigItem, idx) => sigItem === existingSig[idx])) {
@@ -1709,13 +1722,48 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
+    const hadNonRegularBefore = Object.values(data.assignments).some((slotAssignments) =>
+      slotAssignments.some((assignment) => hasMeaningfulManualAssignment(assignment)),
+    )
     const { assignments: nextAssignments, changeLog } = buildIncrementalAutoAssignments(data, slotKeys)
-    await update((current) => ({ ...current, assignments: nextAssignments }))
+    const changedHighlights: Record<string, string[]> = {}
+
+    if (hadNonRegularBefore) {
+      for (const slot of slotKeys) {
+        const prevList = data.assignments[slot] ?? []
+        const nextList = nextAssignments[slot] ?? []
+        const prevSig = prevList.map((a) => assignmentSignature(a)).sort().join('|')
+        const nextSig = nextList.map((a) => assignmentSignature(a)).sort().join('|')
+        if (prevSig === nextSig) continue
+
+        const highlightList = nextList
+          .filter((a) => hasMeaningfulManualAssignment(a))
+          .map((a) => assignmentSignature(a))
+        if (highlightList.length > 0) {
+          changedHighlights[slot] = highlightList
+        }
+      }
+    }
+
+    await update((current) => ({
+      ...current,
+      assignments: nextAssignments,
+      autoAssignHighlights: hadNonRegularBefore ? changedHighlights : {},
+    }))
     if (changeLog.length > 0) {
       alert(`自動提案完了: ${changeLog.length}件の変更がありました。`)
     } else {
       alert('自動提案完了: 変更はありませんでした。')
     }
+  }
+
+  const resetAssignments = async (): Promise<void> => {
+    if (!window.confirm('コマ割りをリセットしますか？\n（手動割当と自動提案結果を全てクリアします）')) return
+    await update((current) => ({
+      ...current,
+      assignments: {},
+      autoAssignHighlights: {},
+    }))
   }
 
   /** Export schedule to Excel: weekly sheets (Mon–Sun) */
@@ -2024,7 +2072,7 @@ service cloud.firestore {
       <div className="panel">
         <div className="row">
           <h2>管理画面: {data.settings.name} ({sessionId})</h2>
-          <Link to="/">ホーム</Link>
+          <Link to="/" state={{ directHome: true }}>ホーム</Link>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
       </div>
@@ -2042,7 +2090,7 @@ service cloud.firestore {
           <div className="panel">
             <h3>講師一覧</h3>
             <table className="table">
-              <thead><tr><th>名前</th><th>科目</th><th>提出データ</th><th>希望URL</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th><th>科目</th><th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
                 {data.teachers.map((teacher) => {
                   const teacherSubmittedAt = (data.teacherSubmittedAt ?? {})[teacher.id] ?? 0
@@ -2078,7 +2126,7 @@ service cloud.firestore {
             <h3>生徒一覧</h3>
             <p className="muted">希望コマ数・不可日は生徒本人が希望URLから入力します。</p>
             <table className="table">
-              <thead><tr><th>名前</th><th>学年</th><th>提出データ</th><th>希望URL</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th><th>学年</th><th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => (
                   <tr key={student.id}>
@@ -2159,6 +2207,9 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 自動提案
               </button>
+              <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
+                コマ割りリセット
+              </button>
               <button className="btn" type="button" onClick={exportScheduleExcel}>
                 Excel出力
               </button>
@@ -2237,7 +2288,9 @@ service cloud.firestore {
                         })
 
                         return (
-                          <div key={idx} className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}`}
+                          <div
+                            key={idx}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${(data.autoAssignHighlights?.[slot] ?? []).includes(assignmentSignature(assignment)) ? ' assignment-block-auto-updated' : ''}`}
                             draggable={!assignment.isRegular}
                             onDragStart={(e) => {
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
@@ -2449,10 +2502,12 @@ const TeacherInputPage = ({
   sessionId,
   data,
   teacher,
+  returnToAdminOnComplete,
 }: {
   sessionId: string
   data: SessionData
   teacher: Teacher
+  returnToAdminOnComplete: boolean
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
@@ -2511,6 +2566,23 @@ const TeacherInputPage = ({
     })
   }
 
+  const toggleColumnAllSlots = (slotNum: number) => {
+    const targetKeys = dates
+      .map((date) => `${date}_${slotNum}`)
+      .filter((slotKey) => !regularSlotKeys.has(slotKey))
+    if (targetKeys.length === 0) return
+    const allOn = targetKeys.every((slotKey) => localAvailability.has(slotKey))
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (allOn) {
+        for (const slotKey of targetKeys) next.delete(slotKey)
+      } else {
+        for (const slotKey of targetKeys) next.add(slotKey)
+      }
+      return next
+    })
+  }
+
   const handleSubmit = () => {
     const key = personKey('teacher', teacher.id)
     // Ensure regular lesson slots are always included
@@ -2541,7 +2613,7 @@ const TeacherInputPage = ({
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
-    navigate(`/complete/${sessionId}`)
+    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
   }
 
   return (
@@ -2560,7 +2632,14 @@ const TeacherInputPage = ({
             <tr>
               <th className="date-header">日付</th>
               {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
-                <th key={i}>{i + 1}限</th>
+                <th
+                  key={i}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => toggleColumnAllSlots(i + 1)}
+                  title="この時限を一括切替"
+                >
+                  {i + 1}限
+                </th>
               ))}
             </tr>
           </thead>
@@ -2643,10 +2722,12 @@ const StudentInputPage = ({
   sessionId,
   data,
   student,
+  returnToAdminOnComplete,
 }: {
   sessionId: string
   data: SessionData
   student: Student
+  returnToAdminOnComplete: boolean
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
@@ -2668,6 +2749,20 @@ const StudentInputPage = ({
     }
     return initial
   })
+
+  const regularSlotKeys = useMemo(() => {
+    const keys = new Set<string>()
+    const studentLessons = data.regularLessons.filter((lesson) => lesson.studentIds.includes(student.id))
+    for (const date of dates) {
+      const dayOfWeek = getIsoDayOfWeek(date)
+      for (const lesson of studentLessons) {
+        if (lesson.dayOfWeek === dayOfWeek) {
+          keys.add(`${date}_${lesson.slotNumber}`)
+        }
+      }
+    }
+    return keys
+  }, [dates, data.regularLessons, student.id])
 
   const toggleSlot = (slotKey: string) => {
     // Check if this slot has a regular lesson
@@ -2696,14 +2791,33 @@ const StudentInputPage = ({
   }
 
   const toggleDateAllSlots = (date: string) => {
-    const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
-    const allMarked = allSlotKeys.every((sk) => unavailableSlots.has(sk))
+    const nonRegularKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+      .filter((slotKey) => !regularSlotKeys.has(slotKey))
+    if (nonRegularKeys.length === 0) return
+    const allMarked = nonRegularKeys.every((slotKey) => unavailableSlots.has(slotKey))
     setUnavailableSlots((prev) => {
       const next = new Set(prev)
       if (allMarked) {
-        for (const sk of allSlotKeys) next.delete(sk)
+        for (const slotKey of nonRegularKeys) next.delete(slotKey)
       } else {
-        for (const sk of allSlotKeys) next.add(sk)
+        for (const slotKey of nonRegularKeys) next.add(slotKey)
+      }
+      return next
+    })
+  }
+
+  const toggleColumnAllSlots = (slotNum: number) => {
+    const nonRegularKeys = dates
+      .map((date) => `${date}_${slotNum}`)
+      .filter((slotKey) => !regularSlotKeys.has(slotKey))
+    if (nonRegularKeys.length === 0) return
+    const allMarked = nonRegularKeys.every((slotKey) => unavailableSlots.has(slotKey))
+    setUnavailableSlots((prev) => {
+      const next = new Set(prev)
+      if (allMarked) {
+        for (const slotKey of nonRegularKeys) next.delete(slotKey)
+      } else {
+        for (const slotKey of nonRegularKeys) next.add(slotKey)
       }
       return next
     })
@@ -2763,7 +2877,7 @@ const StudentInputPage = ({
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
-    navigate(`/complete/${sessionId}`)
+    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
   }
 
   return (
@@ -2838,20 +2952,28 @@ const StudentInputPage = ({
       <div className="student-form-section">
         <h3>出席不可コマ</h3>
         <p className="muted">出席できないコマをタップして選択してください。日付をタップすると全時限を一括切替できます。</p>
-        <div className="teacher-table-wrapper">
-          <table className="teacher-table">
+        <div className="teacher-table-wrapper student-no-scroll">
+          <table className="teacher-table compact-grid">
             <thead>
               <tr>
                 <th className="date-header">日付</th>
                 {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
-                  <th key={i}>{i + 1}限</th>
+                  <th
+                    key={i}
+                    style={{ cursor: 'pointer', userSelect: 'none' }}
+                    onClick={() => toggleColumnAllSlots(i + 1)}
+                    title="この時限を一括切替"
+                  >
+                    {i + 1}限
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {dates.map((date) => {
                 const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
-                const allMarked = allSlotKeys.every((sk) => unavailableSlots.has(sk))
+                const nonRegularKeys = allSlotKeys.filter((slotKey) => !regularSlotKeys.has(slotKey))
+                const allMarked = nonRegularKeys.length > 0 && nonRegularKeys.every((slotKey) => unavailableSlots.has(slotKey))
                 return (
                   <tr key={date}>
                     <td
@@ -2868,10 +2990,7 @@ const StudentInputPage = ({
                       const slotNum = i + 1
                       const slotKey = `${date}_${slotNum}`
                       const isUnavail = unavailableSlots.has(slotKey)
-                      const dow = getIsoDayOfWeek(date)
-                      const hasRegular = data.regularLessons.some(
-                        (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
-                      )
+                      const hasRegular = regularSlotKeys.has(slotKey)
                       return (
                         <td key={slotNum}>
                           <button
@@ -2953,6 +3072,7 @@ const StudentInputPage = ({
 }
 
 const AvailabilityPage = () => {
+  const location = useLocation()
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
   const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?:&]/)[0], [rawPersonId])
@@ -2961,6 +3081,7 @@ const AvailabilityPage = () => {
   const [errorDetail, setErrorDetail] = useState('')
   const syncingRef = useRef(false)
   const syncDoneRef = useRef(false)
+  const returnToAdminOnComplete = (location.state as { fromAdminInput?: boolean } | null)?.fromAdminInput === true
 
   useEffect(() => {
     setPhase('loading')
@@ -3184,7 +3305,7 @@ service cloud.firestore {
           </div>
         )
       }
-      return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} />
+      return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
@@ -3216,7 +3337,7 @@ service cloud.firestore {
           </div>
         )
       }
-      return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} />
+      return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   }
 
@@ -3247,11 +3368,20 @@ const BootPage = () => {
 }
 
 const CompletionPage = () => {
+  const location = useLocation()
+  const { sessionId = 'main' } = useParams()
+  const returnToAdminOnComplete = (location.state as { returnToAdminOnComplete?: boolean } | null)?.returnToAdminOnComplete === true
+
   return (
     <div className="app-shell">
       <div className="panel">
         <h2>入力完了</h2>
         <p>データの送信が完了しました。ありがとうございます。</p>
+        {returnToAdminOnComplete && (
+          <div className="row" style={{ marginTop: '10px' }}>
+            <Link className="btn" to={`/admin/${sessionId}`} state={{ skipAuth: true }}>管理画面へ戻る</Link>
+          </div>
+        )}
       </div>
     </div>
   )
