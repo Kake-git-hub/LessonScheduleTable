@@ -138,6 +138,16 @@
 .slot-title {
   font-weight: 700;
   margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.slot-add-btn {
+  padding: 2px 8px;
+  line-height: 1;
+  min-height: 24px;
 }
 
 .list {
@@ -326,6 +336,47 @@
   height: 34px;
   font-size: 15px;
   border-width: 1px;
+}
+
+@media (max-width: 640px) {
+  .availability-container {
+    max-width: 100%;
+    padding: 10px;
+  }
+
+  .teacher-table-wrapper {
+    overflow-x: hidden;
+    padding: 6px;
+  }
+
+  .teacher-table,
+  .teacher-table.compact-grid {
+    min-width: 0;
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .teacher-table th,
+  .teacher-table td {
+    padding: 6px 3px;
+    font-size: 12px;
+  }
+
+  .teacher-table .date-header,
+  .teacher-table .date-cell {
+    width: 62px;
+    min-width: 62px;
+    max-width: 62px;
+    font-size: 11px;
+  }
+
+  .teacher-slot-btn {
+    min-width: 0;
+    height: 32px;
+    font-size: 14px;
+    border-width: 1px;
+    border-radius: 6px;
+  }
 }
 
 /* Student Form Layout */

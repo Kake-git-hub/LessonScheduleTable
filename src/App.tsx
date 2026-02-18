@@ -386,8 +386,15 @@ interface ChangeLogEntry {
 const buildIncrementalAutoAssignments = (
   data: SessionData,
   slots: string[],
-): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[] } => {
+): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]> } => {
   const changeLog: ChangeLogEntry[] = []
+  const changedPairSigSetBySlot: Record<string, Set<string>> = {}
+  const markChangedPair = (slot: string, assignment: Assignment): void => {
+    if (assignment.isRegular) return
+    if (!hasMeaningfulManualAssignment(assignment)) return
+    if (!changedPairSigSetBySlot[slot]) changedPairSigSetBySlot[slot] = new Set<string>()
+    changedPairSigSetBySlot[slot].add(assignmentSignature(assignment))
+  }
   const teacherIds = new Set(data.teachers.map((t) => t.id))
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
@@ -433,7 +440,9 @@ const buildIncrementalAutoAssignments = (
           return t.subjects.includes(assignment.subject)
         })
         if (replacement) {
-          cleaned.push({ ...assignment, teacherId: replacement.id })
+          const changedAssignment = { ...assignment, teacherId: replacement.id }
+          cleaned.push(changedAssignment)
+          markChangedPair(slot, changedAssignment)
           changeLog.push({ slot, action: '講師差替', detail: `${replacement.name} に変更（元の講師が削除済）` })
         } else {
           changeLog.push({ slot, action: '講師削除', detail: `割当解除（講師が削除済・代替不可）` })
@@ -451,7 +460,9 @@ const buildIncrementalAutoAssignments = (
           return t.subjects.includes(assignment.subject)
         })
         if (replacement) {
-          cleaned.push({ ...assignment, teacherId: replacement.id })
+          const changedAssignment = { ...assignment, teacherId: replacement.id }
+          cleaned.push(changedAssignment)
+          markChangedPair(slot, changedAssignment)
           changeLog.push({ slot, action: '講師差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
         } else {
           changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
@@ -478,9 +489,14 @@ const buildIncrementalAutoAssignments = (
       }
 
       if (validStudentIds.length > 0) {
-        cleaned.push({ ...assignment, studentIds: validStudentIds })
+        const changedAssignment = { ...assignment, studentIds: validStudentIds }
+        cleaned.push(changedAssignment)
+        if (assignment.studentIds.length !== validStudentIds.length) {
+          markChangedPair(slot, changedAssignment)
+        }
       } else if (removedStudentIds.length > 0) {
-        cleaned.push({ ...assignment, studentIds: [] })
+        const changedAssignment = { ...assignment, studentIds: [] }
+        cleaned.push(changedAssignment)
         changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留（予定変更のため）` })
       } else {
         cleaned.push(assignment)
@@ -525,6 +541,7 @@ const buildIncrementalAutoAssignments = (
           return bRem - aRem
         })[0]
         assignment.studentIds = [...assignment.studentIds, best.id]
+        markChangedPair(slot, assignment)
         changeLog.push({ slot, action: '生徒追加', detail: `${best.name} を追加` })
       }
     }
@@ -700,6 +717,7 @@ const buildIncrementalAutoAssignments = (
 
       if (bestPlan) {
         slotAssignments.push(bestPlan.assignment)
+        markChangedPair(slot, bestPlan.assignment)
         usedTeacherIdsInSlot.add(teacher.id)
         for (const sid of bestPlan.assignment.studentIds) usedStudentIdsInSlot.add(sid)
       }
@@ -716,7 +734,12 @@ const buildIncrementalAutoAssignments = (
     }
   }
 
-  return { assignments: result, changeLog }
+  const changedPairSignatures: Record<string, string[]> = {}
+  for (const [slot, signatureSet] of Object.entries(changedPairSigSetBySlot)) {
+    if (signatureSet.size > 0) changedPairSignatures[slot] = [...signatureSet]
+  }
+
+  return { assignments: result, changeLog, changedPairSignatures }
 }
 
 const emptyMasterData = (): MasterData => ({
@@ -1725,30 +1748,12 @@ const AdminPage = () => {
     const hadNonRegularBefore = Object.values(data.assignments).some((slotAssignments) =>
       slotAssignments.some((assignment) => hasMeaningfulManualAssignment(assignment)),
     )
-    const { assignments: nextAssignments, changeLog } = buildIncrementalAutoAssignments(data, slotKeys)
-    const changedHighlights: Record<string, string[]> = {}
-
-    if (hadNonRegularBefore) {
-      for (const slot of slotKeys) {
-        const prevList = data.assignments[slot] ?? []
-        const nextList = nextAssignments[slot] ?? []
-        const prevSig = prevList.map((a) => assignmentSignature(a)).sort().join('|')
-        const nextSig = nextList.map((a) => assignmentSignature(a)).sort().join('|')
-        if (prevSig === nextSig) continue
-
-        const highlightList = nextList
-          .filter((a) => hasMeaningfulManualAssignment(a))
-          .map((a) => assignmentSignature(a))
-        if (highlightList.length > 0) {
-          changedHighlights[slot] = highlightList
-        }
-      }
-    }
+    const { assignments: nextAssignments, changeLog, changedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
 
     await update((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: hadNonRegularBefore ? changedHighlights : {},
+      autoAssignHighlights: hadNonRegularBefore ? changedPairSignatures : {},
     }))
     if (changeLog.length > 0) {
       alert(`自動提案完了: ${changeLog.length}件の変更がありました。`)
@@ -2260,12 +2265,22 @@ service cloud.firestore {
                     }}
                   >
                     <div className="slot-title">
-                      {slotLabel(slot)}
-                      {(data.settings.deskCount ?? 0) > 0 && (
-                        <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
-                          {slotAssignments.length}/{data.settings.deskCount}
-                        </span>
-                      )}
+                      <div>
+                        {slotLabel(slot)}
+                        {(data.settings.deskCount ?? 0) > 0 && (
+                          <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
+                            {slotAssignments.length}/{data.settings.deskCount}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        className="btn secondary slot-add-btn"
+                        type="button"
+                        title="ペア追加"
+                        onClick={() => void addSlotAssignment(slot)}
+                      >
+                        ＋
+                      </button>
                     </div>
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
@@ -2435,14 +2450,6 @@ service cloud.firestore {
                           </div>
                         )
                       })}
-                      <button
-                        className="btn secondary"
-                        type="button"
-                        style={{ fontSize: '0.8em', marginTop: '4px' }}
-                        onClick={() => void addSlotAssignment(slot)}
-                      >
-                        ＋ ペア追加
-                      </button>
                       {(() => {
                         const idleTeachers = data.teachers.filter(
                           (t) =>
@@ -2627,7 +2634,7 @@ const TeacherInputPage = ({
       </div>
 
       <div className="teacher-table-wrapper">
-        <table className="teacher-table">
+        <table className="teacher-table compact-grid">
           <thead>
             <tr>
               <th className="date-header">日付</th>
