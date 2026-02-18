@@ -386,14 +386,21 @@ interface ChangeLogEntry {
 const buildIncrementalAutoAssignments = (
   data: SessionData,
   slots: string[],
-): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]> } => {
+): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]> } => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
+  const addedPairSigSetBySlot: Record<string, Set<string>> = {}
   const markChangedPair = (slot: string, assignment: Assignment): void => {
     if (assignment.isRegular) return
     if (!hasMeaningfulManualAssignment(assignment)) return
     if (!changedPairSigSetBySlot[slot]) changedPairSigSetBySlot[slot] = new Set<string>()
     changedPairSigSetBySlot[slot].add(assignmentSignature(assignment))
+  }
+  const markAddedPair = (slot: string, assignment: Assignment): void => {
+    if (assignment.isRegular) return
+    if (!hasMeaningfulManualAssignment(assignment)) return
+    if (!addedPairSigSetBySlot[slot]) addedPairSigSetBySlot[slot] = new Set<string>()
+    addedPairSigSetBySlot[slot].add(assignmentSignature(assignment))
   }
   const teacherIds = new Set(data.teachers.map((t) => t.id))
   const studentIds = new Set(data.students.map((s) => s.id))
@@ -727,6 +734,7 @@ const buildIncrementalAutoAssignments = (
       result[slot] = slotAssignments
       // Only log newly added assignments
       for (const a of slotAssignments.slice(existingAssignments.length)) {
+        markAddedPair(slot, a)
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
         const sNames = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?').join(', ')
         changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames} (${a.subject})` })
@@ -739,7 +747,12 @@ const buildIncrementalAutoAssignments = (
     if (signatureSet.size > 0) changedPairSignatures[slot] = [...signatureSet]
   }
 
-  return { assignments: result, changeLog, changedPairSignatures }
+  const addedPairSignatures: Record<string, string[]> = {}
+  for (const [slot, signatureSet] of Object.entries(addedPairSigSetBySlot)) {
+    if (signatureSet.size > 0) addedPairSignatures[slot] = [...signatureSet]
+  }
+
+  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures }
 }
 
 const emptyMasterData = (): MasterData => ({
@@ -1748,12 +1761,12 @@ const AdminPage = () => {
     const hadNonRegularBefore = Object.values(data.assignments).some((slotAssignments) =>
       slotAssignments.some((assignment) => hasMeaningfulManualAssignment(assignment)),
     )
-    const { assignments: nextAssignments, changeLog, changedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
 
     await update((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: hadNonRegularBefore ? changedPairSignatures : {},
+      autoAssignHighlights: hadNonRegularBefore ? (Object.keys(addedPairSignatures).length > 0 ? addedPairSignatures : changedPairSignatures) : {},
     }))
     if (changeLog.length > 0) {
       alert(`自動提案完了: ${changeLog.length}件の変更がありました。`)
@@ -2367,15 +2380,6 @@ service cloud.firestore {
 
                                 {[0, 1].map((pos) => {
                                   const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
-                                  const selectedStudent = data.students.find((s) => s.id === assignment.studentIds[pos])
-                                  const selectedRemaining = selectedStudent
-                                    ? Object.entries(selectedStudent.subjectSlots)
-                                        .map(([subj, desired]) => {
-                                          const assigned = countStudentSubjectLoad(data.assignments, selectedStudent.id, subj)
-                                          return `${subj}:残${Math.max(0, desired - assigned)}`
-                                        })
-                                        .join(' ')
-                                    : ''
                                   return (
                                     <div key={pos} className="student-select-row">
                                     <select
@@ -2414,33 +2418,36 @@ service cloud.firestore {
                                           // Unsubmitted students are unavailable
                                           if (!student.submittedAt) return false
                                           // Filter out students unavailable for this specific slot
-                                          return isStudentAvailable(student, slot)
+                                          if (!isStudentAvailable(student, slot)) return false
+                                          // Subject compatibility is required
+                                          if (!assignment.subject || !student.subjects.includes(assignment.subject)) return false
+                                          // Remaining slots for the current subject must be > 0
+                                          const desired = student.subjectSlots[assignment.subject] ?? 0
+                                          const assigned = countStudentSubjectLoad(data.assignments, student.id, assignment.subject)
+                                          const currentlySelected = assignment.studentIds[pos] === student.id && assignment.subject
+                                          const adjustedAssigned = currentlySelected ? Math.max(0, assigned - 1) : assigned
+                                          const remaining = desired - adjustedAssigned
+                                          return remaining > 0
                                         })
                                         .map((student) => {
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
                                         const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
                                         const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
-                                        const isRegularPair = !isIncompatible && isRegularLessonPair(data.regularLessons, assignment.teacherId, student.id)
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
                                         const isSelectedInOtherPosition = student.id === otherStudentId
                                         const disabled = usedInOther || isSelectedInOtherPosition
-                                        const tagLabel = isIncompatible ? ' ⚠不可' : isRegularPair ? ' ★通常' : ''
+                                        const tagLabel = isIncompatible ? ' ⚠不可' : ''
                                         const statusLabel = usedInOther ? ' (他ペア)' : ''
-                                        // Show remaining slots in dropdown
-                                        const totalDesired = Object.values(student.subjectSlots).reduce((s, c) => s + c, 0)
-                                        const totalUsed = countStudentLoad(data.assignments, student.id)
-                                        const remainLabel = student.submittedAt ? ` 残${Math.max(0, totalDesired - totalUsed)}` : ''
 
                                         return (
                                           <option key={student.id} value={student.id} disabled={disabled}>
-                                            {student.name}{tagLabel}{remainLabel}{statusLabel}
+                                            {student.name}{tagLabel}{statusLabel}
                                           </option>
                                         )
                                       })}
                                     </select>
-                                    {selectedStudent && <div className="student-remaining">{selectedRemaining || (selectedStudent.submittedAt ? '残コマなし' : '特別講習なし')}</div>}
                                     </div>
                                   )
                                 })}
@@ -2458,10 +2465,10 @@ service cloud.firestore {
                         )
                         if (idleTeachers.length === 0) return null
                         return (
-                          <div className="idle-teachers" style={{ marginTop: '6px', fontSize: '0.85em', color: '#888' }}>
+                          <div className="idle-teachers-compact" style={{ marginTop: '6px', fontSize: '0.85em', color: '#888' }}>
                             {idleTeachers.map((t) => (
-                              <span key={t.id} className="badge" style={{ marginRight: '4px' }}>
-                                {t.name}(空き)
+                              <span key={t.id} style={{ marginRight: '6px', whiteSpace: 'nowrap' }}>
+                                {t.name}
                               </span>
                             ))}
                           </div>
