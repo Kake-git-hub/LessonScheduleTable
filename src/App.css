@@ -121,10 +121,6 @@
   background: #fef2f2;
 }
 
-.assignment-block-auto-updated {
-  border: 2px solid #dc2626;
-}
-
 .incompatible-badge {
   background: #ef4444;
   color: #fff;
@@ -565,6 +561,11 @@
   padding: 2px 6px;
   border-radius: 4px;
   display: inline-block;
+}
+
+.auto-diff-badge-update {
+  background: #f59e0b;
+  color: #fff;
 }
 
 .assignment-block[draggable="true"] {

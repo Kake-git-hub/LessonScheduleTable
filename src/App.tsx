@@ -1837,28 +1837,42 @@ const AdminPage = () => {
       changed = true
     }
 
-    if (changed) {
-      void persist({ ...data, assignments: nextAssignments })
+    // Auto-register regular lesson slots as teacher availability
+    const nextAvailability = { ...data.availability }
+    let availChanged = false
+    for (const lesson of data.regularLessons) {
+      const teacherKey = personKey('teacher', lesson.teacherId)
+      const currentSlots = new Set(nextAvailability[teacherKey] ?? [])
+      for (const sk of slotKeys) {
+        const dayOfWeek = getSlotDayOfWeek(sk)
+        const slotNumber = getSlotNumber(sk)
+        if (lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber) {
+          if (!currentSlots.has(sk)) {
+            currentSlots.add(sk)
+            availChanged = true
+          }
+        }
+      }
+      if (availChanged || currentSlots.size !== (data.availability[teacherKey] ?? []).length) {
+        nextAvailability[teacherKey] = [...currentSlots]
+      }
+    }
+
+    if (changed || availChanged) {
+      void persist({ ...data, assignments: nextAssignments, availability: nextAvailability })
     }
   }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
-    const hadNonRegularBefore = Object.values(data.assignments).some((slotAssignments) =>
-      slotAssignments.some((assignment) => hasMeaningfulManualAssignment(assignment)),
-    )
     const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
 
-    const mergedHighlights: Record<string, string[]> = {}
-    if (hadNonRegularBefore) {
-      const slotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
-      for (const slot of slotSet) {
-        const signatureSet = new Set<string>([
-          ...(addedPairSignatures[slot] ?? []),
-          ...(changedPairSignatures[slot] ?? []),
-        ])
-        if (signatureSet.size > 0) mergedHighlights[slot] = [...signatureSet]
-      }
+    const highlightAdded: Record<string, string[]> = {}
+    const highlightChanged: Record<string, string[]> = {}
+    const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
+    for (const slot of allSlotSet) {
+      if ((addedPairSignatures[slot] ?? []).length > 0) highlightAdded[slot] = [...addedPairSignatures[slot]]
+      if ((changedPairSignatures[slot] ?? []).length > 0) highlightChanged[slot] = [...changedPairSignatures[slot]]
     }
 
     const remainingStudents = data.students
@@ -1892,7 +1906,7 @@ const AdminPage = () => {
     await update((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: hadNonRegularBefore ? mergedHighlights : {},
+      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged },
     }))
     const remainingMessage = remainingStudents.length > 0
       ? `\n\n未充足の生徒:\n${remainingStudents
@@ -1921,7 +1935,7 @@ const AdminPage = () => {
     await update((current) => ({
       ...current,
       assignments: {},
-      autoAssignHighlights: {},
+      autoAssignHighlights: { added: {}, changed: {} },
     }))
   }
 
@@ -2464,7 +2478,11 @@ service cloud.firestore {
                           const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade)
                           return pt === 'incompatible' || gt === 'incompatible'
                         })
-                        const isAutoDiff = (data.autoAssignHighlights?.[slot] ?? []).includes(assignmentSignature(assignment))
+                        const sig = assignmentSignature(assignment)
+                        const hl = data.autoAssignHighlights ?? {}
+                        const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
+                        const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
+                        const isAutoDiff = isAutoAdded || isAutoChanged
 
                         return (
                           <div
@@ -2492,7 +2510,8 @@ service cloud.firestore {
                             )}
                             {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
-                            {isAutoDiff && <span className="badge auto-diff-badge" title="自動提案で差分あり">NEW</span>}
+                            {isAutoAdded && <span className="badge auto-diff-badge" title="自動提案で新規追加">NEW</span>}
+                            {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title="自動提案で再割当">UPDATE</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}

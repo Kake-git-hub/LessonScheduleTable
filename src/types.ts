@@ -93,7 +93,7 @@ export type SessionData = {
   availability: Record<string, string[]>
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
-  autoAssignHighlights?: Record<string, string[]>
+  autoAssignHighlights?: { added?: Record<string, string[]>; changed?: Record<string, string[]> }
   teacherSubmittedAt?: Record<string, number>
   shareTokens?: Record<string, string>
   submissionLog?: SubmissionLogEntry[]
