@@ -345,6 +345,8 @@ const collectTeacherShortages = (
   const shortages: TeacherShortageEntry[] = []
   for (const [slot, slotAssignments] of Object.entries(assignments)) {
     for (const assignment of slotAssignments) {
+      if (assignment.isRegular) continue
+
       if (!assignment.teacherId) {
         shortages.push({ slot, detail: '講師未設定' })
         continue
@@ -2462,11 +2464,12 @@ service cloud.firestore {
                           const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade)
                           return pt === 'incompatible' || gt === 'incompatible'
                         })
+                        const isAutoDiff = (data.autoAssignHighlights?.[slot] ?? []).includes(assignmentSignature(assignment))
 
                         return (
                           <div
                             key={idx}
-                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${(data.autoAssignHighlights?.[slot] ?? []).includes(assignmentSignature(assignment)) ? ' assignment-block-auto-updated' : ''}`}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}`}
                             draggable={!assignment.isRegular}
                             onDragStart={(e) => {
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
@@ -2489,6 +2492,7 @@ service cloud.firestore {
                             )}
                             {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
+                            {isAutoDiff && <span className="badge auto-diff-badge" title="自動提案で差分あり">NEW</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
