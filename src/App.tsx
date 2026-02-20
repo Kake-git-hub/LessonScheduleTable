@@ -222,6 +222,10 @@ const hasAvailability = (
 const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[] =>
   Object.values(assignments).flat()
 
+/** Get the subject for a specific student in an assignment (supports per-student subjects). */
+const getStudentSubject = (a: Assignment, studentId: string): string =>
+  a.studentSubjects?.[studentId] ?? a.subject
+
 const countTeacherLoad = (assignments: Record<string, Assignment[]>, teacherId: string): number =>
   allAssignments(assignments).filter((a) => a.teacherId === teacherId).length
 
@@ -305,7 +309,7 @@ const countStudentSubjectLoad = (
   subject: string,
 ): number =>
   allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && a.subject === subject && !a.isRegular,
+    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular,
   ).length
 
 const isStudentAvailable = (student: Student, slotKey: string): boolean => {
@@ -366,13 +370,27 @@ const collectTeacherShortages = (
       if (assignment.subject && !teacher.subjects.includes(assignment.subject)) {
         shortages.push({ slot, detail: `${teacher.name} の担当外科目(${assignment.subject})` })
       }
+      // Check per-student subjects
+      if (assignment.studentSubjects) {
+        for (const [sid, subj] of Object.entries(assignment.studentSubjects)) {
+          if (subj && !teacher.subjects.includes(subj)) {
+            const sName = data.students.find((s) => s.id === sid)?.name ?? sid
+            shortages.push({ slot, detail: `${teacher.name} の担当外科目(${subj}) — ${sName}` })
+          }
+        }
+      }
     }
   }
   return shortages
 }
 
-const assignmentSignature = (assignment: Assignment): string =>
-  `${assignment.teacherId}|${assignment.subject}|${[...assignment.studentIds].sort().join('+')}|${assignment.isRegular ? 'R' : 'N'}`
+const assignmentSignature = (assignment: Assignment): string => {
+  const sortedStudents = [...assignment.studentIds].sort()
+  const subjectPart = assignment.studentSubjects
+    ? sortedStudents.map((sid) => `${sid}:${assignment.studentSubjects![sid] ?? assignment.subject}`).join('+')
+    : `${assignment.subject}|${sortedStudents.join('+')}`
+  return `${assignment.teacherId}|${subjectPart}|${assignment.isRegular ? 'R' : 'N'}`
+}
 
 const hasMeaningfulManualAssignment = (assignment: Assignment): boolean =>
   !assignment.isRegular && !!(assignment.teacherId || assignment.subject || assignment.studentIds.length > 0)
@@ -476,13 +494,18 @@ const buildIncrementalAutoAssignments = (
         continue
       }
 
+      // Collect all subjects needed in this assignment (per-student)
+      const allNeededSubjects = assignment.studentSubjects
+        ? [...new Set(Object.values(assignment.studentSubjects))]
+        : assignment.subject ? [assignment.subject] : []
+
       // Check teacher still exists
       if (!teacherIds.has(assignment.teacherId)) {
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
           if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return t.subjects.includes(assignment.subject)
+          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
         })
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
@@ -502,7 +525,7 @@ const buildIncrementalAutoAssignments = (
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
           if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return t.subjects.includes(assignment.subject)
+          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
         })
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
@@ -561,7 +584,8 @@ const buildIncrementalAutoAssignments = (
     for (const assignment of slotAssignments) {
       if (assignment.isRegular) continue
       for (const studentId of assignment.studentIds) {
-        const key = `${studentId}|${assignment.subject}`
+        const subj = getStudentSubject(assignment, studentId)
+        const key = `${studentId}|${subj}`
         specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
       }
     }
@@ -579,14 +603,15 @@ const buildIncrementalAutoAssignments = (
       let removedAny = false
       for (const studentId of assignment.studentIds) {
         const student = data.students.find((s) => s.id === studentId)
-        const requested = student?.subjectSlots[assignment.subject] ?? 0
-        const key = `${studentId}|${assignment.subject}`
+        const subj = getStudentSubject(assignment, studentId)
+        const requested = student?.subjectSlots[subj] ?? 0
+        const key = `${studentId}|${subj}`
         const currentLoad = specialLoadMap.get(key) ?? 0
 
         if (currentLoad > requested) {
           specialLoadMap.set(key, currentLoad - 1)
           removedAny = true
-          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${assignment.subject})` })
+          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${subj})` })
           continue
         }
         remainingStudentIds.push(studentId)
@@ -621,10 +646,13 @@ const buildIncrementalAutoAssignments = (
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-        if (!student.subjects.includes(assignment.subject)) return false
-        const requested = student.subjectSlots[assignment.subject] ?? 0
-        const allocated = countStudentSubjectLoad(result, student.id, assignment.subject)
-        return allocated < requested
+        // Student must be able to learn at least one subject the teacher can teach, with remaining demand
+        return teacher.subjects.some((subj) => {
+          if (!student.subjects.includes(subj)) return false
+          const requested = student.subjectSlots[subj] ?? 0
+          const allocated = countStudentSubjectLoad(result, student.id, subj)
+          return allocated < requested
+        })
       })
 
       if (candidates.length > 0 && assignment.studentIds.length < 2) {
@@ -633,9 +661,23 @@ const buildIncrementalAutoAssignments = (
           const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
           return bRem - aRem
         })[0]
+        // Pick the best viable subject for this new student
+        const bestSubj = teacher.subjects.find((subj) => {
+          if (!best.subjects.includes(subj)) return false
+          const requested = best.subjectSlots[subj] ?? 0
+          const allocated = countStudentSubjectLoad(result, best.id, subj)
+          return allocated < requested
+        }) ?? assignment.subject
+        // Reconstruct studentSubjects
+        const studentSubjects: Record<string, string> = {}
+        for (const sid of assignment.studentIds) {
+          studentSubjects[sid] = getStudentSubject(assignment, sid)
+        }
+        studentSubjects[best.id] = bestSubj
         assignment.studentIds = [...assignment.studentIds, best.id]
+        assignment.studentSubjects = studentSubjects
         markChangedPair(slot, assignment)
-        changeLog.push({ slot, action: '生徒追加', detail: `${best.name} を追加` })
+        changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
       }
     }
   }
@@ -728,22 +770,59 @@ const buildIncrementalAutoAssignments = (
         const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
         if (hasSameStudentConsecutive) continue
 
+        // --- Determine subject assignment (same or mixed) ---
+        // Try same-subject first (shared by all students) — preferred
         const commonSubjects = teacher.subjects.filter((subject) =>
           combo.every((student) => student.subjects.includes(subject)),
         )
-        if (commonSubjects.length === 0) continue
-
-        const viableSubjects = commonSubjects.filter((subject) =>
+        const viableCommonSubjects = commonSubjects.filter((subject) =>
           combo.every((student) => {
             const requested = student.subjectSlots[subject] ?? 0
             const allocated = countStudentSubjectLoad(result, student.id, subject)
             return allocated < requested
           }),
         )
-        if (viableSubjects.length === 0) continue
 
-        const bestSubject = viableSubjects[0]
+        // For 2-student combos: also try mixed-subject pairing (each student gets their own subject)
+        type SubjectPlan = { isMixed: false; subject: string } | { isMixed: true; studentSubjects: Record<string, string>; primarySubject: string }
+        const subjectPlans: SubjectPlan[] = []
 
+        // Add same-subject plans
+        for (const subj of viableCommonSubjects) {
+          subjectPlans.push({ isMixed: false, subject: subj })
+        }
+
+        // Add mixed-subject plans for 2-student combos
+        if (combo.length === 2) {
+          const [s1, s2] = combo
+          const s1Viable = teacher.subjects.filter((subj) => {
+            if (!s1.subjects.includes(subj)) return false
+            const req = s1.subjectSlots[subj] ?? 0
+            const alloc = countStudentSubjectLoad(result, s1.id, subj)
+            return alloc < req
+          })
+          const s2Viable = teacher.subjects.filter((subj) => {
+            if (!s2.subjects.includes(subj)) return false
+            const req = s2.subjectSlots[subj] ?? 0
+            const alloc = countStudentSubjectLoad(result, s2.id, subj)
+            return alloc < req
+          })
+          // Only add mixed plans where subjects actually differ
+          for (const subj1 of s1Viable) {
+            for (const subj2 of s2Viable) {
+              if (subj1 === subj2) continue // same-subject already covered above
+              subjectPlans.push({
+                isMixed: true,
+                studentSubjects: { [s1.id]: subj1, [s2.id]: subj2 },
+                primarySubject: subj1, // Use first student's subject as the display subject
+              })
+            }
+          }
+        }
+
+        if (subjectPlans.length === 0) continue
+
+        for (const plan of subjectPlans) {
         // --- Student distribution scoring ---
         let studentScore = 0
         for (const st of combo) {
@@ -793,6 +872,9 @@ const buildIncrementalAutoAssignments = (
           }
         }
 
+        // Mixed-subject penalty: same subject pairs are slightly preferred
+        const mixedSubjectPenalty = plan.isMixed ? -15 : 0
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
           teacherConsecutiveBonus +  // Teacher consecutive slot bonus
@@ -800,12 +882,17 @@ const buildIncrementalAutoAssignments = (
           regularPairBonus +  // Regular lesson pair preference
           pairConsecutiveBonus +  // Same teacher+student consecutive on same day
           (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
+          mixedSubjectPenalty +  // Slight penalty for mixed subjects
           studentScore -
           teacherLoad * 2
 
         if (!bestPlan || score > bestPlan.score) {
-          bestPlan = { score, assignment: { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: bestSubject } }
+          const assignment: Assignment = plan.isMixed
+            ? { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.primarySubject, studentSubjects: plan.studentSubjects }
+            : { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.subject }
+          bestPlan = { score, assignment }
         }
+        } // end for plan
       }
 
       if (bestPlan) {
@@ -821,8 +908,12 @@ const buildIncrementalAutoAssignments = (
       for (const a of slotAssignments.slice(existingAssignments.length)) {
         markAddedPair(slot, a)
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
-        const sNames = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?').join(', ')
-        changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames} (${a.subject})` })
+        const sNames = a.studentIds.map((sid) => {
+          const name = data.students.find((s) => s.id === sid)?.name ?? '?'
+          const subj = getStudentSubject(a, sid)
+          return `${name}(${subj})`
+        }).join(', ')
+        changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames}` })
       }
     }
   }
@@ -1679,11 +1770,14 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         hasAvailability(data.availability, 'teacher', teacher.id, sk),
       ).length
 
-      // Subject breakdown
+      // Subject breakdown (count per-student subjects)
       const subjectMap: Record<string, number> = {}
       for (const e of myAssignments) {
         if (!e.assignment.isRegular) {
-          subjectMap[e.assignment.subject] = (subjectMap[e.assignment.subject] ?? 0) + 1
+          for (const sid of e.assignment.studentIds) {
+            const subj = getStudentSubject(e.assignment, sid)
+            subjectMap[subj] = (subjectMap[subj] ?? 0) + 1
+          }
         }
       }
 
@@ -1719,9 +1813,9 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const regularSlots = myAssignments.filter((e) => e.assignment.isRegular).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
-      // Per-subject desired vs assigned
+      // Per-subject desired vs assigned (using per-student subjects)
       const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
-        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && e.assignment.subject === subj).length
+        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && getStudentSubject(e.assignment, student.id) === subj).length
         return { subject: subj, desired, assigned, diff: assigned - desired }
       })
 
@@ -1775,12 +1869,18 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
     }
     for (const e of allSlotAssignments) {
       if (e.assignment.isRegular) continue
-      const entry = subjectMap.get(e.assignment.subject)
-      if (!entry) continue
-      entry.totalPairs++
-      entry.totalAssigned += e.assignment.studentIds.length
-      if (e.assignment.teacherId) entry.teacherIds.add(e.assignment.teacherId)
-      for (const sid of e.assignment.studentIds) entry.studentIds.add(sid)
+      // Count per-student subjects
+      for (const sid of e.assignment.studentIds) {
+        const subj = getStudentSubject(e.assignment, sid)
+        const entry = subjectMap.get(subj)
+        if (!entry) continue
+        entry.totalAssigned++
+        entry.studentIds.add(sid)
+        if (e.assignment.teacherId) entry.teacherIds.add(e.assignment.teacherId)
+      }
+      // Count unique pairs per primary subject
+      const primaryEntry = subjectMap.get(e.assignment.subject)
+      if (primaryEntry) primaryEntry.totalPairs++
     }
     for (const student of data.students) {
       for (const [subj, desired] of Object.entries(student.subjectSlots)) {
@@ -2386,9 +2486,14 @@ const AdminPage = () => {
       if (slotAssignments.length === 0) return ''
       return slotAssignments.map((a) => {
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
-        const sNames = a.studentIds.map((sid) => data.students.find((st) => st.id === sid)?.name ?? '').join(', ')
         const regular = a.isRegular ? '[通常] ' : ''
-        return `${regular}${tName} / ${sNames} (${a.subject})`
+        // Per-student subjects
+        const studentParts = a.studentIds.map((sid) => {
+          const sName = data.students.find((st) => st.id === sid)?.name ?? ''
+          const subj = getStudentSubject(a, sid)
+          return `${sName}(${subj})`
+        })
+        return `${regular}${tName} / ${studentParts.join(', ')}`
       }).join(' | ')
     }
 
@@ -2516,6 +2621,7 @@ const AdminPage = () => {
       }
 
       const prevIds = [...assignment.studentIds]
+      const removedId = prevIds[position]
       if (studentId === '') {
         prevIds.splice(position, 1)
       } else {
@@ -2524,16 +2630,45 @@ const AdminPage = () => {
       const studentIds = prevIds.filter(Boolean)
 
       const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
-      const commonSubjects = (teacher?.subjects ?? []).filter((subject) =>
-        studentIds.every((id) => current.students.find((student) => student.id === id)?.subjects.includes(subject)),
-      )
+
+      // Build per-student subjects map
+      const prevStudentSubjects = assignment.studentSubjects ?? {}
+      const newStudentSubjects: Record<string, string> = {}
+      for (const sid of studentIds) {
+        if (sid === studentId && !prevStudentSubjects[sid]) {
+          // New student: pick a viable subject from teacher's subjects
+          const student = current.students.find((s) => s.id === sid)
+          const viable = (teacher?.subjects ?? []).filter((subj) => student?.subjects.includes(subj))
+          newStudentSubjects[sid] = viable[0] ?? assignment.subject
+        } else {
+          // Keep existing subject, validate it's still available
+          const existingSubj = prevStudentSubjects[sid] ?? assignment.subject
+          const student = current.students.find((s) => s.id === sid)
+          const teacherCanTeach = teacher?.subjects.includes(existingSubj) ?? false
+          const studentCanLearn = student?.subjects.includes(existingSubj) ?? false
+          if (teacherCanTeach && studentCanLearn) {
+            newStudentSubjects[sid] = existingSubj
+          } else {
+            const viable = (teacher?.subjects ?? []).filter((subj) => student?.subjects.includes(subj))
+            newStudentSubjects[sid] = viable[0] ?? existingSubj
+          }
+        }
+      }
+      // Clean up removed student
+      if (removedId && !studentIds.includes(removedId)) {
+        delete newStudentSubjects[removedId]
+      }
+
+      // Determine the primary subject (first student's subject)
+      const primarySubject = studentIds.length > 0
+        ? (newStudentSubjects[studentIds[0]] ?? assignment.subject)
+        : assignment.subject
 
       slotAssignments[idx] = {
         ...assignment,
         studentIds,
-        subject: commonSubjects.includes(assignment.subject)
-          ? assignment.subject
-          : (commonSubjects[0] ?? assignment.subject),
+        subject: primarySubject,
+        studentSubjects: studentIds.length > 0 ? newStudentSubjects : undefined,
       }
 
       return {
@@ -2543,14 +2678,31 @@ const AdminPage = () => {
     })
   }
 
-  const setSlotSubject = async (slot: string, idx: number, subject: string): Promise<void> => {
+  /** Set subject for a specific student within an assignment pair */
+  const setSlotSubject = async (slot: string, idx: number, subject: string, studentId?: string): Promise<void> => {
     await update((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const assignment = slotAssignments[idx]
       if (!assignment) {
         return current
       }
-      slotAssignments[idx] = { ...assignment, subject }
+      if (studentId) {
+        // Per-student subject change
+        const studentSubjects = { ...(assignment.studentSubjects ?? {}) }
+        studentSubjects[studentId] = subject
+        // Update primary subject to first student's subject
+        const primarySubject = assignment.studentIds.length > 0
+          ? (studentSubjects[assignment.studentIds[0]] ?? assignment.subject)
+          : subject
+        slotAssignments[idx] = { ...assignment, subject: primarySubject, studentSubjects }
+      } else {
+        // Set all students to the same subject
+        const studentSubjects: Record<string, string> = {}
+        for (const sid of assignment.studentIds) {
+          studentSubjects[sid] = subject
+        }
+        slotAssignments[idx] = { ...assignment, subject, studentSubjects: assignment.studentIds.length > 0 ? studentSubjects : undefined }
+      }
       return {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
@@ -2872,18 +3024,8 @@ service cloud.firestore {
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
                         const selectedTeacher = data.teachers.find((t) => t.id === assignment.teacherId)
-                        const selectedStudents = data.students.filter((s) =>
-                          assignment.studentIds.includes(s.id),
-                        )
-                        const subjectOptions = selectedTeacher
-                          ? selectedTeacher.subjects.filter((subject) =>
-                              selectedStudents.length === 0
-                                ? true
-                                : selectedStudents.every((s) => s.subjects.includes(subject)),
-                            )
-                          : []
 
-                        const isIncompatiblePair = assignment.teacherId && selectedStudents.some((s) => {
+                        const isIncompatiblePair = assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
                           const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade)
                           return pt === 'incompatible' || gt === 'incompatible'
@@ -2947,24 +3089,23 @@ service cloud.firestore {
 
                             {assignment.teacherId && (
                               <>
-                                <select
-                                  value={assignment.subject}
-                                  onChange={(e) => void setSlotSubject(slot, idx, e.target.value)}
-                                  disabled={assignment.isRegular}
-                                >
-                                  {subjectOptions.map((subject) => (
-                                    <option key={subject} value={subject}>
-                                      {subject}
-                                    </option>
-                                  ))}
-                                </select>
-
                                 {[0, 1].map((pos) => {
                                   const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
+                                  const currentStudentId = assignment.studentIds[pos] ?? ''
+                                  const currentStudent = data.students.find((s) => s.id === currentStudentId)
+                                  const studentSubject = currentStudentId
+                                    ? getStudentSubject(assignment, currentStudentId)
+                                    : ''
+                                  // Subject options for THIS student: teacher can teach AND student can learn
+                                  const studentSubjectOptions = selectedTeacher && currentStudent
+                                    ? selectedTeacher.subjects.filter((subj) => currentStudent.subjects.includes(subj))
+                                    : (selectedTeacher?.subjects ?? [])
+                                  // For student dropdown filter: any teacher subject the student can learn
+                                  const teacherSubjects = selectedTeacher?.subjects ?? []
                                   return (
                                     <div key={pos} className="student-select-row">
                                     <select
-                                      value={assignment.studentIds[pos] ?? ''}
+                                      value={currentStudentId}
                                       disabled={assignment.isRegular}
                                       onChange={(e) => {
                                         const selectedId = e.target.value
@@ -2982,7 +3123,7 @@ service cloud.firestore {
                                                 `⚠️ ${student.name} は制約ルールにより割当不可です。\n理由: ${reasons.join(', ')}\n\nそれでも割り当てますか？`,
                                               )
                                               if (!ok) {
-                                                e.target.value = assignment.studentIds[pos] ?? ''
+                                                e.target.value = currentStudentId
                                                 return
                                               }
                                             }
@@ -2995,20 +3136,23 @@ service cloud.firestore {
                                       {data.students
                                         .filter((student) => {
                                           // Always show currently assigned student
-                                          if (student.id === assignment.studentIds[pos]) return true
+                                          if (student.id === currentStudentId) return true
                                           // Unsubmitted students are unavailable
                                           if (!student.submittedAt) return false
                                           // Filter out students unavailable for this specific slot
                                           if (!isStudentAvailable(student, slot)) return false
-                                          // Subject compatibility is required
-                                          if (!assignment.subject || !student.subjects.includes(assignment.subject)) return false
-                                          // Remaining slots for the current subject must be > 0
-                                          const desired = student.subjectSlots[assignment.subject] ?? 0
-                                          const assigned = countStudentSubjectLoad(data.assignments, student.id, assignment.subject)
-                                          const currentlySelected = assignment.studentIds[pos] === student.id && assignment.subject
-                                          const adjustedAssigned = currentlySelected ? Math.max(0, assigned - 1) : assigned
-                                          const remaining = desired - adjustedAssigned
-                                          return remaining > 0
+                                          // Subject compatibility: student must share at least one subject with the teacher
+                                          if (teacherSubjects.length > 0 && !teacherSubjects.some((subj) => student.subjects.includes(subj))) return false
+                                          // Remaining slots for at least one teacher-compatible subject must be > 0
+                                          const hasRemainingSlots = teacherSubjects.some((subj) => {
+                                            if (!student.subjects.includes(subj)) return false
+                                            const desired = student.subjectSlots[subj] ?? 0
+                                            const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
+                                            const currentlySelected = currentStudentId === student.id
+                                            const adjustedAssigned = currentlySelected ? Math.max(0, assigned - 1) : assigned
+                                            return desired - adjustedAssigned > 0
+                                          })
+                                          return hasRemainingSlots
                                         })
                                         .map((student) => {
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
@@ -3029,6 +3173,20 @@ service cloud.firestore {
                                         )
                                       })}
                                     </select>
+                                    {currentStudentId && !assignment.isRegular && (
+                                      <select
+                                        className="subject-select-inline"
+                                        value={studentSubject}
+                                        onChange={(e) => void setSlotSubject(slot, idx, e.target.value, currentStudentId)}
+                                      >
+                                        {studentSubjectOptions.map((subj) => (
+                                          <option key={subj} value={subj}>{subj}</option>
+                                        ))}
+                                      </select>
+                                    )}
+                                    {currentStudentId && assignment.isRegular && (
+                                      <span className="subject-label-inline">{studentSubject}</span>
+                                    )}
                                     </div>
                                   )
                                 })}

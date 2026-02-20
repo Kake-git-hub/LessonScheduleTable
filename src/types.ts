@@ -42,6 +42,9 @@ export type Assignment = {
   teacherId: string
   studentIds: string[]
   subject: string
+  /** Per-student subject overrides. Maps studentId → subject.
+   *  When set, each student may learn a different subject in the same pair. */
+  studentSubjects?: Record<string, string>
   isRegular?: boolean
 }
 
