@@ -3,7 +3,7 @@
   top: 4px;
   right: 8px;
   font-size: 10px;
-  color: #9ca3af;
+  color: #94a3b8;
   pointer-events: none;
   z-index: 1000;
 }
@@ -11,20 +11,31 @@
 .app-shell {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 20px;
 }
 
 .panel {
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px;
+  margin-bottom: 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .panel h2,
 .panel h3 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.panel h2 {
+  font-size: 1.3em;
+}
+
+.panel h3 {
+  font-size: 1.1em;
 }
 
 .row {
@@ -37,10 +48,20 @@
 .row input,
 .row select,
 .row textarea {
-  border: 1px solid #d1d5db;
+  border: 1px solid #cbd5e1;
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   background: #fff;
+  color: #1e293b;
+  transition: border-color 0.2s;
+}
+
+.row input:focus,
+.row select:focus,
+.row textarea:focus {
+  border-color: #3b82f6;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 .row textarea {
@@ -48,17 +69,31 @@
 }
 
 .btn {
-  border: 1px solid #2563eb;
-  background: #2563eb;
+  border: none;
+  background: #3b82f6;
   color: #fff;
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 7px 14px;
   cursor: pointer;
+  font-weight: 500;
+  font-size: 0.9em;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.btn:hover {
+  background: #2563eb;
+}
+
+.btn:active {
+  transform: scale(0.97);
 }
 
 .btn.secondary {
-  border-color: #6b7280;
-  background: #6b7280;
+  background: #64748b;
+}
+
+.btn.secondary:hover {
+  background: #475569;
 }
 
 .btn:disabled {
@@ -69,13 +104,14 @@
 .badge {
   border-radius: 999px;
   font-size: 12px;
-  padding: 3px 8px;
+  padding: 3px 10px;
   display: inline-block;
+  font-weight: 500;
 }
 
 .badge.ok {
   background: #dcfce7;
-  color: #166534;
+  color: #15803d;
 }
 
 .badge.warn {
@@ -91,24 +127,30 @@
 .grid-slots {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
+  gap: 10px;
 }
 
 .slot-card {
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
-  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
   background: #fff;
+  transition: box-shadow 0.15s;
+}
+
+.slot-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
 }
 
 .regular-badge {
   background: #3b82f6;
   color: #fff;
-  font-size: 0.75em;
+  font-size: 0.72em;
   margin-bottom: 4px;
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 4px;
   display: inline-block;
+  font-weight: 600;
 }
 
 .assignment-block-regular {
@@ -124,11 +166,12 @@
 .incompatible-badge {
   background: #ef4444;
   color: #fff;
-  font-size: 0.75em;
+  font-size: 0.72em;
   margin-bottom: 4px;
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 4px;
   display: inline-block;
+  font-weight: 600;
 }
 
 .slot-title {
@@ -138,12 +181,15 @@
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
+  font-size: 0.92em;
+  color: #0f172a;
 }
 
 .slot-add-btn {
   padding: 2px 8px;
   line-height: 1;
   min-height: 24px;
+  font-size: 0.85em;
 }
 
 .list {
@@ -159,9 +205,20 @@
 
 .table th,
 .table td {
-  border: 1px solid #e5e7eb;
-  padding: 6px 8px;
+  border: 1px solid #e2e8f0;
+  padding: 8px 10px;
   text-align: left;
+}
+
+.table th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: #334155;
+  font-size: 0.9em;
+}
+
+.table td {
+  color: #1e293b;
 }
 
 .availability-grid {
@@ -185,8 +242,9 @@
 }
 
 .muted {
-  color: #6b7280;
+  color: #64748b;
   font-size: 13px;
+  line-height: 1.5;
 }
 
 /* Mobile-first Availability Pages */
@@ -199,15 +257,17 @@
 
 .availability-header {
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .availability-header h2 {
   margin: 0 0 8px;
   font-size: 20px;
+  color: #0f172a;
 }
 
 .availability-header p {
@@ -219,9 +279,10 @@
   overflow-x: auto;
   margin-bottom: 16px;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
   padding: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .teacher-table {
@@ -232,14 +293,15 @@
 
 .teacher-table th,
 .teacher-table td {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   padding: 8px;
   text-align: center;
 }
 
 .teacher-table th {
-  background: #f3f4f6;
+  background: #f8fafc;
   font-weight: 600;
+  color: #334155;
   position: sticky;
   top: 0;
   z-index: 10;
@@ -254,7 +316,7 @@
 .teacher-table .date-header {
   position: sticky;
   left: 0;
-  background: #f3f4f6;
+  background: #f8fafc;
   z-index: 20;
 }
 
@@ -378,15 +440,17 @@
 /* Student Form Layout */
 .student-form-section {
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .student-form-section h3 {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   font-size: 18px;
+  color: #0f172a;
 }
 
 .subject-slots-form {
@@ -410,13 +474,14 @@
 .form-row input[type="number"] {
   width: 80px;
   padding: 8px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #cbd5e1;
   border-radius: 8px;
   font-size: 16px;
+  color: #1e293b;
 }
 
 .form-unit {
-  color: #6b7280;
+  color: #64748b;
   font-size: 14px;
 }
 
@@ -437,13 +502,14 @@
   align-items: center;
   gap: 12px;
   padding: 12px;
-  border: 2px solid #d1d5db;
-  border-radius: 8px;
+  border: 2px solid #cbd5e1;
+  border-radius: 10px;
   background: #ffffff;
   cursor: pointer;
   font-size: 16px;
   text-align: left;
-  transition: all 0.2s;
+  transition: all 0.15s;
+  color: #1e293b;
 }
 
 .date-checkbox-btn.checked {
@@ -463,8 +529,8 @@
 .checkbox-icon {
   width: 24px;
   height: 24px;
-  border: 2px solid #d1d5db;
-  border-radius: 4px;
+  border: 2px solid #cbd5e1;
+  border-radius: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -496,23 +562,25 @@
 /* Submit Section */
 .submit-section {
   background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 18px;
   text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .submit-btn {
   width: 100%;
   padding: 14px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #16a34a;
   color: #ffffff;
   font-size: 18px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.15s, transform 0.1s;
+  letter-spacing: 0.02em;
 }
 
 .submit-btn:hover {
@@ -541,30 +609,32 @@
 }
 
 .assignment-block {
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 8px;
-  background: #f9fafb;
+  background: #f8fafc;
 }
 
 .assignment-block-auto-updated {
   border: 2px solid #dc2626 !important;
-  box-shadow: 0 0 0 1px #dc2626;
+  box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.25);
 }
 
 .auto-diff-badge {
   background: #dc2626;
   color: #fff;
-  font-size: 0.72em;
+  font-size: 0.68em;
   margin-bottom: 4px;
   margin-left: 4px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
   display: inline-block;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .auto-diff-badge-update {
-  background: #f59e0b;
+  background: #d97706;
   color: #fff;
 }
 
@@ -579,13 +649,13 @@
 
 .pair-delete-btn {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 3px;
+  right: 3px;
   width: 20px;
   height: 20px;
   border: none;
-  background: #e5e7eb;
-  color: #6b7280;
+  background: #e2e8f0;
+  color: #64748b;
   border-radius: 50%;
   font-size: 14px;
   line-height: 1;
@@ -594,6 +664,7 @@
   align-items: center;
   justify-content: center;
   padding: 0;
+  transition: background 0.15s;
 }
 
 .pair-delete-btn:hover {
@@ -632,7 +703,7 @@
 
 .student-remaining {
   font-size: 0.8em;
-  color: #6b7280;
+  color: #64748b;
   padding: 0 2px;
 }
 
@@ -663,8 +734,8 @@
 .loading-spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #e5e7eb;
-  border-top-color: #2563eb;
+  border: 4px solid #e2e8f0;
+  border-top-color: #3b82f6;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -679,7 +750,7 @@
 }
 
 .loading-text {
-  color: #6b7280;
+  color: #64748b;
   font-size: 14px;
 }
 
@@ -696,8 +767,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #f3f4f6;
-  border: 1px solid #d1d5db;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
   border-radius: 8px;
   padding: 6px 10px;
 }
@@ -705,9 +776,10 @@
 .subject-slot-entry input[type="number"] {
   width: 60px;
   padding: 4px 6px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
   font-size: 16px;
+  color: #1e293b;
 }
 
 .subject-slot-remove {

@@ -810,7 +810,6 @@ const buildIncrementalAutoAssignments = (
 
       if (bestPlan) {
         slotAssignments.push(bestPlan.assignment)
-        markChangedPair(slot, bestPlan.assignment)
         usedTeacherIdsInSlot.add(teacher.id)
         for (const sid of bestPlan.assignment.studentIds) usedStudentIdsInSlot.add(sid)
       }
@@ -830,7 +829,10 @@ const buildIncrementalAutoAssignments = (
 
   const changedPairSignatures: Record<string, string[]> = {}
   for (const [slot, signatureSet] of Object.entries(changedPairSigSetBySlot)) {
-    if (signatureSet.size > 0) changedPairSignatures[slot] = [...signatureSet]
+    // Exclude signatures that are in the added set (added takes priority)
+    const addedSet = addedPairSigSetBySlot[slot] ?? new Set<string>()
+    const filtered = [...signatureSet].filter((sig) => !addedSet.has(sig))
+    if (filtered.length > 0) changedPairSignatures[slot] = filtered
   }
 
   const addedPairSignatures: Record<string, string[]> = {}
