@@ -36,6 +36,7 @@ export type GradeConstraint = {
   teacherId: string
   grade: string
   type: ConstraintType
+  subjects?: string[]
 }
 
 export type Assignment = {

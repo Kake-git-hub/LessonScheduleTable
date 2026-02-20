@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
-import * as XLSX from 'xlsx'
+import XLSX from 'xlsx-js-style'
 import './App.css'
 import { deleteSession, initAuth, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
 import type {
@@ -203,9 +203,18 @@ const gradeConstraintFor = (
   gradeConstraints: GradeConstraint[],
   teacherId: string,
   grade: string,
+  subject?: string,
 ): ConstraintType | null => {
   if (!grade) return null
-  const hit = gradeConstraints.find((item) => item.teacherId === teacherId && item.grade === grade)
+  const hit = gradeConstraints.find((item) => {
+    if (item.teacherId !== teacherId || item.grade !== grade) return false
+    // If constraint has subjects specified, only match when subject matches
+    if (item.subjects && item.subjects.length > 0) {
+      if (!subject) return false // no subject provided → subject-specific constraint doesn't block
+      return item.subjects.includes(subject)
+    }
+    return true // no subjects specified → universal constraint
+  })
   return hit?.type ?? null
 }
 
@@ -649,6 +658,7 @@ const buildIncrementalAutoAssignments = (
         // Student must be able to learn at least one subject the teacher can teach, with remaining demand
         return teacher.subjects.some((subj) => {
           if (!student.subjects.includes(subj)) return false
+          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subj) === 'incompatible') return false
           const requested = student.subjectSlots[subj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, subj)
           return allocated < requested
@@ -746,7 +756,11 @@ const buildIncrementalAutoAssignments = (
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-        return teacher.subjects.some((subject) => student.subjects.includes(subject))
+        return teacher.subjects.some((subject) => {
+          if (!student.subjects.includes(subject)) return false
+          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subject) === 'incompatible') return false
+          return true
+        })
       })
 
       if (candidates.length === 0) continue
@@ -972,6 +986,7 @@ const HomePage = () => {
   const [gradeConstraintTeacherId, setGradeConstraintTeacherId] = useState('')
   const [gradeConstraintGrade, setGradeConstraintGrade] = useState('')
   const [gradeConstraintType, setGradeConstraintType] = useState<ConstraintType>('incompatible')
+  const [gradeConstraintSubjects, setGradeConstraintSubjects] = useState<string[]>([])
   const [regularTeacherId, setRegularTeacherId] = useState('')
   const [regularStudent1Id, setRegularStudent1Id] = useState('')
   const [regularStudent2Id, setRegularStudent2Id] = useState('')
@@ -1052,11 +1067,18 @@ const HomePage = () => {
 
   const upsertGradeConstraint = async (): Promise<void> => {
     if (!gradeConstraintTeacherId || !gradeConstraintGrade || !masterData) return
-    const nc: GradeConstraint = { id: createId(), teacherId: gradeConstraintTeacherId, grade: gradeConstraintGrade, type: gradeConstraintType }
+    const nc: GradeConstraint = {
+      id: createId(),
+      teacherId: gradeConstraintTeacherId,
+      grade: gradeConstraintGrade,
+      type: gradeConstraintType,
+      ...(gradeConstraintSubjects.length > 0 ? { subjects: gradeConstraintSubjects } : {}),
+    }
     await updateMaster((c) => {
       const filtered = (c.gradeConstraints ?? []).filter((i) => !(i.teacherId === gradeConstraintTeacherId && i.grade === gradeConstraintGrade))
       return { ...c, gradeConstraints: [...filtered, nc] }
     })
+    setGradeConstraintSubjects([])
   }
 
   const addRegularLesson = async (): Promise<void> => {
@@ -1696,7 +1718,7 @@ const HomePage = () => {
                   </table>
 
                   <h4 style={{ marginTop: '16px' }}>講師×学年 制約</h4>
-                  <div className="row">
+                  <div className="row" style={{ flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                     <select value={gradeConstraintTeacherId} onChange={(e) => setGradeConstraintTeacherId(e.target.value)}>
                       <option value="">講師を選択</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
@@ -1708,15 +1730,36 @@ const HomePage = () => {
                     <select value={gradeConstraintType} onChange={(e) => setGradeConstraintType(e.target.value as ConstraintType)}>
                       <option value="incompatible">担当不可</option>
                     </select>
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: '#64748b' }}>科目:</span>
+                      {FIXED_SUBJECTS.map((subj) => (
+                        <label key={subj} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '13px', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={gradeConstraintSubjects.includes(subj)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setGradeConstraintSubjects((prev) => [...prev, subj])
+                              } else {
+                                setGradeConstraintSubjects((prev) => prev.filter((s) => s !== subj))
+                              }
+                            }}
+                          />
+                          {subj}
+                        </label>
+                      ))}
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>未選択=全科目</span>
+                    </div>
                     <button className="btn" type="button" onClick={() => void upsertGradeConstraint()}>保存</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>講師</th><th>学年</th><th>種別</th><th>操作</th></tr></thead>
+                    <thead><tr><th>講師</th><th>学年</th><th>科目</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
                       {(masterData.gradeConstraints ?? []).map((gc) => (
                         <tr key={gc.id}>
                           <td>{masterData.teachers.find((t) => t.id === gc.teacherId)?.name ?? '-'}</td>
                           <td>{gc.grade}</td>
+                          <td>{gc.subjects && gc.subjects.length > 0 ? gc.subjects.join(', ') : '全科目'}</td>
                           <td><span className="badge warn">不可</span></td>
                           <td><button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button></td>
                         </tr>
@@ -2153,6 +2196,7 @@ const AdminPage = () => {
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
+  const [showRules, setShowRules] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
 
   // Track real-time changes to show "just updated" indicators for teachers/students
@@ -2480,21 +2524,21 @@ const AdminPage = () => {
     }
     if (currentWeek.length > 0) weeks.push(currentWeek)
 
-    // Build cell text for a slot assignment
+    // Build cell text for a slot assignment (pairs on separate lines, compact format)
     const buildCellText = (slotKey: string): string => {
       const slotAssignments = data.assignments[slotKey] ?? []
       if (slotAssignments.length === 0) return ''
       return slotAssignments.map((a) => {
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
-        const regular = a.isRegular ? '[通常] ' : ''
+        const regular = a.isRegular ? '★' : ''
         // Per-student subjects
         const studentParts = a.studentIds.map((sid) => {
           const sName = data.students.find((st) => st.id === sid)?.name ?? ''
           const subj = getStudentSubject(a, sid)
           return `${sName}(${subj})`
         })
-        return `${regular}${tName} / ${studentParts.join(', ')}`
-      }).join(' | ')
+        return `${regular}${tName}/${studentParts.join(',')}`
+      }).join('\n')
     }
 
     try {
@@ -2548,8 +2592,33 @@ const AdminPage = () => {
         const aoa = [header, ...rows]
         const ws = XLSX.utils.aoa_to_sheet(aoa)
 
-        // Column widths only (community XLSX does not support cell styling)
-        ws['!cols'] = [{ wch: 5 }, ...Array(7).fill({ wch: 36 })]
+        // Apply wrapText + vertical top alignment to all data cells
+        const cellStyle = { alignment: { wrapText: true, vertical: 'top' } }
+        const headerStyle = { alignment: { horizontal: 'center', vertical: 'center' }, font: { bold: true } }
+        const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
+        for (let R = range.s.r; R <= range.e.r; R++) {
+          for (let C = range.s.c; C <= range.e.c; C++) {
+            const addr = XLSX.utils.encode_cell({ r: R, c: C })
+            if (ws[addr]) {
+              ws[addr].s = R === 0 ? headerStyle : cellStyle
+            }
+          }
+        }
+
+        // Row heights: header fixed, data rows based on max newlines per row
+        const rowHeights: XLSX.RowInfo[] = [{ hpt: 22 }]
+        for (const row of rows) {
+          const maxLines = Math.max(1, ...row.map((cell) => (cell.match(/\n/g) ?? []).length + 1))
+          rowHeights.push({ hpt: Math.max(20, maxLines * 16) })
+        }
+        ws['!rows'] = rowHeights
+
+        // A3 portrait, fit one week to one page
+        // Column widths: slot label narrow, 7 day columns sized for A3 width (~420mm ≈ 170 chars)
+        ws['!cols'] = [{ wch: 4 }, ...Array(7).fill({ wch: 22 })]
+        ws['!margins'] = { left: 0.3, right: 0.3, top: 0.3, bottom: 0.3, header: 0.15, footer: 0.15 }
+        ws['!pageSetup'] = { paperSize: 8, orientation: 'portrait', fitToWidth: 1, fitToHeight: 1, scale: 0 }
+        ws['!print'] = { fitToPage: true }
 
         const sheetName = `${Number(fm)}月${Number(fd)}日-${Number(lm)}月${Number(ld)}日`
         XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31))
@@ -2956,9 +3025,71 @@ service cloud.firestore {
               <button className={`btn${showAnalytics ? '' : ' secondary'}`} type="button" onClick={() => setShowAnalytics((v) => !v)}>
                 📊 データ分析
               </button>
+              <button className={`btn${showRules ? '' : ' secondary'}`} type="button" onClick={() => setShowRules((v) => !v)}>
+                📖 ルール説明
+              </button>
             </div>
             <p className="muted">通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
             <p className="muted" style={{ fontSize: '12px' }}>★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可</p>
+            {showRules && (
+              <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
+                <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>📖 コマ割りルール</h3>
+                <div style={{ display: 'grid', gap: '12px' }}>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🏫 基本構成</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li>1コマ = <b>講師1人</b> ＋ <b>生徒1〜2人</b></li>
+                      <li>同じコマに複数のペアを配置可能（机数上限あり）</li>
+                      <li>同じ生徒が同じコマに重複して入ることはできません</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>📅 通常授業（★マーク）</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li>マスタデータで登録した曜日・コマ番号に毎週自動配置されます</li>
+                      <li>日付が確定すると自動的にスケジュールに反映</li>
+                      <li>通常授業のペアは編集・移動できません（変更はマスタデータから）</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🤖 自動提案</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li>生徒の希望コマ数を元に、空きコマへ自動的に割り当てます</li>
+                      <li>講師・生徒の出勤可能日、制約ルール、科目の共通性を考慮</li>
+                      <li>同じ科目の生徒同士を優先的にペアにします</li>
+                      <li>講師の出勤日数が少なくなるよう連続コマ配置を優先</li>
+                      <li>自動提案後、手動で調整可能です</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>⚠️ 制約ルール</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li><b>講師×生徒 制約</b>：特定の講師と生徒の組み合わせを不可に設定</li>
+                      <li><b>講師×学年 制約</b>：特定の講師が特定学年を担当不可に設定（科目指定も可能）</li>
+                      <li>制約に違反する割当は ⚠ マークで警告表示されます</li>
+                      <li>手動で制約違反の割当を強制することも可能です（確認あり）</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>📝 科目について</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li>講師と生徒それぞれに担当/受講科目を設定</li>
+                      <li>共通の科目がある講師・生徒のみがペアになれます</li>
+                      <li>2人ペアで異なる科目の組み合わせも可能です</li>
+                    </ul>
+                  </section>
+                  <section>
+                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🔄 操作方法</h4>
+                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                      <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
+                      <li>「＋」ボタンでコマ内にペアを追加</li>
+                      <li>「×」ボタンでペアを削除</li>
+                      <li>Excel出力でスケジュール表を出力（A3用紙対応）</li>
+                    </ul>
+                  </section>
+                </div>
+              </div>
+            )}
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={slotKeys} />}
             <div className="grid-slots">
               {slotKeys.map((slot) => {
@@ -3027,7 +3158,8 @@ service cloud.firestore {
 
                         const isIncompatiblePair = assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
-                          const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade)
+                          const subj = getStudentSubject(assignment, s.id)
+                          const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade, subj)
                           return pt === 'incompatible' || gt === 'incompatible'
                         })
                         const sig = assignmentSignature(assignment)
@@ -3113,7 +3245,7 @@ service cloud.firestore {
                                           const student = data.students.find((s) => s.id === selectedId)
                                           if (student) {
                                             const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                                            const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
+                                            const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
                                             const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
                                             if (isIncompatible) {
                                               const reasons: string[] = []
@@ -3156,7 +3288,7 @@ service cloud.firestore {
                                         })
                                         .map((student) => {
                                         const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                                        const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade)
+                                        const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
                                         const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
