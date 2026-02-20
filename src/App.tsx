@@ -18,7 +18,7 @@ import type {
 } from './types'
 import { buildSlotKeys, formatShortDate, personKey, slotLabel } from './utils/schedule'
 
-const APP_VERSION = '0.4.0'
+const APP_VERSION = '1.0.0'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
