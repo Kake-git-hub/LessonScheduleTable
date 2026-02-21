@@ -2194,7 +2194,7 @@ const AdminPage = () => {
   const { data, setData, loading, error: sessionError } = useSessionData(sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
-  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[] } | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -2818,6 +2818,84 @@ const AdminPage = () => {
     })
   }
 
+  /** Move a single student from one assignment to another (or to a new assignment in target slot) */
+  const moveStudentToSlot = async (
+    sourceSlot: string,
+    sourceIdx: number,
+    studentId: string,
+    targetSlot: string,
+    targetIdx?: number, // if provided, add to existing assignment; otherwise create new
+  ): Promise<void> => {
+    await update((current) => {
+      const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
+      const srcAssignment = srcAssignments[sourceIdx]
+      if (!srcAssignment || srcAssignment.isRegular) return current
+      if (!srcAssignment.studentIds.includes(studentId)) return current
+
+      // Check student availability in target slot
+      const student = current.students.find((s) => s.id === studentId)
+      if (student && !isStudentAvailable(student, targetSlot)) return current
+
+      // Check student not already in target slot
+      const targetAssignments = [...(current.assignments[targetSlot] ?? [])]
+      if (targetAssignments.some((a) => a.studentIds.includes(studentId))) return current
+
+      // Remove student from source assignment
+      const updatedSrcStudentIds = srcAssignment.studentIds.filter((sid) => sid !== studentId)
+      const updatedSrcStudentSubjects = { ...srcAssignment.studentSubjects }
+      delete updatedSrcStudentSubjects[studentId]
+
+      const studentSubject = getStudentSubject(srcAssignment, studentId)
+
+      if (targetIdx !== undefined && targetIdx >= 0 && targetIdx < targetAssignments.length) {
+        // Add to existing target assignment (max 2 students)
+        const targetAssignment = targetAssignments[targetIdx]
+        if (targetAssignment.studentIds.length >= 2) return current
+        if (targetAssignment.isRegular) return current
+
+        const updatedTargetStudentIds = [...targetAssignment.studentIds, studentId]
+        const updatedTargetStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}) }
+        // Set the student's subject in the target assignment
+        updatedTargetStudentSubjects[studentId] = studentSubject
+        targetAssignments[targetIdx] = {
+          ...targetAssignment,
+          studentIds: updatedTargetStudentIds,
+          studentSubjects: updatedTargetStudentSubjects,
+        }
+      } else {
+        // Create new assignment in target slot with just this student
+        const deskCount = current.settings.deskCount ?? 0
+        if (deskCount > 0 && targetAssignments.length >= deskCount) return current
+        targetAssignments.push({
+          teacherId: '',
+          studentIds: [studentId],
+          subject: studentSubject,
+          studentSubjects: { [studentId]: studentSubject },
+        })
+      }
+
+      // Update source: if no students left, remove the assignment entirely
+      if (updatedSrcStudentIds.length === 0) {
+        srcAssignments.splice(sourceIdx, 1)
+      } else {
+        srcAssignments[sourceIdx] = {
+          ...srcAssignment,
+          studentIds: updatedSrcStudentIds,
+          studentSubjects: updatedSrcStudentSubjects,
+        }
+      }
+
+      const nextAssignments = { ...current.assignments }
+      if (srcAssignments.length === 0) {
+        delete nextAssignments[sourceSlot]
+      } else {
+        nextAssignments[sourceSlot] = srcAssignments
+      }
+      nextAssignments[targetSlot] = targetAssignments
+      return { ...current, assignments: nextAssignments }
+    })
+  }
+
   if (loading) {
     return (
       <div className="app-shell">
@@ -3099,15 +3177,24 @@ service cloud.firestore {
                 // D&D: compute validity of this slot as a drop target
                 const deskCount = data.settings.deskCount ?? 0
                 const isDragActive = dragInfo !== null
+                const isStudentDrag = isDragActive && !!dragInfo.studentDragId
                 const isSameSlot = isDragActive && dragInfo.sourceSlot === slot
-                const isDeskFull = isDragActive && deskCount > 0 && slotAssignments.length >= deskCount
-                const isTeacherConflict = isDragActive && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
+                const isDeskFull = isDragActive && !isStudentDrag && deskCount > 0 && slotAssignments.length >= deskCount
+                const isTeacherConflict = isDragActive && !isStudentDrag && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
                 const draggedStudents = isDragActive ? data.students.filter((s) => dragInfo.studentIds.includes(s.id)) : []
                 const hasUnavailableStudent = isDragActive && draggedStudents.some((student) => !isStudentAvailable(student, slot))
-                const hasStudentConflict = isDragActive && dragInfo.studentIds.some((sid) => slotAssignments.some((a) => a.studentIds.includes(sid)))
-                const hasTeacherUnavailable = isDragActive && dragInfo.teacherId ? !hasAvailability(data.availability, 'teacher', dragInfo.teacherId, slot) : false
-                const isDropValid = isDragActive && !isSameSlot && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
-                const slotDragClass = isDragActive ? (isSameSlot ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
+                const hasStudentConflict = isDragActive && dragInfo.studentIds.some((sid) => {
+                  // For student drag within same slot, exclude the source assignment from conflict check
+                  if (isStudentDrag && isSameSlot) {
+                    return slotAssignments.some((a, aIdx) => aIdx !== dragInfo.sourceIdx && a.studentIds.includes(sid))
+                  }
+                  return slotAssignments.some((a) => a.studentIds.includes(sid))
+                })
+                const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, 'teacher', dragInfo.teacherId, slot) : false
+                // For student drag to same slot: valid if dropping onto a different assignment within the same slot
+                const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
+                const isDropValid = isDragActive && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
+                const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
 
                 return (
                   <div className={`slot-card${slotDragClass}`} key={slot}
@@ -3124,12 +3211,17 @@ service cloud.firestore {
                           setDragInfo(null)
                           return
                         }
-                        const { sourceSlot, sourceIdx } = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number }
-                        if (sourceSlot === slot) {
-                          setDragInfo(null)
-                          return
+                        const payload = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number; studentDragId?: string }
+                        if (payload.studentDragId) {
+                          // Student-level drag: move student to this slot as a new assignment
+                          void moveStudentToSlot(payload.sourceSlot, payload.sourceIdx, payload.studentDragId, slot)
+                        } else {
+                          if (payload.sourceSlot === slot) {
+                            setDragInfo(null)
+                            return
+                          }
+                          void moveAssignment(payload.sourceSlot, payload.sourceIdx, slot)
                         }
-                        void moveAssignment(sourceSlot, sourceIdx, slot)
                       } catch { /* ignore */ }
                       setDragInfo(null)
                     }}
@@ -3171,13 +3263,48 @@ service cloud.firestore {
                         return (
                           <div
                             key={idx}
-                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}`}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isDragActive && isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2 ? ' assignment-block-drop-target' : ''}`}
                             draggable={!assignment.isRegular}
                             onDragStart={(e) => {
+                              // Student row drag is handled separately with stopPropagation
+                              if ((e.target as HTMLElement).closest('.student-draggable')) {
+                                return // already handled by student row
+                              }
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
                               e.dataTransfer.setData('text/plain', payload)
                               e.dataTransfer.effectAllowed = 'move'
                               setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
+                            }}
+                            onDragOver={(e) => {
+                              // Accept student drops onto this assignment block
+                              if (isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2) {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                e.dataTransfer.dropEffect = 'move'
+                              }
+                            }}
+                            onDrop={(e) => {
+                              if (!isStudentDrag) return // let slot-card handle assignment drops
+                              e.preventDefault()
+                              e.stopPropagation()
+                              if (assignment.isRegular || assignment.studentIds.length >= 2) {
+                                setDragInfo(null)
+                                return
+                              }
+                              try {
+                                const raw = e.dataTransfer.getData('text/plain')
+                                if (!raw) { setDragInfo(null); return }
+                                const payload = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number; studentDragId?: string }
+                                if (payload.studentDragId) {
+                                  // Prevent dropping on the same assignment
+                                  if (payload.sourceSlot === slot && payload.sourceIdx === idx) {
+                                    setDragInfo(null)
+                                    return
+                                  }
+                                  void moveStudentToSlot(payload.sourceSlot, payload.sourceIdx, payload.studentDragId, slot, idx)
+                                }
+                              } catch { /* ignore */ }
+                              setDragInfo(null)
                             }}
                             onDragEnd={() => setDragInfo(null)}
                             style={{ position: 'relative' }}
@@ -3235,8 +3362,28 @@ service cloud.firestore {
                                   // For student dropdown filter: any teacher subject the student can learn
                                   const teacherSubjects = selectedTeacher?.subjects ?? []
                                   return (
-                                    <div key={pos} className="student-select-row">
-                                    <select
+                                    <div key={pos} className={`student-select-row${currentStudentId && !assignment.isRegular ? ' student-draggable' : ''}`}
+                                      draggable={!!currentStudentId && !assignment.isRegular}
+                                      onDragStart={(e) => {
+                                        if (!currentStudentId || assignment.isRegular) { e.preventDefault(); return }
+                                        e.stopPropagation()
+                                        const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx, studentDragId: currentStudentId })
+                                        e.dataTransfer.setData('text/plain', payload)
+                                        e.dataTransfer.effectAllowed = 'move'
+                                        setDragInfo({
+                                          sourceSlot: slot,
+                                          sourceIdx: idx,
+                                          teacherId: '',
+                                          studentIds: [currentStudentId],
+                                          studentDragId: currentStudentId,
+                                          studentDragSubject: studentSubject,
+                                        })
+                                      }}
+                                      onDragEnd={() => setDragInfo(null)}
+                                    >
+                                    {currentStudentId && !assignment.isRegular && (
+                                      <span className="student-drag-handle" title="ドラッグで移動">⠿</span>
+                                    )}                                    <select
                                       value={currentStudentId}
                                       disabled={assignment.isRegular}
                                       onChange={(e) => {

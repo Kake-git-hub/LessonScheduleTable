@@ -691,6 +691,11 @@
   margin-top: 6px;
 }
 
+.assignment-block-drop-target {
+  outline: 2px dashed #2563eb;
+  background: #eff6ff !important;
+}
+
 .student-select-row {
   display: flex;
   flex-direction: row;
@@ -698,7 +703,38 @@
   align-items: center;
 }
 
-.student-select-row > select:first-child {
+.student-select-row.student-draggable {
+  cursor: grab;
+  border-radius: 4px;
+  padding: 1px;
+  transition: background 0.15s;
+}
+
+.student-select-row.student-draggable:active {
+  cursor: grabbing;
+  opacity: 0.6;
+}
+
+.student-select-row.student-draggable:hover {
+  background: #e2e8f0;
+}
+
+.student-drag-handle {
+  cursor: grab;
+  color: #94a3b8;
+  font-size: 12px;
+  user-select: none;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  line-height: 1;
+}
+
+.student-drag-handle:hover {
+  color: #475569;
+}
+
+.student-select-row > select:first-of-type {
   flex: 1;
   min-width: 0;
 }
