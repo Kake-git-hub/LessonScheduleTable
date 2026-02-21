@@ -7,6 +7,7 @@ import type {
   Assignment,
   ConstraintType,
   GradeConstraint,
+  Manager,
   MasterData,
   PairConstraint,
   PersonType,
@@ -44,6 +45,7 @@ const emptySession = (): SessionData => ({
     submissionEndDate: '',
   },
   subjects: FIXED_SUBJECTS,
+  managers: [],
   teachers: [],
   students: [],
   constraints: [],
@@ -71,14 +73,15 @@ const createTemplateSession = (): SessionData => {
   const subjects = FIXED_SUBJECTS
 
   const teachers: Teacher[] = [
-    { id: 't001', name: '田中講師', subjects: ['数', '英'], memo: '数学メイン' },
-    { id: 't002', name: '佐藤講師', subjects: ['英', '数'], memo: '英語メイン' },
+    { id: 't001', name: '田中講師', email: '', subjects: ['数', '英'], memo: '数学メイン' },
+    { id: 't002', name: '佐藤講師', email: '', subjects: ['英', '数'], memo: '英語メイン' },
   ]
 
   const students: Student[] = [
     {
       id: 's001',
       name: '青木 太郎',
+      email: '',
       grade: '中3',
       subjects: ['数', '英'],
       subjectSlots: { 数: 3, 英: 2 },
@@ -91,6 +94,7 @@ const createTemplateSession = (): SessionData => {
     {
       id: 's002',
       name: '伊藤 花',
+      email: '',
       grade: '中2',
       subjects: ['英'],
       subjectSlots: { 英: 3 },
@@ -103,6 +107,7 @@ const createTemplateSession = (): SessionData => {
     {
       id: 's003',
       name: '上田 陽介',
+      email: '',
       grade: '高1',
       subjects: ['数'],
       subjectSlots: { 数: 3 },
@@ -115,6 +120,7 @@ const createTemplateSession = (): SessionData => {
     {
       id: 's004',
       name: '岡本 美咲',
+      email: '',
       grade: '高2',
       subjects: ['英', '数'],
       subjectSlots: { 英: 2, 数: 2 },
@@ -154,6 +160,7 @@ const createTemplateSession = (): SessionData => {
   return {
     settings,
     subjects,
+    managers: [],
     teachers,
     students,
     constraints,
@@ -949,6 +956,7 @@ const buildIncrementalAutoAssignments = (
 }
 
 const emptyMasterData = (): MasterData => ({
+  managers: [],
   teachers: [],
   students: [],
   constraints: [],
@@ -975,10 +983,14 @@ const HomePage = () => {
   const [newHolidays, setNewHolidays] = useState<string[]>([])
 
   // Master data form state
+  const [managerName, setManagerName] = useState('')
+  const [managerEmail, setManagerEmail] = useState('')
   const [teacherName, setTeacherName] = useState('')
+  const [teacherEmail, setTeacherEmail] = useState('')
   const [teacherSubjects, setTeacherSubjects] = useState<string[]>([])
   const [teacherMemo, setTeacherMemo] = useState('')
   const [studentName, setStudentName] = useState('')
+  const [studentEmail, setStudentEmail] = useState('')
   const [studentGrade, setStudentGrade] = useState('')
   const [constraintTeacherId, setConstraintTeacherId] = useState('')
   const [constraintStudentId, setConstraintStudentId] = useState('')
@@ -1039,21 +1051,28 @@ const HomePage = () => {
     await saveMasterData(next)
   }
 
+  const addManager = async (): Promise<void> => {
+    if (!managerName.trim()) return
+    const manager: Manager = { id: createId(), name: managerName.trim(), email: managerEmail.trim() }
+    await updateMaster((c) => ({ ...c, managers: [...(c.managers ?? []), manager] }))
+    setManagerName(''); setManagerEmail('')
+  }
+
   const addTeacher = async (): Promise<void> => {
     if (!teacherName.trim()) return
-    const teacher: Teacher = { id: createId(), name: teacherName.trim(), subjects: teacherSubjects, memo: teacherMemo.trim() }
+    const teacher: Teacher = { id: createId(), name: teacherName.trim(), email: teacherEmail.trim(), subjects: teacherSubjects, memo: teacherMemo.trim() }
     await updateMaster((c) => ({ ...c, teachers: [...c.teachers, teacher] }))
-    setTeacherName(''); setTeacherSubjects([]); setTeacherMemo('')
+    setTeacherName(''); setTeacherEmail(''); setTeacherSubjects([]); setTeacherMemo('')
   }
 
   const addStudent = async (): Promise<void> => {
     if (!studentName.trim()) return
     const student: Student = {
-      id: createId(), name: studentName.trim(), grade: studentGrade.trim(),
+      id: createId(), name: studentName.trim(), email: studentEmail.trim(), grade: studentGrade.trim(),
       subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
     }
     await updateMaster((c) => ({ ...c, students: [...c.students, student] }))
-    setStudentName(''); setStudentGrade('')
+    setStudentName(''); setStudentEmail(''); setStudentGrade('')
   }
 
   const upsertConstraint = async (): Promise<void> => {
@@ -1093,6 +1112,11 @@ const HomePage = () => {
     setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
 
+  const removeManager = async (managerId: string): Promise<void> => {
+    if (!window.confirm('このマネージャーを削除しますか？')) return
+    await updateMaster((c) => ({ ...c, managers: (c.managers ?? []).filter((m) => m.id !== managerId) }))
+  }
+
   const removeTeacher = async (teacherId: string): Promise<void> => {
     if (!window.confirm('この講師を削除しますか？')) return
     await updateMaster((c) => ({ ...c, teachers: c.teachers.filter((t) => t.id !== teacherId) }))
@@ -1119,13 +1143,13 @@ const HomePage = () => {
   const downloadTemplate = (): void => {
     // Include sample test data so users can see the expected format
     const sampleTeachers = [
-      ['田中講師', '数,英', '数学メイン'],
-      ['佐藤講師', '英,数', '英語メイン'],
+      ['田中講師', '数,英', '数学メイン', 'tanaka@example.com'],
+      ['佐藤講師', '英,数', '英語メイン', ''],
     ]
     const sampleStudents = [
-      ['青木 太郎', '中3'],
-      ['伊藤 花', '中2'],
-      ['上田 陽介', '高1'],
+      ['青木 太郎', '中3', 'aoki@example.com'],
+      ['伊藤 花', '中2', ''],
+      ['上田 陽介', '高1', ''],
     ]
     const sampleConstraints = [
       ['田中講師', '伊藤 花', '不可'],
@@ -1137,8 +1161,8 @@ const HomePage = () => {
       ['田中講師', '青木 太郎', '', '数', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ'], ...sampleTeachers]), '講師')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年'], ...sampleStudents]), '生徒')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メールアドレス'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別(不可)'], ...sampleConstraints]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可)'], ...sampleGradeConstraints]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
@@ -1148,8 +1172,8 @@ const HomePage = () => {
   const exportData = (): void => {
     if (!masterData) return
     const md = masterData
-    const teacherRows = md.teachers.map((t) => [t.name, t.subjects.join(', '), t.memo])
-    const studentRows = md.students.map((s) => [s.name, s.grade, s.memo])
+    const teacherRows = md.teachers.map((t) => [t.name, t.subjects.join(', '), t.memo, t.email ?? ''])
+    const studentRows = md.students.map((s) => [s.name, s.grade, s.memo, s.email ?? ''])
     const constraintRows = md.constraints.map((c) => [
       md.teachers.find((t) => t.id === c.teacherId)?.name ?? c.teacherId,
       md.students.find((s) => s.id === c.studentId)?.name ?? c.studentId,
@@ -1168,8 +1192,8 @@ const HomePage = () => {
       l.subject, dayNames[l.dayOfWeek] ?? '', l.slotNumber,
     ])
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ'], ...teacherRows]), '講師')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ'], ...studentRows]), '生徒')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別'], ...constraintRows]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別'], ...gradeConstraintRows]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
@@ -1208,8 +1232,9 @@ const HomePage = () => {
         if (!name) continue
         const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => FIXED_SUBJECTS.includes(s))
         const memo = String(row?.[2] ?? '').trim()
+        const email = String(row?.[3] ?? '').trim()
         if (md.teachers.some((t) => t.name === name)) continue
-        importedTeachers.push({ id: createId(), name, subjects, memo })
+        importedTeachers.push({ id: createId(), name, email, subjects, memo })
       }
     }
 
@@ -1221,8 +1246,9 @@ const HomePage = () => {
         const name = String(row?.[0] ?? '').trim()
         if (!name) continue
         const grade = String(row?.[1] ?? '').trim()
+        const email = String(row?.[2] ?? '').trim()
         if (md.students.some((s) => s.name === name)) continue
-        importedStudents.push({ id: createId(), name, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0 })
+        importedStudents.push({ id: createId(), name, email, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0 })
       }
     }
 
@@ -1380,6 +1406,7 @@ const HomePage = () => {
     seed.settings.submissionEndDate = newSubmissionEnd
     seed.settings.deskCount = newDeskCount
     seed.settings.holidays = [...newHolidays]
+    seed.managers = masterData.managers ?? []
     seed.teachers = masterData.teachers
     seed.students = masterData.students.map((s) => ({
       ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
@@ -1592,9 +1619,29 @@ const HomePage = () => {
                 </div>
 
                 <div className="panel">
+                  <h3>マネージャー登録</h3>
+                  <div className="row">
+                    <input value={managerName} onChange={(e) => setManagerName(e.target.value)} placeholder="マネージャー名" />
+                    <input value={managerEmail} onChange={(e) => setManagerEmail(e.target.value)} placeholder="メールアドレス" type="email" />
+                    <button className="btn" type="button" onClick={() => void addManager()}>追加</button>
+                  </div>
+                  <table className="table">
+                    <thead><tr><th>名前</th><th>メール</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {(masterData.managers ?? []).map((m) => (
+                        <tr key={m.id}><td>{m.name}</td><td>{m.email || '-'}</td>
+                          <td><button className="btn secondary" type="button" onClick={() => void removeManager(m.id)}>削除</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="panel">
                   <h3>講師登録</h3>
                   <div className="row">
                     <input value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="講師名" />
+                    <input value={teacherEmail} onChange={(e) => setTeacherEmail(e.target.value)} placeholder="メールアドレス" type="email" />
                     <select onChange={(e) => { const v = e.target.value; if (v && !teacherSubjects.includes(v)) setTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
                       <option value="">担当科目を追加</option>
                       {FIXED_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
@@ -1608,10 +1655,10 @@ const HomePage = () => {
                     ))}
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>科目</th><th>メモ</th><th>操作</th></tr></thead>
+                    <thead><tr><th>名前</th><th>メール</th><th>科目</th><th>メモ</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.teachers.map((t) => (
-                        <tr key={t.id}><td>{t.name}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td>
+                        <tr key={t.id}><td>{t.name}</td><td>{t.email || '-'}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td>
                           <td><button className="btn secondary" type="button" onClick={() => void removeTeacher(t.id)}>削除</button></td>
                         </tr>
                       ))}
@@ -1623,6 +1670,7 @@ const HomePage = () => {
                   <h3>生徒登録</h3>
                   <div className="row">
                     <input value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="生徒名" />
+                    <input value={studentEmail} onChange={(e) => setStudentEmail(e.target.value)} placeholder="メールアドレス" type="email" />
                     <select value={studentGrade} onChange={(e) => setStudentGrade(e.target.value)}>
                       <option value="">学年を選択</option>
                       {GRADE_OPTIONS.map((g) => (<option key={g} value={g}>{g}</option>))}
@@ -1630,10 +1678,10 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void addStudent()}>追加</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>学年</th><th>操作</th></tr></thead>
+                    <thead><tr><th>名前</th><th>メール</th><th>学年</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.students.map((s) => (
-                        <tr key={s.id}><td>{s.name}</td><td>{s.grade}</td>
+                        <tr key={s.id}><td>{s.name}</td><td>{s.email || '-'}</td><td>{s.grade}</td>
                           <td><button className="btn secondary" type="button" onClick={() => void removeStudent(s.id)}>削除</button></td>
                         </tr>
                       ))}

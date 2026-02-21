@@ -4,9 +4,16 @@ export type ConstraintType = 'incompatible' | 'recommended'
 
 export type SubjectSlotRequest = Record<string, number>
 
+export type Manager = {
+  id: string
+  name: string
+  email: string
+}
+
 export type Teacher = {
   id: string
   name: string
+  email: string
   subjects: string[]
   memo: string
 }
@@ -14,6 +21,7 @@ export type Teacher = {
 export type Student = {
   id: string
   name: string
+  email: string
   grade: string
   subjects: string[]
   subjectSlots: SubjectSlotRequest
@@ -90,6 +98,7 @@ export type SubmissionLogEntry = {
 export type SessionData = {
   settings: SessionSettings
   subjects: string[]
+  managers: Manager[]
   teachers: Teacher[]
   students: Student[]
   constraints: PairConstraint[]
@@ -104,6 +113,7 @@ export type SessionData = {
 }
 
 export type MasterData = {
+  managers: Manager[]
   teachers: Teacher[]
   students: Student[]
   constraints: PairConstraint[]
