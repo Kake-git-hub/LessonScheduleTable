@@ -2487,7 +2487,6 @@ const AdminPage = () => {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
-  const [emailContentType, setEmailContentType] = useState<'input-request' | 'confirmed' | 'changed'>('input-request')
 
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
@@ -2632,7 +2631,7 @@ const AdminPage = () => {
   }
 
   const handleEmailSend = (person: { id: string; name: string; email: string }, personType: PersonType): void => {
-    const contentType = emailContentType
+    const contentType = data?.settings.confirmed ? 'confirmed' : 'input-request'
     const typeLabel = EMAIL_TYPE_LABELS[contentType] ?? '予定入力依頼'
     const now = new Date()
     const timeStr = now.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -3288,15 +3287,6 @@ service cloud.firestore {
         <>
           <div className="panel">
             <h3>{instructorLabel}一覧</h3>
-            <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
-              <label style={{ fontSize: '0.85em', fontWeight: 600 }}>メール送信内容:</label>
-              <select value={emailContentType} onChange={(e) => setEmailContentType(e.target.value as 'input-request' | 'confirmed' | 'changed')}
-                style={{ fontSize: '0.85em', padding: '4px 8px' }}>
-                <option value="input-request">予定入力依頼</option>
-                <option value="confirmed">コマ割り確定</option>
-                <option value="changed">コマ割り変更</option>
-              </select>
-            </div>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
@@ -3328,7 +3318,7 @@ service cloud.firestore {
                             <button className="btn secondary" type="button" onClick={() => handleEmailSend(instructor, instructorPersonType)}>✉ メール送信</button>
                             {emailSendLog[instructor.id] && (
                               <span style={{ fontSize: '0.75em', color: '#2563eb', marginLeft: 6 }}>
-                                {emailSendLog[instructor.id].time} {emailSendLog[instructor.id].type}
+                                {emailSendLog[instructor.id].time} {emailSendLog[instructor.id].type} 送信済み
                               </span>
                             )}
                           </>
@@ -3374,7 +3364,7 @@ service cloud.firestore {
                             <button className="btn secondary" type="button" onClick={() => handleEmailSend(student, 'student')}>✉ メール送信</button>
                             {emailSendLog[student.id] && (
                               <span style={{ fontSize: '0.75em', color: '#2563eb', marginLeft: 6 }}>
-                                {emailSendLog[student.id].time} {emailSendLog[student.id].type}
+                                {emailSendLog[student.id].time} {emailSendLog[student.id].type} 送信済み
                               </span>
                             )}
                           </>
@@ -5080,7 +5070,7 @@ const ConfirmedCalendarView = ({
               if (isMendan) {
                 cells.push({
                   label: `${student?.name ?? '?'} 保護者`,
-                  detail: '面談',
+                  detail: personType === 'manager' ? '' : '面談',
                   color: '#dbeafe',
                 })
               } else {
@@ -5225,9 +5215,10 @@ const ConfirmedCalendarView = ({
                             background: cell.color, borderRadius: '4px', padding: '3px 6px',
                             marginBottom: idx < cells.length - 1 ? '2px' : 0,
                             fontSize: '12px', lineHeight: '1.4',
+                            whiteSpace: 'nowrap',
                           }}>
-                            <div style={{ fontWeight: 600 }}>{cell.label}</div>
-                            {cell.detail && <div style={{ fontSize: '11px', color: '#475569' }}>{cell.detail}</div>}
+                            <span style={{ fontWeight: 600 }}>{cell.label}</span>
+                            {cell.detail && <span style={{ fontSize: '11px', color: '#475569', marginLeft: 4 }}>{cell.detail}</span>}
                           </div>
                         ))}
                       </td>

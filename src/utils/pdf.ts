@@ -4,31 +4,48 @@ import type { Assignment } from '../types'
 
 // ---------- Japanese font loading ----------
 
-let fontLoaded = false
+let cachedFontBase64: string | null = null
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  const len = bytes.length
+  // Build base64 without spread operator to avoid stack overflow on large files
+  let binary = ''
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i])
+  }
+  return btoa(binary)
+}
 
 async function loadJapaneseFont(doc: jsPDF): Promise<void> {
-  if (fontLoaded) {
-    doc.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'normal')
-    doc.setFont('NotoSansJP')
-    return
+  if (!cachedFontBase64) {
+    // Try multiple CDN sources for Noto Sans JP
+    const urls = [
+      'https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/SubsetOTF/JP/NotoSansCJKjp-Regular.otf',
+      'https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/SubsetOTF/JP/NotoSansCJKjp-Regular.otf',
+      'https://fonts.gstatic.com/ea/notosansjp/v5/NotoSansJP-Regular.otf',
+    ]
+    let buf: ArrayBuffer | null = null
+    for (const url of urls) {
+      try {
+        const res = await fetch(url)
+        if (res.ok) {
+          buf = await res.arrayBuffer()
+          if (buf.byteLength > 10000) break // sanity check: font should be >10KB
+          buf = null
+        }
+      } catch {
+        // try next
+      }
+    }
+    if (!buf) {
+      throw new Error('日本語フォントの読み込みに失敗しました。ネットワーク接続を確認してください。')
+    }
+    cachedFontBase64 = arrayBufferToBase64(buf)
   }
-  // Load Noto Sans JP Regular (static, ~4MB) from Google Fonts CDN
-  const url = 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/static/NotoSansJP-Regular.ttf'
-  const res = await fetch(url)
-  if (!res.ok) throw new Error('Failed to load Japanese font')
-  const buf = await res.arrayBuffer()
-  // Convert to base64 using chunks to avoid call stack overflow
-  const bytes = new Uint8Array(buf)
-  let binary = ''
-  const chunkSize = 8192
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-  }
-  const base64 = btoa(binary)
-  doc.addFileToVFS('NotoSansJP-Regular.ttf', base64)
+  doc.addFileToVFS('NotoSansJP-Regular.ttf', cachedFontBase64)
   doc.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'normal')
   doc.setFont('NotoSansJP')
-  fontLoaded = true
 }
 
 // ---------- Schedule PDF (A3 landscape, one week per page) ----------
@@ -83,8 +100,14 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   if (currentWeek.length > 0) weeks.push(currentWeek)
 
   // Create PDF - A3 landscape
-  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' })
-  await loadJapaneseFont(doc)
+  let doc: jsPDF
+  try {
+    doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' })
+    await loadJapaneseFont(doc)
+  } catch (err) {
+    alert('PDF生成に失敗しました: ' + String(err))
+    return
+  }
 
   const dowOrder = [1, 2, 3, 4, 5, 6, 0] // Mon-Sun
 
@@ -243,7 +266,12 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     })
   }
 
-  doc.save(`コマ割り_${sessionName}.pdf`)
+  try {
+    doc.save(`コマ割り_${sessionName}.pdf`)
+  } catch (err) {
+    console.error('PDF save error:', err)
+    alert('PDF出力に失敗しました: ' + String(err))
+  }
 }
 
 // ---------- Email receipt PDF ----------
@@ -258,8 +286,14 @@ export type EmailReceiptPdfParams = {
 export async function downloadEmailReceiptPdf(params: EmailReceiptPdfParams): Promise<void> {
   const { sessionName, recipientName, emailType, sentAt } = params
 
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-  await loadJapaneseFont(doc)
+  let doc: jsPDF
+  try {
+    doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    await loadJapaneseFont(doc)
+  } catch (err) {
+    alert('PDF生成に失敗しました: ' + String(err))
+    return
+  }
 
   const pageWidth = doc.internal.pageSize.getWidth()
   const centerX = pageWidth / 2
