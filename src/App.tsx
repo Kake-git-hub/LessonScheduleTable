@@ -1081,8 +1081,6 @@ const HomePage = () => {
   const [newSubmissionEnd, setNewSubmissionEnd] = useState('')
   const [newDeskCount, setNewDeskCount] = useState(0)
   const [newHolidays, setNewHolidays] = useState<string[]>([])
-  const [newMendanStartHour, setNewMendanStartHour] = useState(13)
-  const [newMendanEndHour, setNewMendanEndHour] = useState(20)
 
   // Master data form state
   const [managerName, setManagerName] = useState('')
@@ -1526,9 +1524,8 @@ const HomePage = () => {
     seed.settings.holidays = [...newHolidays]
     seed.settings.sessionType = isMendanSession ? 'mendan' : 'lecture'
     if (isMendanSession) {
-      const slots = newMendanEndHour - newMendanStartHour
-      seed.settings.slotsPerDay = slots > 0 ? slots : 7
-      seed.settings.mendanStartHour = newMendanStartHour
+      seed.settings.slotsPerDay = 12 // 9:00-21:00 full range; managers define their own times
+      seed.settings.mendanStartHour = 9
     } else {
       seed.settings.slotsPerDay = newDeskCount > 0 ? 5 : 5
     }
@@ -1652,21 +1649,7 @@ const HomePage = () => {
                   </div>
                   {newTerm.includes('mendan') && (
                     <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                      <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        面談時間帯:
-                        <select value={newMendanStartHour} onChange={(e) => setNewMendanStartHour(Number(e.target.value))}>
-                          {Array.from({ length: 12 }, (_, i) => i + 9).map((h) => (
-                            <option key={h} value={h}>{h}:00</option>
-                          ))}
-                        </select>
-                        〜
-                        <select value={newMendanEndHour} onChange={(e) => setNewMendanEndHour(Number(e.target.value))}>
-                          {Array.from({ length: 12 }, (_, i) => i + 10).map((h) => (
-                            <option key={h} value={h}>{h}:00</option>
-                          ))}
-                        </select>
-                        <span style={{ fontSize: '11px' }}>({Math.max(0, newMendanEndHour - newMendanStartHour)}コマ)</span>
-                      </label>
+                      <span className="muted" style={{ fontSize: '12px' }}>※ 面談時間帯はマネージャーが希望入力時に日ごとに指定します</span>
                     </div>
                   )}
                   <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
@@ -2479,7 +2462,31 @@ const AdminPage = () => {
 
   // Mendan (interview) mode: managers act as instructors instead of teachers
   const isMendan = data?.settings.sessionType === 'mendan'
-  const mendanStart = data?.settings.mendanStartHour ?? 13
+  const mendanStart = data?.settings.mendanStartHour ?? 9
+
+  // For mendan: compute which slot numbers actually have manager availability
+  const mendanActiveSlots = useMemo(() => {
+    if (!isMendan || !data) return new Set<number>()
+    const active = new Set<number>()
+    for (const manager of (data.managers ?? [])) {
+      const key = personKey('manager', manager.id)
+      for (const sk of (data.availability[key] ?? [])) {
+        const slotNum = Number(sk.split('_')[1])
+        if (!isNaN(slotNum)) active.add(slotNum)
+      }
+    }
+    return active
+  }, [isMendan, data])
+
+  // For mendan: filtered slotKeys that only include manager-available slots
+  const effectiveSlotKeys = useMemo(() => {
+    if (!isMendan || mendanActiveSlots.size === 0) return slotKeys
+    return slotKeys.filter((sk) => {
+      const slotNum = Number(sk.split('_')[1])
+      return mendanActiveSlots.has(slotNum)
+    })
+  }, [isMendan, slotKeys, mendanActiveSlots])
+
   const instructors: Teacher[] = useMemo(() => {
     if (!data) return []
     if (isMendan) {
@@ -3398,40 +3405,6 @@ service cloud.firestore {
               </button>
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            {isMendan && (
-              <div className="row" style={{ gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '4px' }}>
-                <span className="muted" style={{ fontSize: '13px' }}>面談時間帯:</span>
-                <select
-                  value={mendanStart}
-                  onChange={(e) => {
-                    const newStart = Number(e.target.value)
-                    const currentEnd = mendanStart + data.settings.slotsPerDay
-                    const newSlots = Math.max(1, currentEnd - newStart)
-                    void update((c) => ({ ...c, settings: { ...c.settings, mendanStartHour: newStart, slotsPerDay: newSlots } }))
-                  }}
-                  style={{ fontSize: '13px' }}
-                >
-                  {Array.from({ length: 12 }, (_, i) => i + 9).map((h) => (
-                    <option key={h} value={h}>{h}:00</option>
-                  ))}
-                </select>
-                <span className="muted">〜</span>
-                <select
-                  value={mendanStart + data.settings.slotsPerDay}
-                  onChange={(e) => {
-                    const newEnd = Number(e.target.value)
-                    const newSlots = Math.max(1, newEnd - mendanStart)
-                    void update((c) => ({ ...c, settings: { ...c.settings, slotsPerDay: newSlots } }))
-                  }}
-                  style={{ fontSize: '13px' }}
-                >
-                  {Array.from({ length: 12 }, (_, i) => i + 10).map((h) => (
-                    <option key={h} value={h}>{h}:00</option>
-                  ))}
-                </select>
-                <span className="muted" style={{ fontSize: '12px' }}>({data.settings.slotsPerDay}コマ)</span>
-              </div>
-            )}
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
@@ -3524,9 +3497,9 @@ service cloud.firestore {
                 </div>
               </div>
             )}
-            {showAnalytics && <AnalyticsPanel data={data} slotKeys={slotKeys} />}
+            {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
             <div className="grid-slots">
-              {slotKeys.map((slot) => {
+              {(isMendan ? effectiveSlotKeys : slotKeys).map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
 
@@ -4013,10 +3986,247 @@ const TeacherInputPage = ({
     navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
   }
 
+  // --- Manager-specific: per-day time range input ---
+  const isManagerMode = personKeyPrefix === 'manager'
+  const mStartHour = data.settings.mendanStartHour ?? 9
+  const mEndHour = mStartHour + data.settings.slotsPerDay // exclusive end
+
+  // Compute per-day start/end from current availability
+  const getRange = (date: string): { start: number; end: number } | null => {
+    let minSlot = Infinity
+    let maxSlot = -Infinity
+    for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+      if (localAvailability.has(`${date}_${s}`)) {
+        if (s < minSlot) minSlot = s
+        if (s > maxSlot) maxSlot = s
+      }
+    }
+    if (minSlot === Infinity) return null
+    return { start: mStartHour - 1 + minSlot, end: mStartHour - 1 + maxSlot + 1 }
+  }
+
+  const setRange = (date: string, startHour: number, endHour: number) => {
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      // Clear all slots for this date then set range
+      for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+        next.delete(`${date}_${s}`)
+      }
+      const slotStart = startHour - mStartHour + 1
+      const slotEnd = endHour - mStartHour + 1
+      for (let s = slotStart; s < slotEnd; s++) {
+        if (s >= 1 && s <= data.settings.slotsPerDay) {
+          next.add(`${date}_${s}`)
+        }
+      }
+      return next
+    })
+  }
+
+  const clearRange = (date: string) => {
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+        next.delete(`${date}_${s}`)
+      }
+      return next
+    })
+  }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [defaultStart, setDefaultStart] = useState(13)
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [defaultEnd, setDefaultEnd] = useState(18)
+
+  const applyDefaultToAll = () => {
+    setLocalAvailability(() => {
+      const next = new Set<string>()
+      for (const rk of regularSlotKeys) next.add(rk)
+      const slotStart = defaultStart - mStartHour + 1
+      const slotEnd = defaultEnd - mStartHour + 1
+      for (const date of dates) {
+        for (let s = slotStart; s < slotEnd; s++) {
+          if (s >= 1 && s <= data.settings.slotsPerDay) {
+            next.add(`${date}_${s}`)
+          }
+        }
+      }
+      return next
+    })
+  }
+
+  // Count total available slots
+  const totalAvailableSlots = (() => {
+    let count = 0
+    for (const date of dates) {
+      for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+        if (localAvailability.has(`${date}_${s}`)) count++
+      }
+    }
+    return count
+  })()
+
+  if (isManagerMode) {
+    return (
+      <div className="availability-container">
+        <div className="availability-header">
+          <h2>{data.settings.name} - マネージャー面談可能時間入力</h2>
+          <p>対象: <strong>{teacher.name}</strong></p>
+          <p className="muted">日ごとに面談可能な時間帯を設定してください。</p>
+        </div>
+
+        {/* Default time range + apply all */}
+        <div className="panel" style={{ marginBottom: '12px', padding: '12px 16px' }}>
+          <div className="row" style={{ gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '14px', fontWeight: 600 }}>一括設定:</span>
+            <select value={defaultStart} onChange={(e) => setDefaultStart(Number(e.target.value))} style={{ fontSize: '14px', padding: '4px 8px' }}>
+              {Array.from({ length: mEndHour - mStartHour }, (_, i) => mStartHour + i).map((h) => (
+                <option key={h} value={h}>{h}:00</option>
+              ))}
+            </select>
+            <span>〜</span>
+            <select value={defaultEnd} onChange={(e) => setDefaultEnd(Number(e.target.value))} style={{ fontSize: '14px', padding: '4px 8px' }}>
+              {Array.from({ length: mEndHour - mStartHour }, (_, i) => mStartHour + i + 1).map((h) => (
+                <option key={h} value={h}>{h}:00</option>
+              ))}
+            </select>
+            <button className="btn" type="button" onClick={applyDefaultToAll} style={{ fontSize: '13px' }}>
+              全日に適用
+            </button>
+          </div>
+        </div>
+
+        {/* Per-day time range rows */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {dates.map((date) => {
+            const range = getRange(date)
+            const dayLabel = formatShortDate(date)
+            return (
+              <div
+                key={date}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 12px',
+                  background: range ? '#f0f9ff' : '#f9fafb',
+                  borderRadius: '8px',
+                  border: range ? '1px solid #bae6fd' : '1px solid #e5e7eb',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span style={{ minWidth: '75px', fontWeight: 600, fontSize: '14px' }}>{dayLabel}</span>
+                <select
+                  value={range?.start ?? defaultStart}
+                  onChange={(e) => {
+                    const newStart = Number(e.target.value)
+                    const currentEnd = range?.end ?? defaultEnd
+                    const end = Math.max(newStart + 1, currentEnd)
+                    setRange(date, newStart, end)
+                  }}
+                  style={{ fontSize: '14px', padding: '4px 6px' }}
+                >
+                  {Array.from({ length: mEndHour - mStartHour }, (_, i) => mStartHour + i).map((h) => (
+                    <option key={h} value={h}>{h}:00</option>
+                  ))}
+                </select>
+                <span style={{ color: '#6b7280' }}>〜</span>
+                <select
+                  value={range?.end ?? defaultEnd}
+                  onChange={(e) => {
+                    const newEnd = Number(e.target.value)
+                    const currentStart = range?.start ?? defaultStart
+                    const start = Math.min(currentStart, newEnd - 1)
+                    setRange(date, start, newEnd)
+                  }}
+                  style={{ fontSize: '14px', padding: '4px 6px' }}
+                >
+                  {Array.from({ length: mEndHour - mStartHour }, (_, i) => mStartHour + i + 1).map((h) => (
+                    <option key={h} value={h}>{h}:00</option>
+                  ))}
+                </select>
+                {/* Visual time bar */}
+                <div style={{ display: 'flex', gap: '2px', marginLeft: '4px' }}>
+                  {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+                    const slotKey = `${date}_${i + 1}`
+                    const isOn = localAvailability.has(slotKey)
+                    return (
+                      <div
+                        key={i}
+                        title={`${mStartHour + i}:00`}
+                        style={{
+                          width: '14px',
+                          height: '20px',
+                          borderRadius: '3px',
+                          background: isOn ? '#3b82f6' : '#e5e7eb',
+                          cursor: 'pointer',
+                          transition: 'background 0.15s',
+                        }}
+                        onClick={() => toggleSlot(date, i + 1)}
+                      />
+                    )
+                  })}
+                </div>
+                {range ? (
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    style={{ fontSize: '12px', padding: '2px 8px', marginLeft: 'auto' }}
+                    onClick={() => clearRange(date)}
+                  >
+                    クリア
+                  </button>
+                ) : (
+                  <span style={{ fontSize: '12px', color: '#9ca3af', marginLeft: 'auto' }}>未設定</span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="submit-section" style={{ marginTop: '16px' }}>
+          <p className="muted" style={{ fontSize: '13px', marginBottom: '8px' }}>
+            設定済み: {dates.filter((d) => getRange(d) !== null).length} / {dates.length} 日　（合計 {totalAvailableSlots} コマ）
+          </p>
+          {showDevRandom && (
+            <button
+              className="btn secondary"
+              type="button"
+              style={{ marginBottom: '8px', fontSize: '0.85em' }}
+              onClick={() => {
+                const next = new Set<string>()
+                for (const date of dates) {
+                  const randStart = mStartHour + Math.floor(Math.random() * 4) + 1
+                  const randEnd = randStart + Math.floor(Math.random() * 5) + 2
+                  const slotStart = randStart - mStartHour + 1
+                  const slotEnd = Math.min(randEnd - mStartHour + 1, data.settings.slotsPerDay + 1)
+                  for (let s = slotStart; s < slotEnd; s++) {
+                    next.add(`${date}_${s}`)
+                  }
+                }
+                setLocalAvailability(next)
+              }}
+            >
+              🎲 ランダム入力 (DEV)
+            </button>
+          )}
+          <button
+            className="submit-btn"
+            onClick={handleSubmit}
+            type="button"
+            disabled={totalAvailableSlots === 0}
+          >
+            送信
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="availability-container">
       <div className="availability-header">
-        <h2>{data.settings.name} - {personKeyPrefix === 'manager' ? 'マネージャー' : '講師'}希望入力</h2>
+        <h2>{data.settings.name} - 講師希望入力</h2>
         <p>
           対象: <strong>{teacher.name}</strong>
         </p>
@@ -4035,7 +4245,7 @@ const TeacherInputPage = ({
                   onClick={() => toggleColumnAllSlots(i + 1)}
                   title="この時限を一括切替"
                 >
-                  {personKeyPrefix === 'manager' ? mendanTimeLabel(i + 1, data.settings.mendanStartHour) : `${i + 1}限`}
+                  {`${i + 1}限`}
                 </th>
               ))}
             </tr>
@@ -4580,6 +4790,17 @@ const MendanParentInputPage = ({
     navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
   }
 
+  // Compute which slot numbers have at least one manager available (for column display)
+  const mendanStartHour = data.settings.mendanStartHour ?? 9
+  const activeSlotNums = useMemo(() => {
+    const nums = new Set<number>()
+    for (const sk of managerAvailableSlots) {
+      const slotNum = Number(sk.split('_')[1])
+      if (!isNaN(slotNum)) nums.add(slotNum)
+    }
+    return Array.from(nums).sort((a, b) => a - b)
+  }, [managerAvailableSlots])
+
   return (
     <div className="availability-container">
       <div className="availability-header">
@@ -4590,64 +4811,70 @@ const MendanParentInputPage = ({
         <p className="muted">面談可能な時間帯をタップして選択してください。色付きのコマはマネージャーが対応可能な時間帯です。</p>
       </div>
 
-      <div className="teacher-table-wrapper">
-        <table className="teacher-table compact-grid">
-          <thead>
-            <tr>
-              <th className="date-header">日付</th>
-              {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
-                <th
-                  key={i}
-                  style={{ cursor: 'pointer', userSelect: 'none' }}
-                  onClick={() => toggleColumnAllSlots(i + 1)}
-                  title="この時間帯を一括切替"
-                >
-                  {mendanTimeLabel(i + 1, data.settings.mendanStartHour)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {dates.map((date) => {
-              const selectableKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`).filter((sk) => managerAvailableSlots.has(sk))
-              const allOn = selectableKeys.length > 0 && selectableKeys.every((sk) => localAvailability.has(sk))
-              return (
-                <tr key={date}>
-                  <td
-                    className="date-cell"
+      {activeSlotNums.length === 0 ? (
+        <div className="panel" style={{ textAlign: 'center', padding: '24px' }}>
+          <p style={{ color: '#dc2626', fontWeight: 600 }}>マネージャーの空き時間がまだ登録されていません。</p>
+          <p className="muted">マネージャーが面談可能時間を入力すると、ここに選択肢が表示されます。</p>
+        </div>
+      ) : (
+        <div className="teacher-table-wrapper">
+          <table className="teacher-table compact-grid">
+            <thead>
+              <tr>
+                <th className="date-header">日付</th>
+                {activeSlotNums.map((slotNum) => (
+                  <th
+                    key={slotNum}
                     style={{ cursor: 'pointer', userSelect: 'none' }}
-                    onClick={() => toggleDateAllSlots(date)}
-                    title="全時限を一括切替"
+                    onClick={() => toggleColumnAllSlots(slotNum)}
+                    title="この時間帯を一括切替"
                   >
-                    <span style={{ fontWeight: allOn ? 700 : 400, color: allOn ? '#2563eb' : undefined }}>
-                      {formatShortDate(date)}
-                    </span>
-                  </td>
-                  {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
-                    const slotNum = i + 1
-                    const slotKey = `${date}_${slotNum}`
-                    const managerAvail = managerAvailableSlots.has(slotKey)
-                    const isOn = localAvailability.has(slotKey)
-                    return (
-                      <td key={slotNum}>
-                        <button
-                          className={`teacher-slot-btn ${!managerAvail ? '' : isOn ? 'active' : 'manager-avail'}`}
-                          onClick={() => toggleSlot(date, slotNum)}
-                          type="button"
-                          disabled={!managerAvail}
-                          style={!managerAvail ? { opacity: 0.3, cursor: 'not-allowed' } : undefined}
-                        >
-                          {!managerAvail ? '' : isOn ? '○' : ''}
-                        </button>
-                      </td>
-                    )
-                  })}
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+                    {mendanTimeLabel(slotNum, mendanStartHour)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {dates.map((date) => {
+                const selectableKeys = activeSlotNums.map((s) => `${date}_${s}`).filter((sk) => managerAvailableSlots.has(sk))
+                const allOn = selectableKeys.length > 0 && selectableKeys.every((sk) => localAvailability.has(sk))
+                return (
+                  <tr key={date}>
+                    <td
+                      className="date-cell"
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => toggleDateAllSlots(date)}
+                      title="全時限を一括切替"
+                    >
+                      <span style={{ fontWeight: allOn ? 700 : 400, color: allOn ? '#2563eb' : undefined }}>
+                        {formatShortDate(date)}
+                      </span>
+                    </td>
+                    {activeSlotNums.map((slotNum) => {
+                      const slotKey = `${date}_${slotNum}`
+                      const managerAvail = managerAvailableSlots.has(slotKey)
+                      const isOn = localAvailability.has(slotKey)
+                      return (
+                        <td key={slotNum}>
+                          <button
+                            className={`teacher-slot-btn ${!managerAvail ? '' : isOn ? 'active' : 'manager-avail'}`}
+                            onClick={() => toggleSlot(date, slotNum)}
+                            type="button"
+                            disabled={!managerAvail}
+                            style={!managerAvail ? { opacity: 0.3, cursor: 'not-allowed' } : undefined}
+                          >
+                            {!managerAvail ? '' : isOn ? '○' : ''}
+                          </button>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="submit-section">
         {showDevRandom && (
