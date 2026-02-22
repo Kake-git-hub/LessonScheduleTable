@@ -17,7 +17,7 @@ import type {
   SubmissionLogEntry,
   Teacher,
 } from './types'
-import { buildSlotKeys, formatShortDate, personKey, slotLabel } from './utils/schedule'
+import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
 
 const APP_VERSION = '1.0.0'
 
@@ -983,17 +983,20 @@ const buildMendanAutoAssignments = (
     .sort((a, b) => a.submittedAt - b.submittedAt)
 
   const result: Record<string, Assignment[]> = {}
-  // Copy existing assignments
+  // Copy existing non-regular assignments only
   for (const slot of slots) {
-    if (data.assignments[slot]?.length) {
-      result[slot] = [...data.assignments[slot]]
+    const existing = data.assignments[slot]
+    if (existing?.length) {
+      const nonRegular = existing.filter((a) => !a.isRegular)
+      if (nonRegular.length > 0) result[slot] = [...nonRegular]
     }
   }
 
-  // Track which parents are already assigned
+  // Track which parents are already assigned (ignore regular lesson assignments)
   const assignedParents = new Set<string>()
   for (const slot of slots) {
     for (const a of (result[slot] ?? [])) {
+      if (a.isRegular) continue
       for (const sid of a.studentIds) assignedParents.add(sid)
     }
   }
@@ -1520,14 +1523,19 @@ const HomePage = () => {
     seed.settings.deskCount = newDeskCount
     seed.settings.holidays = [...newHolidays]
     seed.settings.sessionType = isMendanSession ? 'mendan' : 'lecture'
+    if (isMendanSession) {
+      seed.settings.slotsPerDay = 7 // 13:00-20:00 in 1-hour slots
+    } else {
+      seed.settings.slotsPerDay = newDeskCount > 0 ? 5 : 5
+    }
     seed.managers = masterData.managers ?? []
     seed.teachers = masterData.teachers
     seed.students = masterData.students.map((s) => ({
       ...s, subjects: isMendanSession ? ['面談'] : [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
     }))
     seed.constraints = masterData.constraints
-    seed.gradeConstraints = masterData.gradeConstraints
-    seed.regularLessons = masterData.regularLessons
+    seed.gradeConstraints = isMendanSession ? [] : masterData.gradeConstraints
+    seed.regularLessons = isMendanSession ? [] : masterData.regularLessons
     try {
       const verified = await saveAndVerify(id, seed)
       if (!verified) {
@@ -2530,10 +2538,11 @@ const AdminPage = () => {
     })()
   }, [data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-fill regular lessons when date range or regular lessons change
+  // Auto-fill regular lessons when date range or regular lessons change (skip for mendan)
   const regularFillSigRef = useRef('')
   useEffect(() => {
     if (!data || !authorized || slotKeys.length === 0) return
+    if (data.settings.sessionType === 'mendan') return
     const assignmentStateSig = slotKeys
       .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
       .join(',')
@@ -2686,7 +2695,7 @@ const AdminPage = () => {
       : ''
     const shortageMessage = shortageEntries.length > 0
       ? `\n\n講師不足:\n${shortageEntries
-          .map((item) => `${slotLabel(item.slot)} ${item.detail}`)
+          .map((item) => `${slotLabel(item.slot, isMendan)} ${item.detail}`)
           .join('\n')}`
       : ''
     if (changeLog.length > 0) {
@@ -3318,7 +3327,7 @@ service cloud.firestore {
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
                   .join('\n')
                 const shortageTooltip = teacherShortages
-                  .map((item) => `${slotLabel(item.slot)}: ${item.detail}`)
+                  .map((item) => `${slotLabel(item.slot, isMendan)}: ${item.detail}`)
                   .join('\n')
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
@@ -3518,7 +3527,7 @@ service cloud.firestore {
                   >
                     <div className="slot-title">
                       <div>
-                        {slotLabel(slot)}
+                        {slotLabel(slot, isMendan)}
                         {(data.settings.deskCount ?? 0) > 0 && (
                           <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
                             {slotAssignments.length}/{data.settings.deskCount}
@@ -3968,7 +3977,7 @@ const TeacherInputPage = ({
                   onClick={() => toggleColumnAllSlots(i + 1)}
                   title="この時限を一括切替"
                 >
-                  {i + 1}限
+                  {personKeyPrefix === 'manager' ? mendanTimeLabel(i + 1) : `${i + 1}限`}
                 </th>
               ))}
             </tr>
@@ -4292,9 +4301,9 @@ const StudentInputPage = ({
                     key={i}
                     style={{ cursor: 'pointer', userSelect: 'none' }}
                     onClick={() => toggleColumnAllSlots(i + 1)}
-                    title="この時限を一括切替"
+                    title="この時間帯を一括切替"
                   >
-                    {i + 1}限
+                    {mendanTimeLabel(i + 1)}
                   </th>
                 ))}
               </tr>
