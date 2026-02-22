@@ -44,5 +44,5 @@ export const slotLabel = (slotKey: string): string => {
   return `${formatShortDate(date)} ${slot}限`
 }
 
-export const personKey = (personType: 'teacher' | 'student', personId: string): string =>
+export const personKey = (personType: 'teacher' | 'student' | 'manager', personId: string): string =>
   `${personType}:${personId}`

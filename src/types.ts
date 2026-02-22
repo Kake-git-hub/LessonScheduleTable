@@ -1,4 +1,4 @@
-export type PersonType = 'teacher' | 'student'
+export type PersonType = 'teacher' | 'student' | 'manager'
 
 export type ConstraintType = 'incompatible' | 'recommended'
 
@@ -76,6 +76,7 @@ export type SessionSettings = {
   deskCount?: number
   submissionStartDate?: string
   submissionEndDate?: string
+  sessionType?: 'lecture' | 'mendan'
   createdAt?: number
   updatedAt?: number
 }

@@ -972,7 +972,7 @@ const HomePage = () => {
   const [sessions, setSessions] = useState<{ id: string; name: string; createdAt: number; updatedAt: number }[]>([])
   const [masterData, setMasterData] = useState<MasterData | null>(null)
   const [newYear, setNewYear] = useState(String(new Date().getFullYear()))
-  const [newTerm, setNewTerm] = useState<'spring' | 'summer' | 'winter'>('summer')
+  const [newTerm, setNewTerm] = useState<'spring' | 'summer' | 'winter' | 'spring-mendan' | 'summer-mendan' | 'winter-mendan'>('summer')
   const [newSessionId, setNewSessionId] = useState('')
   const [newSessionName, setNewSessionName] = useState('')
   const [newStartDate, setNewStartDate] = useState('')
@@ -1022,8 +1022,12 @@ const HomePage = () => {
   useEffect(() => {
     const year = Number.parseInt(newYear, 10)
     const safeYear = Number.isNaN(year) ? new Date().getFullYear() : year
-    const label = newTerm === 'spring' ? '春期講習' : newTerm === 'summer' ? '夏期講習' : '冬期講習'
-    const idTerm = newTerm === 'spring' ? 'spring' : newTerm === 'summer' ? 'summer' : 'winter'
+    const termLabels: Record<string, string> = {
+      spring: '春期講習', summer: '夏期講習', winter: '冬期講習',
+      'spring-mendan': '春期面談', 'summer-mendan': '夏期面談', 'winter-mendan': '冬期面談',
+    }
+    const label = termLabels[newTerm] ?? '夏期講習'
+    const idTerm = newTerm
     setNewSessionId(`${safeYear}-${idTerm}`)
     setNewSessionName(`${safeYear} ${label}`)
   }, [newTerm, newYear])
@@ -1385,9 +1389,21 @@ const HomePage = () => {
   const onCreateSession = async (): Promise<void> => {
     const id = newSessionId.trim()
     if (!id) return
-    if (!masterData || (masterData.teachers.length === 0 && masterData.students.length === 0)) {
-      alert('管理データ（講師・生徒）が未登録です。先に管理データを登録してください。')
+    const isMendanSession = newTerm.includes('mendan')
+    if (!masterData) {
+      alert('管理データが読み込まれていません。')
       return
+    }
+    if (isMendanSession) {
+      if ((masterData.managers ?? []).length === 0 || masterData.students.length === 0) {
+        alert('管理データ（マネージャー・生徒）が未登録です。先に管理データを登録してください。')
+        return
+      }
+    } else {
+      if (masterData.teachers.length === 0 && masterData.students.length === 0) {
+        alert('管理データ（講師・生徒）が未登録です。先に管理データを登録してください。')
+        return
+      }
     }
     if (sessions.some((s) => s.id === id)) {
       alert('同じIDの特別講習が既に存在します。別のIDにしてください。')
@@ -1406,10 +1422,11 @@ const HomePage = () => {
     seed.settings.submissionEndDate = newSubmissionEnd
     seed.settings.deskCount = newDeskCount
     seed.settings.holidays = [...newHolidays]
+    seed.settings.sessionType = isMendanSession ? 'mendan' : 'lecture'
     seed.managers = masterData.managers ?? []
     seed.teachers = masterData.teachers
     seed.students = masterData.students.map((s) => ({
-      ...s, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
+      ...s, subjects: isMendanSession ? ['面談'] : [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
     }))
     seed.constraints = masterData.constraints
     seed.gradeConstraints = masterData.gradeConstraints
@@ -1474,17 +1491,28 @@ const HomePage = () => {
             {/* --- Session management --- */}
             <div className="panel">
               <h3>新規特別講習を追加</h3>
-              {(!masterData || (masterData.teachers.length === 0 && masterData.students.length === 0)) ? (
-                <p style={{ color: '#dc2626', fontWeight: 600 }}>⚠ 管理データ（講師・生徒）が未登録のため、特別講習を追加できません。先に下部の管理データを登録してください。</p>
+              {(!masterData || (
+                newTerm.includes('mendan')
+                  ? ((masterData.managers ?? []).length === 0 && masterData.students.length === 0)
+                  : (masterData.teachers.length === 0 && masterData.students.length === 0)
+              )) ? (
+                <p style={{ color: '#dc2626', fontWeight: 600 }}>⚠ 管理データ（{newTerm.includes('mendan') ? 'マネージャー・生徒' : '講師・生徒'}）が未登録のため、特別講習を追加できません。先に下部の管理データを登録してください。</p>
               ) : (
                 <>
                   <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
                   <div className="row">
                     <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 80 }} />
                     <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
-                      <option value="spring">春期講習</option>
-                      <option value="summer">夏期講習</option>
-                      <option value="winter">冬期講習</option>
+                      <optgroup label="講習">
+                        <option value="spring">春期講習</option>
+                        <option value="summer">夏期講習</option>
+                        <option value="winter">冬期講習</option>
+                      </optgroup>
+                      <optgroup label="面談">
+                        <option value="spring-mendan">春期面談</option>
+                        <option value="summer-mendan">夏期面談</option>
+                        <option value="winter-mendan">冬期面談</option>
+                      </optgroup>
                     </select>
                     <input value={newSessionId} onChange={(e) => setNewSessionId(e.target.value)} placeholder="ID (例: 2026-summer)" style={{ width: 160 }} />
                     <input value={newSessionName} onChange={(e) => setNewSessionName(e.target.value)} placeholder="表示名 (例: 2026 夏期講習)" />
@@ -2260,12 +2288,18 @@ const AdminPage = () => {
       return
     }
     const updatedIds: string[] = []
-    // Check teachers: availability change
+    // Check teachers/managers: availability change
     for (const teacher of data.teachers) {
       const key = `teacher:${teacher.id}`
       const prevSlots = (prev.availability[key] ?? []).slice().sort().join(',')
       const currSlots = (data.availability[key] ?? []).slice().sort().join(',')
       if (prevSlots !== currSlots) updatedIds.push(teacher.id)
+    }
+    for (const manager of (data.managers ?? [])) {
+      const key = `manager:${manager.id}`
+      const prevSlots = (prev.availability[key] ?? []).slice().sort().join(',')
+      const currSlots = (data.availability[key] ?? []).slice().sort().join(',')
+      if (prevSlots !== currSlots) updatedIds.push(manager.id)
     }
     // Check students: submittedAt change
     for (const student of data.students) {
@@ -2315,6 +2349,20 @@ const AdminPage = () => {
 
   const slotKeys = useMemo(() => (data ? buildSlotKeys(data.settings) : []), [data])
 
+  // Mendan (interview) mode: managers act as instructors instead of teachers
+  const isMendan = data?.settings.sessionType === 'mendan'
+  const instructors: Teacher[] = useMemo(() => {
+    if (!data) return []
+    if (isMendan) {
+      return (data.managers ?? []).map((m) => ({
+        id: m.id, name: m.name, email: m.email, subjects: ['面談'], memo: '',
+      }))
+    }
+    return data.teachers
+  }, [data, isMendan])
+  const instructorPersonType: PersonType = isMendan ? 'manager' : 'teacher'
+  const instructorLabel = isMendan ? 'マネージャー' : '講師'
+
   const persist = async (next: SessionData): Promise<void> => {
     setData(next)
     await saveSession(sessionId, next)
@@ -2362,6 +2410,7 @@ const AdminPage = () => {
       // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
       const next: SessionData = {
         ...data,
+        managers: master.managers ?? [],
         teachers: master.teachers,
         students: mergedStudents,
         constraints: master.constraints,
@@ -2370,6 +2419,7 @@ const AdminPage = () => {
       }
       // Only save if something actually changed
       const changed =
+        JSON.stringify(data.managers ?? []) !== JSON.stringify(next.managers) ||
         JSON.stringify(data.teachers) !== JSON.stringify(next.teachers) ||
         JSON.stringify(data.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) !==
           JSON.stringify(next.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) ||
@@ -2463,7 +2513,18 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
+    // For mendan sessions, adapt data: use managers as teachers with '面談' subject
+    const effectiveData = isMendan
+      ? {
+          ...data,
+          teachers: (data.managers ?? []).map((m) => ({ id: m.id, name: m.name, email: m.email, subjects: ['面談'] as string[], memo: '' })),
+          // Remap manager availability keys to teacher keys for the algorithm
+          availability: Object.fromEntries(
+            Object.entries(data.availability).map(([k, v]) => [k.replace(/^manager:/, 'teacher:'), v]),
+          ),
+        }
+      : data
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(effectiveData, slotKeys)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -2577,7 +2638,7 @@ const AdminPage = () => {
       const slotAssignments = data.assignments[slotKey] ?? []
       if (slotAssignments.length === 0) return ''
       return slotAssignments.map((a) => {
-        const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? ''
+        const tName = instructors.find((t) => t.id === a.teacherId)?.name ?? ''
         const regular = a.isRegular ? '★' : ''
         // Per-student subjects
         const studentParts = a.studentIds.map((sid) => {
@@ -2694,11 +2755,14 @@ const AdminPage = () => {
       }
 
       const prev = slotAssignments[idx]
-      const currentTeacher = current.teachers.find((item) => item.id === teacherId)
+      const currentInstructor = isMendan
+        ? (current.managers ?? []).find((m) => m.id === teacherId)
+        : current.teachers.find((item) => item.id === teacherId)
+      const instructorSubjects = isMendan ? ['面談'] : ((currentInstructor && 'subjects' in currentInstructor) ? (currentInstructor as Teacher).subjects : [])
       const nextSubject =
-        prev?.subject && currentTeacher?.subjects.includes(prev.subject)
+        prev?.subject && instructorSubjects.includes(prev.subject)
           ? prev.subject
-          : (currentTeacher?.subjects[0] ?? '')
+          : (instructorSubjects[0] ?? '')
 
       slotAssignments[idx] = {
         teacherId,
@@ -2846,7 +2910,7 @@ const AdminPage = () => {
       if (moved.studentIds.some((sid) => targetAssignments.some((a) => a.studentIds.includes(sid)))) return current
 
       // Check teacher has availability for target slot
-      if (moved.teacherId && !hasAvailability(current.availability, 'teacher', moved.teacherId, targetSlot)) return current
+      if (moved.teacherId && !hasAvailability(current.availability, instructorPersonType, moved.teacherId, targetSlot)) return current
 
       // Check all assigned students are available in target slot
       const movedStudents = current.students.filter((s) => moved.studentIds.includes(s.id))
@@ -3014,33 +3078,33 @@ service cloud.firestore {
       ) : (
         <>
           <div className="panel">
-            <h3>講師一覧</h3>
+            <h3>{instructorLabel}一覧</h3>
             <table className="table">
-              <thead><tr><th>名前</th><th>科目</th><th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
-                {data.teachers.map((teacher) => {
-                  const teacherSubmittedAt = (data.teacherSubmittedAt ?? {})[teacher.id] ?? 0
+                {instructors.map((instructor) => {
+                  const submittedAt = (data.teacherSubmittedAt ?? {})[instructor.id] ?? 0
                   return (
-                  <tr key={teacher.id}>
+                  <tr key={instructor.id}>
                     <td>
-                      {teacher.name}
-                      {recentlyUpdated.has(teacher.id) && (
+                      {instructor.name}
+                      {recentlyUpdated.has(instructor.id) && (
                         <span className="badge ok" style={{ marginLeft: '8px', fontSize: '11px', animation: 'fadeIn 0.3s' }}>✓ 更新済</span>
                       )}
                     </td>
-                    <td>{teacher.subjects.join(', ')}</td>
+                    {!isMendan && <td>{instructor.subjects.join(', ')}</td>}
                     <td>
-                      {teacherSubmittedAt ? (
+                      {submittedAt ? (
                         <span style={{ fontSize: '0.85em', color: '#16a34a' }}>
-                          {new Date(teacherSubmittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {new Date(submittedAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                           {' '}提出済
                         </span>
                       ) : (
                         <span style={{ fontSize: '0.85em', color: '#dc2626', fontWeight: 600 }}>未提出</span>
                       )}
                     </td>
-                    <td><button className="btn secondary" type="button" onClick={() => void openInputPage('teacher', teacher.id)}>入力ページ</button></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('teacher', teacher.id)}>URLコピー</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void openInputPage(instructorPersonType, instructor.id)}>入力ページ</button></td>
+                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl(instructorPersonType, instructor.id)}>URLコピー</button></td>
                   </tr>
                   )
                 })}
@@ -3133,7 +3197,7 @@ service cloud.firestore {
                     )}
                     {teacherShortages.length > 0 && (
                       <span className="badge" title={shortageTooltip} style={{ cursor: 'help', background: '#fff1f2', color: '#be123c', border: '1px solid #fda4af' }}>
-                        講師不足: {teacherShortages.length}件
+                        {instructorLabel}不足: {teacherShortages.length}件
                       </span>
                     )}
                   </>
@@ -3155,8 +3219,8 @@ service cloud.firestore {
                 📖 ルール説明
               </button>
             </div>
-            <p className="muted">通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。</p>
-            <p className="muted" style={{ fontSize: '12px' }}>★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可</p>
+            <p className="muted">{isMendan ? `マネージャー1人 + 生徒1〜2人の面談を自動提案で割当。` : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
                 <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>📖 コマ割りルール</h3>
@@ -3238,7 +3302,7 @@ service cloud.firestore {
                   }
                   return slotAssignments.some((a) => a.studentIds.includes(sid))
                 })
-                const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, 'teacher', dragInfo.teacherId, slot) : false
+                const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, instructorPersonType, dragInfo.teacherId, slot) : false
                 // For student drag to same slot: valid if dropping onto a different assignment within the same slot
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
                 const isDropValid = isDragActive && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
@@ -3294,9 +3358,9 @@ service cloud.firestore {
                     </div>
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
-                        const selectedTeacher = data.teachers.find((t) => t.id === assignment.teacherId)
+                        const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
 
-                        const isIncompatiblePair = assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
+                        const isIncompatiblePair = !isMendan && assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
                           const subj = getStudentSubject(assignment, s.id)
                           const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade, subj)
@@ -3376,19 +3440,19 @@ service cloud.firestore {
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
                               disabled={assignment.isRegular}
                             >
-                              <option value="">講師を選択</option>
-                              {data.teachers
-                                .filter((teacher) => {
-                                  // Always show currently assigned teacher
-                                  if (teacher.id === assignment.teacherId) return true
-                                  // Only show teachers who have availability for this slot
-                                  return hasAvailability(data.availability, 'teacher', teacher.id, slot)
+                              <option value="">{instructorLabel}を選択</option>
+                              {instructors
+                                .filter((inst) => {
+                                  // Always show currently assigned instructor
+                                  if (inst.id === assignment.teacherId) return true
+                                  // Only show instructors who have availability for this slot
+                                  return hasAvailability(data.availability, instructorPersonType, inst.id, slot)
                                 })
-                                .map((teacher) => {
-                                const usedElsewhere = usedTeacherIds.has(teacher.id) && teacher.id !== assignment.teacherId
+                                .map((inst) => {
+                                const usedElsewhere = usedTeacherIds.has(inst.id) && inst.id !== assignment.teacherId
                                 return (
-                                  <option key={teacher.id} value={teacher.id} disabled={usedElsewhere}>
-                                    {teacher.name}{usedElsewhere ? ' (割当済)' : ''}
+                                  <option key={inst.id} value={inst.id} disabled={usedElsewhere}>
+                                    {inst.name}{usedElsewhere ? ' (割当済)' : ''}
                                   </option>
                                 )
                               })}
@@ -3436,7 +3500,7 @@ service cloud.firestore {
                                       disabled={assignment.isRegular}
                                       onChange={(e) => {
                                         const selectedId = e.target.value
-                                        if (selectedId) {
+                                        if (selectedId && !isMendan) {
                                           const student = data.students.find((s) => s.id === selectedId)
                                           if (student) {
                                             const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
@@ -3464,10 +3528,11 @@ service cloud.firestore {
                                         .filter((student) => {
                                           // Always show currently assigned student
                                           if (student.id === currentStudentId) return true
-                                          // Unsubmitted students are unavailable
-                                          if (!student.submittedAt) return false
+                                          // Unsubmitted students are unavailable (skip for mendan)
+                                          if (!isMendan && !student.submittedAt) return false
                                           // Filter out students unavailable for this specific slot
                                           if (!isStudentAvailable(student, slot)) return false
+                                          if (isMendan) return true // For mendan, no subject/slot filtering
                                           // Subject compatibility: student must share at least one subject with the teacher
                                           if (teacherSubjects.length > 0 && !teacherSubjects.some((subj) => student.subjects.includes(subj))) return false
                                           // Remaining slots for at least one teacher-compatible subject must be > 0
@@ -3482,8 +3547,8 @@ service cloud.firestore {
                                           return hasRemainingSlots
                                         })
                                         .map((student) => {
-                                        const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                                        const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
+                                        const pairTag = isMendan ? null : constraintFor(data.constraints, assignment.teacherId, student.id)
+                                        const gradeTag = isMendan ? null : gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
                                         const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
@@ -3524,9 +3589,9 @@ service cloud.firestore {
                         )
                       })}
                       {(() => {
-                        const idleTeachers = data.teachers.filter(
+                        const idleTeachers = instructors.filter(
                           (t) =>
-                            hasAvailability(data.availability, 'teacher', t.id, slot) &&
+                            hasAvailability(data.availability, instructorPersonType, t.id, slot) &&
                             !usedTeacherIds.has(t.id),
                         )
                         if (idleTeachers.length === 0) return null
@@ -3578,16 +3643,19 @@ const getDatesInRange = (settings: SessionData['settings']): string[] => {
 }
 
 // Teacher Input Component
+// Teacher/Manager Input Component
 const TeacherInputPage = ({
   sessionId,
   data,
   teacher,
   returnToAdminOnComplete,
+  personKeyPrefix = 'teacher',
 }: {
   sessionId: string
   data: SessionData
   teacher: Teacher
   returnToAdminOnComplete: boolean
+  personKeyPrefix?: 'teacher' | 'manager'
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
@@ -3609,7 +3677,7 @@ const TeacherInputPage = ({
   }, [dates, data.regularLessons, teacher.id])
 
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
-    const key = personKey('teacher', teacher.id)
+    const key = personKey(personKeyPrefix, teacher.id)
     const saved = new Set(data.availability[key] ?? [])
     // Include regular lesson slots as forced available
     for (const rk of regularSlotKeys) saved.add(rk)
@@ -3664,7 +3732,7 @@ const TeacherInputPage = ({
   }
 
   const handleSubmit = () => {
-    const key = personKey('teacher', teacher.id)
+    const key = personKey(personKeyPrefix, teacher.id)
     // Ensure regular lesson slots are always included
     const merged = new Set(localAvailability)
     for (const rk of regularSlotKeys) merged.add(rk)
@@ -3674,7 +3742,7 @@ const TeacherInputPage = ({
     const isUpdate = !!(data.teacherSubmittedAt?.[teacher.id])
     const logEntry: SubmissionLogEntry = {
       personId: teacher.id,
-      personType: 'teacher',
+      personType: personKeyPrefix === 'manager' ? 'teacher' : 'teacher',
       submittedAt: Date.now(),
       type: isUpdate ? 'update' : 'initial',
       availability: availabilityArray,
@@ -3699,7 +3767,7 @@ const TeacherInputPage = ({
   return (
     <div className="availability-container">
       <div className="availability-header">
-        <h2>{data.settings.name} - 講師希望入力</h2>
+        <h2>{data.settings.name} - {personKeyPrefix === 'manager' ? 'マネージャー' : '講師'}希望入力</h2>
         <p>
           対象: <strong>{teacher.name}</strong>
         </p>
@@ -4154,7 +4222,7 @@ const StudentInputPage = ({
 const AvailabilityPage = () => {
   const location = useLocation()
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
-  const personType = (rawPersonType === 'student' ? 'student' : 'teacher') as PersonType
+  const personType = (rawPersonType === 'student' ? 'student' : rawPersonType === 'manager' ? 'manager' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?:&]/)[0], [rawPersonId])
   const [data, setData] = useState<SessionData | null>(null)
   const [phase, setPhase] = useState<'loading' | 'ready' | 'not-found' | 'permission-error' | 'timeout'>('loading')
@@ -4193,7 +4261,9 @@ const AvailabilityPage = () => {
         // Session found — check if the person exists
         const found = personType === 'teacher'
           ? value.teachers.find((t) => t.id === personId)
-          : value.students.find((s) => s.id === personId)
+          : personType === 'manager'
+            ? (value.managers ?? []).find((m) => m.id === personId)
+            : value.students.find((s) => s.id === personId)
 
         if (found) {
           setData(value)
@@ -4264,6 +4334,9 @@ const AvailabilityPage = () => {
     if (!data) return null
     if (personType === 'teacher') {
       return data.teachers.find((teacher) => teacher.id === personId) ?? null
+    }
+    if (personType === 'manager') {
+      return (data.managers ?? []).find((m) => m.id === personId) ?? null
     }
     return data.students.find((student) => student.id === personId) ?? null
   }, [data, personType, personId])
@@ -4387,6 +4460,39 @@ service cloud.firestore {
       }
       return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
+  } else if (personType === 'manager') {
+    // Manager availability input — same as teacher but uses 'manager' personKey
+    const manager = currentPerson as Manager
+    const now = new Date()
+    const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
+    const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
+    if (startDate && now < startDate) {
+      return (
+        <div className="app-shell">
+          <div className="panel">
+            <h3>提出期間前です</h3>
+            <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
+            <p className="muted">提出期間になるまでお待ちください。</p>
+            <Link to="/">ホームに戻る</Link>
+          </div>
+        </div>
+      )
+    }
+    if (endDate && now > endDate) {
+      return (
+        <div className="app-shell">
+          <div className="panel">
+            <h3>提出期間は終了しました</h3>
+            <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
+            <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
+            <Link to="/">ホームに戻る</Link>
+          </div>
+        </div>
+      )
+    }
+    // Wrap manager as a Teacher-like object so TeacherInputPage can be reused
+    const managerAsTeacher: Teacher = { id: manager.id, name: manager.name, email: manager.email, subjects: ['面談'], memo: '' }
+    return <TeacherInputPage sessionId={sessionId} data={data} teacher={managerAsTeacher} returnToAdminOnComplete={returnToAdminOnComplete} personKeyPrefix="manager" />
   } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
       // Check submission period for students
