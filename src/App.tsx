@@ -3465,6 +3465,18 @@ service cloud.firestore {
               <button className={`btn${showRules ? '' : ' secondary'}`} type="button" onClick={() => setShowRules((v) => !v)}>
                 📖 ルール説明
               </button>
+              <button
+                className={`btn${data.settings.confirmed ? '' : ' secondary'}`}
+                type="button"
+                style={data.settings.confirmed ? { background: '#16a34a', borderColor: '#16a34a' } : {}}
+                onClick={() => {
+                  const next = !data.settings.confirmed
+                  if (next && !confirm('コマ割りを確定しますか？\n確定すると、入力URLがカレンダー表示に切り替わります。')) return
+                  void update((c) => ({ ...c, settings: { ...c.settings, confirmed: next } }))
+                }}
+              >
+                {data.settings.confirmed ? '✅ 確定済み' : '確定する'}
+              </button>
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
@@ -4979,6 +4991,214 @@ const MendanParentInputPage = ({
   )
 }
 
+// ─── Confirmed Calendar View ────────────────────────────────────────
+// When the admin has pressed "確定", input URLs show this calendar instead
+// of the input form. Content varies by role.
+const ConfirmedCalendarView = ({
+  data,
+  personType,
+  personId,
+}: {
+  data: SessionData
+  personType: PersonType
+  personId: string
+}) => {
+  const isMendan = data.settings.sessionType === 'mendan'
+  const mendanStart = data.settings.mendanStartHour ?? 10
+  const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const slotsPerDay = data.settings.slotsPerDay
+
+  // Find the person name
+  const personName = useMemo(() => {
+    if (personType === 'teacher') return data.teachers.find((t) => t.id === personId)?.name ?? ''
+    if (personType === 'manager') return (data.managers ?? []).find((m) => m.id === personId)?.name ?? ''
+    return data.students.find((s) => s.id === personId)?.name ?? ''
+  }, [data, personType, personId])
+
+  // Build a map: date → slot → assignments relevant to this person
+  type CalendarCell = { label: string; detail: string; color: string }
+  const calendar = useMemo(() => {
+    const result: Record<string, Record<number, CalendarCell[]>> = {}
+    for (const date of dates) {
+      result[date] = {}
+      for (let s = 1; s <= slotsPerDay; s++) {
+        const slotKey = `${date}_${s}`
+        const slotAssignments = data.assignments[slotKey] ?? []
+        const cells: CalendarCell[] = []
+
+        if (personType === 'teacher' || personType === 'manager') {
+          // Teacher/Manager: show which students and subject
+          for (const a of slotAssignments) {
+            if (a.teacherId !== personId) continue
+            for (const sid of a.studentIds) {
+              const student = data.students.find((st) => st.id === sid)
+              const subj = getStudentSubject(a, sid)
+              if (isMendan) {
+                cells.push({
+                  label: `${student?.name ?? '?'} 保護者`,
+                  detail: '面談',
+                  color: '#dbeafe',
+                })
+              } else {
+                cells.push({
+                  label: student?.name ?? '?',
+                  detail: subj,
+                  color: a.isRegular ? '#dcfce7' : '#fef3c7',
+                })
+              }
+            }
+          }
+        } else if (personType === 'student') {
+          // Student (regular session): show teacher + subject + regular/special
+          // Parent (mendan): show when interview is
+          for (const a of slotAssignments) {
+            if (!a.studentIds.includes(personId)) continue
+            if (isMendan) {
+              const manager = (data.managers ?? []).find((m) => m.id === a.teacherId)
+              cells.push({
+                label: '面談',
+                detail: manager?.name ? `担当: ${manager.name}` : '',
+                color: '#dbeafe',
+              })
+            } else {
+              const teacher = data.teachers.find((t) => t.id === a.teacherId)
+              const subj = getStudentSubject(a, personId)
+              cells.push({
+                label: a.isRegular ? `★ ${subj}` : subj,
+                detail: `${teacher?.name ?? '?'}${a.isRegular ? ' (通常)' : ' (特別講習)'}`,
+                color: a.isRegular ? '#dcfce7' : '#fef3c7',
+              })
+            }
+          }
+        }
+
+        if (cells.length > 0) result[date][s] = cells
+      }
+    }
+    return result
+  }, [data, dates, slotsPerDay, personType, personId, isMendan])
+
+  // For mendan mode: only show slots that have any assignment across all dates
+  const activeSlotNums = useMemo(() => {
+    if (!isMendan) return Array.from({ length: slotsPerDay }, (_, i) => i + 1)
+    const nums = new Set<number>()
+    for (const date of dates) {
+      for (let s = 1; s <= slotsPerDay; s++) {
+        const slotKey = `${date}_${s}`
+        if ((data.assignments[slotKey] ?? []).length > 0) nums.add(s)
+      }
+    }
+    // Also include manager availability slots for mendan
+    if (personType === 'manager' || personType === 'teacher') {
+      const pk = `${personType}:${personId}`
+      for (const sk of (data.availability[pk] ?? [])) {
+        const num = Number(sk.split('_')[1])
+        if (!isNaN(num)) nums.add(num)
+      }
+    }
+    return Array.from(nums).sort((a, b) => a - b)
+  }, [data, dates, slotsPerDay, isMendan, personType, personId])
+
+  const slotHeader = (slotNum: number): string => {
+    if (isMendan) return mendanTimeLabel(slotNum, mendanStart)
+    return `${slotNum}限`
+  }
+
+  const roleLabel = personType === 'teacher' ? '講師' : personType === 'manager' ? 'マネージャー' : isMendan ? '保護者' : '生徒'
+
+  // Count total assigned slots for this person
+  const totalSlots = useMemo(() => {
+    let count = 0
+    for (const date of dates) {
+      for (let s = 1; s <= slotsPerDay; s++) {
+        if ((calendar[date]?.[s]?.length ?? 0) > 0) count++
+      }
+    }
+    return count
+  }, [calendar, dates, slotsPerDay])
+
+  return (
+    <div className="app-shell">
+      <div className="panel">
+        <h2>{data.settings.name} - スケジュール確認</h2>
+        <p><strong>{personName}</strong>（{roleLabel}）のスケジュール</p>
+        {isMendan && personType === 'student' && (
+          <p className="muted">以下があなたの面談スケジュールです。</p>
+        )}
+        {!isMendan && personType === 'student' && (
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '8px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+              <span style={{ display: 'inline-block', width: '14px', height: '14px', background: '#dcfce7', border: '1px solid #86efac', borderRadius: '3px' }} /> 通常授業
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+              <span style={{ display: 'inline-block', width: '14px', height: '14px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '3px' }} /> 特別講習
+            </span>
+          </div>
+        )}
+        {!isMendan && personType === 'teacher' && (
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '8px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+              <span style={{ display: 'inline-block', width: '14px', height: '14px', background: '#dcfce7', border: '1px solid #86efac', borderRadius: '3px' }} /> 通常授業
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+              <span style={{ display: 'inline-block', width: '14px', height: '14px', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '3px' }} /> 特別講習
+            </span>
+          </div>
+        )}
+        <p className="muted" style={{ fontSize: '13px' }}>合計 {totalSlots} コマ</p>
+      </div>
+
+      <div className="panel" style={{ overflowX: 'auto' }}>
+        <table className="table" style={{ fontSize: '13px', minWidth: '600px' }}>
+          <thead>
+            <tr>
+              <th style={{ position: 'sticky', left: 0, background: '#f8fafc', zIndex: 2, minWidth: '80px' }}>日付</th>
+              {activeSlotNums.map((s) => (
+                <th key={s} style={{ textAlign: 'center', minWidth: '100px', whiteSpace: 'nowrap' }}>{slotHeader(s)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((date) => {
+              const d = new Date(`${date}T00:00:00`)
+              const dayName = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()]
+              const isWeekend = d.getDay() === 0 || d.getDay() === 6
+              return (
+                <tr key={date}>
+                  <td style={{
+                    position: 'sticky', left: 0, background: isWeekend ? '#fef2f2' : '#f8fafc',
+                    zIndex: 1, fontWeight: 600, whiteSpace: 'nowrap',
+                    color: d.getDay() === 0 ? '#dc2626' : d.getDay() === 6 ? '#2563eb' : undefined,
+                  }}>
+                    {d.getMonth() + 1}/{d.getDate()}({dayName})
+                  </td>
+                  {activeSlotNums.map((s) => {
+                    const cells = calendar[date]?.[s] ?? []
+                    return (
+                      <td key={s} style={{ textAlign: 'center', padding: '4px 6px', verticalAlign: 'top' }}>
+                        {cells.map((cell, idx) => (
+                          <div key={idx} style={{
+                            background: cell.color, borderRadius: '4px', padding: '3px 6px',
+                            marginBottom: idx < cells.length - 1 ? '2px' : 0,
+                            fontSize: '12px', lineHeight: '1.4',
+                          }}>
+                            <div style={{ fontWeight: 600 }}>{cell.label}</div>
+                            {cell.detail && <div style={{ fontSize: '11px', color: '#475569' }}>{cell.detail}</div>}
+                          </div>
+                        ))}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 const AvailabilityPage = () => {
   const location = useLocation()
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
@@ -5186,6 +5406,11 @@ service cloud.firestore {
         </div>
       </div>
     )
+  }
+
+  // When admin has confirmed the schedule, show calendar view instead of input form
+  if (data.settings.confirmed) {
+    return <ConfirmedCalendarView data={data} personType={personType} personId={personId} />
   }
 
   if (personType === 'teacher') {
