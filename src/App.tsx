@@ -1813,7 +1813,7 @@ const HomePage = () => {
                       {(masterData.managers ?? []).map((m) => (
                         editingManagerId === m.id ? (
                           <tr key={m.id}>
-                            <td><input value={editManagerName} onChange={(e) => setEditManagerName(e.target.value)} /></td>
+                            <td>{m.name}</td>
                             <td><input value={editManagerEmail} onChange={(e) => setEditManagerEmail(e.target.value)} type="email" /></td>
                             <td>
                               <button className="btn" type="button" onClick={() => void saveEditManager()}>保存</button>
@@ -1856,7 +1856,7 @@ const HomePage = () => {
                       {masterData.teachers.map((t) => (
                         editingTeacherId === t.id ? (
                           <tr key={t.id}>
-                            <td><input value={editTeacherName} onChange={(e) => setEditTeacherName(e.target.value)} /></td>
+                            <td>{t.name}</td>
                             <td><input value={editTeacherEmail} onChange={(e) => setEditTeacherEmail(e.target.value)} type="email" /></td>
                             <td>
                               <select onChange={(e) => { const v = e.target.value; if (v && !editTeacherSubjects.includes(v)) setEditTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
@@ -1903,7 +1903,7 @@ const HomePage = () => {
                       {masterData.students.map((s) => (
                         editingStudentId === s.id ? (
                           <tr key={s.id}>
-                            <td><input value={editStudentName} onChange={(e) => setEditStudentName(e.target.value)} /></td>
+                            <td>{s.name}</td>
                             <td><input value={editStudentEmail} onChange={(e) => setEditStudentEmail(e.target.value)} type="email" /></td>
                             <td>
                               <select value={editStudentGrade} onChange={(e) => setEditStudentGrade(e.target.value)}>
