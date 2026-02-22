@@ -4135,6 +4135,7 @@ const TeacherInputPage = ({
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const showDevRandom = true
+  const formRef = useRef<HTMLDivElement>(null)
 
   // Find regular lesson slots for this teacher (date_slotNum keys)
   const regularSlotKeys = useMemo(() => {
@@ -4246,6 +4247,7 @@ const TeacherInputPage = ({
       submittedAt,
       details: [`出勤可能コマ数: ${availCount}コマ`],
       isUpdate,
+      captureElement: formRef.current,
     }).finally(() => {
       navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
@@ -4333,7 +4335,7 @@ const TeacherInputPage = ({
 
   if (isManagerMode) {
     return (
-      <div className="availability-container">
+      <div className="availability-container" ref={formRef}>
         <div className="availability-header">
           <h2>{data.settings.name} - マネージャー面談可能時間入力</h2>
           <p>対象: <strong>{teacher.name}</strong></p>
@@ -4489,7 +4491,7 @@ const TeacherInputPage = ({
   }
 
   return (
-    <div className="availability-container">
+    <div className="availability-container" ref={formRef}>
       <div className="availability-header">
         <h2>{data.settings.name} - 講師希望入力</h2>
         <p>
@@ -4604,6 +4606,7 @@ const StudentInputPage = ({
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const showDevRandom = true
+  const formRef = useRef<HTMLDivElement>(null)
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -4761,12 +4764,13 @@ const StudentInputPage = ({
       submittedAt,
       details: [...subjectDetails, `不可コマ数: ${unavailCount}`],
       isUpdate,
+      captureElement: formRef.current,
     }).finally(() => {
       navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
   }
 
-  return (    <div className="availability-container">
+  return (    <div className="availability-container" ref={formRef}>
       <div className="availability-header">
         <h2>{data.settings.name} - 生徒希望入力</h2>
         <p>
@@ -4971,6 +4975,7 @@ const MendanParentInputPage = ({
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const showDevRandom = true
+  const formRef = useRef<HTMLDivElement>(null)
 
   // Compute which slots have at least one manager available
   const managerAvailableSlots = useMemo(() => {
@@ -5075,6 +5080,7 @@ const MendanParentInputPage = ({
       submittedAt,
       details: [`面談希望コマ数: ${availCount}コマ`],
       isUpdate,
+      captureElement: formRef.current,
     }).finally(() => {
       navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
@@ -5092,7 +5098,7 @@ const MendanParentInputPage = ({
   }, [managerAvailableSlots])
 
   return (
-    <div className="availability-container">
+    <div className="availability-container" ref={formRef}>
       <div className="availability-header">
         <h2>{data.settings.name} - 保護者面談希望入力</h2>
         <p>

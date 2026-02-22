@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import html2canvas from 'html2canvas'
 import type { Assignment } from '../types'
 
 // ---------- Japanese font loading ----------
@@ -46,6 +47,7 @@ async function loadJapaneseFont(doc: jsPDF): Promise<void> {
   }
   doc.addFileToVFS('NotoSansJP-Regular.ttf', cachedFontBase64)
   doc.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'normal')
+  doc.addFont('NotoSansJP-Regular.ttf', 'NotoSansJP', 'bold')
   doc.setFont('NotoSansJP')
 }
 
@@ -118,13 +120,25 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const weekDates = weeks[wi]
     const firstDate = weekDates[0]
 
-    // Pad to full Mon–Sun week
-    const fullWeek: (string | null)[] = []
+    // Pad to full Mon–Sun week with actual calendar dates
+    const fullWeek: string[] = []
     const firstDow = getIsoDayOfWeek(firstDate)
     const startPad = firstDow === 0 ? 6 : firstDow - 1
-    for (let p = 0; p < startPad; p++) fullWeek.push(null)
+    const firstMs = new Date(`${firstDate}T00:00:00`).getTime()
+    for (let p = startPad; p > 0; p--) {
+      const d = new Date(firstMs - p * 86400000)
+      fullWeek.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+    }
     for (const d of weekDates) fullWeek.push(d)
-    while (fullWeek.length < 7) fullWeek.push(null)
+    const lastDateMs = new Date(`${weekDates[weekDates.length - 1]}T00:00:00`).getTime()
+    let tailIdx = 1
+    while (fullWeek.length < 7) {
+      const d = new Date(lastDateMs + tailIdx * 86400000)
+      fullWeek.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
+      tailIdx++
+    }
+    // Track which dates are within the lecture period
+    const lectureDateSet = new Set(weekDates)
 
     // Build cell data for each slot
     const getCellParts = (slotKey: string): { teacher: string; student1: string; student2: string }[] => {
@@ -155,12 +169,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const headerRow2: string[] = ['']
     for (let i = 0; i < 7; i++) {
       const date = fullWeek[i]
-      if (!date) {
-        headerRow1.push(dayNames[dowOrder[i]], '', '')
-      } else {
-        const [, mm, dd] = date.split('-')
-        headerRow1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`, '', '')
-      }
+      const [, mm, dd] = date.split('-')
+      headerRow1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`, '', '')
       headerRow2.push('講師', '生徒', '生徒')
     }
 
@@ -172,7 +182,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       let maxPairs = 1
       for (let i = 0; i < 7; i++) {
         const date = fullWeek[i]
-        if (date && !holidaySet.has(date)) {
+        if (date && !holidaySet.has(date) && lectureDateSet.has(date)) {
           const parts = getCellParts(`${date}_${s}`)
           if (parts.length > maxPairs) maxPairs = parts.length
         }
@@ -182,7 +192,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         const row: string[] = [pairIdx === 0 ? `${s}限` : '']
         for (let i = 0; i < 7; i++) {
           const date = fullWeek[i]
-          if (!date) {
+          if (!lectureDateSet.has(date)) {
+            // Outside lecture period — show empty
             row.push('', '', '')
           } else if (holidaySet.has(date)) {
             row.push(pairIdx === 0 ? '休' : '', '', '')
@@ -346,32 +357,33 @@ export type SubmissionReceiptPdfParams = {
   personName: string
   personType: '講師' | '生徒' | '保護者'
   submittedAt: string
-  details: string[]           // e.g. ["英語: 3コマ", "数学: 2コマ", "不可コマ: 7/1(1限), 7/2(3限)"]
+  details: string[]           // e.g. ["英語: 3コマ", "数学: 2コマ"]
   isUpdate: boolean
+  captureElement?: HTMLElement | null  // optional element to screenshot
 }
 
 export async function downloadSubmissionReceiptPdf(params: SubmissionReceiptPdfParams): Promise<void> {
-  const { sessionName, personName, personType, submittedAt, details, isUpdate } = params
+  const { sessionName, personName, personType, submittedAt, details, isUpdate, captureElement } = params
 
   let doc: jsPDF
   try {
     doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
     await loadJapaneseFont(doc)
   } catch (err) {
-    // Silently fail for submission receipt — don't block navigation
     console.error('PDF生成に失敗しました:', err)
     return
   }
 
   const pageWidth = doc.internal.pageSize.getWidth()
   const centerX = pageWidth / 2
+  const margin = 15
 
   // Title
   doc.setFontSize(18)
-  doc.text(isUpdate ? '希望入力 更新記録' : '希望入力 提出記録', centerX, 30, { align: 'center' })
+  doc.text(isUpdate ? '希望入力 更新記録' : '希望入力 提出記録', centerX, 25, { align: 'center' })
 
   // Content
-  doc.setFontSize(12)
+  doc.setFontSize(11)
   const lines = [
     isUpdate ? '以下の内容で希望入力を更新しました。' : '以下の内容で希望入力を提出しました。',
     '',
@@ -381,27 +393,82 @@ export async function downloadSubmissionReceiptPdf(params: SubmissionReceiptPdfP
     '',
     '【提出内容】',
     ...details,
-    '',
-    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
-    '',
-    '【重要】この書類は提出記録として大切に保管してください。',
-    '',
-    '　この PDF は希望入力の提出を記録するものです。',
-    '　紛失しないよう、適切なフォルダに保存してください。',
-    '',
-    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
   ]
 
-  let y = 50
+  let y = 38
   for (const line of lines) {
-    doc.text(line, 20, y)
-    y += 8
+    doc.text(line, margin, y)
+    y += 7
   }
 
-  // Footer
+  // Capture screenshot of the form if element provided
+  if (captureElement) {
+    try {
+      const canvas = await html2canvas(captureElement, {
+        scale: 1.5,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+      })
+      const imgWidth = pageWidth - margin * 2
+      const imgHeight = (canvas.height / canvas.width) * imgWidth
+
+      y += 4
+      doc.setFontSize(10)
+      doc.text('【入力画面スクリーンショット】', margin, y)
+      y += 5
+
+      // If screenshot fits on current page, add it; otherwise start new page
+      const pageHeight = doc.internal.pageSize.getHeight()
+      if (y + imgHeight > pageHeight - 20) {
+        doc.addPage()
+        y = 15
+      }
+
+      // Possibly span multiple pages
+      let remainingHeight = imgHeight
+      let srcY = 0
+      while (remainingHeight > 0) {
+        const availH = doc.internal.pageSize.getHeight() - y - 15
+        const drawH = Math.min(remainingHeight, availH)
+        // Compute source crop ratio
+        const srcRatio = drawH / imgHeight
+        const srcHeight = canvas.height * srcRatio
+
+        // Create a cropped canvas for this page segment
+        const cropCanvas = document.createElement('canvas')
+        cropCanvas.width = canvas.width
+        cropCanvas.height = Math.ceil(srcHeight)
+        const ctx = cropCanvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(canvas, 0, srcY, canvas.width, srcHeight, 0, 0, canvas.width, srcHeight)
+          const cropImgData = cropCanvas.toDataURL('image/jpeg', 0.85)
+          doc.addImage(cropImgData, 'JPEG', margin, y, imgWidth, drawH)
+        }
+
+        remainingHeight -= drawH
+        srcY += srcHeight
+        if (remainingHeight > 0) {
+          doc.addPage()
+          y = 15
+        }
+      }
+    } catch (err) {
+      console.error('スクリーンショット取得に失敗:', err)
+      // Continue without screenshot
+      y += 4
+      doc.setFontSize(9)
+      doc.setTextColor(120)
+      doc.text('（スクリーンショットの取得に失敗しました）', margin, y)
+      doc.setTextColor(0)
+    }
+  }
+
+  // Footer on last page
+  const lastPageH = doc.internal.pageSize.getHeight()
   doc.setFontSize(9)
   doc.setTextColor(120)
-  doc.text(`発行日: ${new Date().toLocaleDateString('ja-JP')}`, centerX, 270, { align: 'center' })
+  doc.text(`発行日: ${new Date().toLocaleDateString('ja-JP')}`, centerX, lastPageH - 10, { align: 'center' })
 
   const label = isUpdate ? '更新記録' : '提出記録'
   doc.save(`希望入力_${label}_${personName}.pdf`)
