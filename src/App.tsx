@@ -1107,6 +1107,20 @@ const HomePage = () => {
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Editing state for master data
+  const [editingManagerId, setEditingManagerId] = useState<string | null>(null)
+  const [editManagerName, setEditManagerName] = useState('')
+  const [editManagerEmail, setEditManagerEmail] = useState('')
+  const [editingTeacherId, setEditingTeacherId] = useState<string | null>(null)
+  const [editTeacherName, setEditTeacherName] = useState('')
+  const [editTeacherEmail, setEditTeacherEmail] = useState('')
+  const [editTeacherSubjects, setEditTeacherSubjects] = useState<string[]>([])
+  const [editTeacherMemo, setEditTeacherMemo] = useState('')
+  const [editingStudentId, setEditingStudentId] = useState<string | null>(null)
+  const [editStudentName, setEditStudentName] = useState('')
+  const [editStudentEmail, setEditStudentEmail] = useState('')
+  const [editStudentGrade, setEditStudentGrade] = useState('')
+
   useEffect(() => {
     if (import.meta.env.DEV) {
       navigate('/boot', { replace: true })
@@ -1214,6 +1228,35 @@ const HomePage = () => {
     await updateMaster((c) => ({ ...c, regularLessons: [...c.regularLessons, nl] }))
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
     setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+  }
+
+  const startEditManager = (m: Manager): void => {
+    setEditingManagerId(m.id); setEditManagerName(m.name); setEditManagerEmail(m.email || '')
+  }
+  const saveEditManager = async (): Promise<void> => {
+    if (!editingManagerId || !editManagerName.trim()) return
+    await updateMaster((c) => ({ ...c, managers: (c.managers ?? []).map((m) => m.id === editingManagerId ? { ...m, name: editManagerName.trim(), email: editManagerEmail.trim() } : m) }))
+    setEditingManagerId(null)
+  }
+
+  const startEditTeacher = (t: Teacher): void => {
+    setEditingTeacherId(t.id); setEditTeacherName(t.name); setEditTeacherEmail(t.email || '')
+    setEditTeacherSubjects([...t.subjects]); setEditTeacherMemo(t.memo || '')
+  }
+  const saveEditTeacher = async (): Promise<void> => {
+    if (!editingTeacherId || !editTeacherName.trim()) return
+    await updateMaster((c) => ({ ...c, teachers: c.teachers.map((t) => t.id === editingTeacherId ? { ...t, name: editTeacherName.trim(), email: editTeacherEmail.trim(), subjects: editTeacherSubjects, memo: editTeacherMemo.trim() } : t) }))
+    setEditingTeacherId(null)
+  }
+
+  const startEditStudent = (s: Student): void => {
+    setEditingStudentId(s.id); setEditStudentName(s.name); setEditStudentEmail(s.email || '')
+    setEditStudentGrade(s.grade || '')
+  }
+  const saveEditStudent = async (): Promise<void> => {
+    if (!editingStudentId || !editStudentName.trim()) return
+    await updateMaster((c) => ({ ...c, students: c.students.map((s) => s.id === editingStudentId ? { ...s, name: editStudentName.trim(), email: editStudentEmail.trim(), grade: editStudentGrade.trim() } : s) }))
+    setEditingStudentId(null)
   }
 
   const removeManager = async (managerId: string): Promise<void> => {
@@ -1768,9 +1811,23 @@ const HomePage = () => {
                     <thead><tr><th>名前</th><th>メール</th><th>操作</th></tr></thead>
                     <tbody>
                       {(masterData.managers ?? []).map((m) => (
-                        <tr key={m.id}><td>{m.name}</td><td>{m.email || '-'}</td>
-                          <td><button className="btn secondary" type="button" onClick={() => void removeManager(m.id)}>削除</button></td>
-                        </tr>
+                        editingManagerId === m.id ? (
+                          <tr key={m.id}>
+                            <td><input value={editManagerName} onChange={(e) => setEditManagerName(e.target.value)} /></td>
+                            <td><input value={editManagerEmail} onChange={(e) => setEditManagerEmail(e.target.value)} type="email" /></td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => void saveEditManager()}>保存</button>
+                              <button className="btn secondary" type="button" onClick={() => setEditingManagerId(null)} style={{ marginLeft: 4 }}>キャンセル</button>
+                            </td>
+                          </tr>
+                        ) : (
+                          <tr key={m.id}><td>{m.name}</td><td>{m.email || '-'}</td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => startEditManager(m)} style={{ marginRight: 4 }}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeManager(m.id)}>削除</button>
+                            </td>
+                          </tr>
+                        )
                       ))}
                     </tbody>
                   </table>
@@ -1797,9 +1854,33 @@ const HomePage = () => {
                     <thead><tr><th>名前</th><th>メール</th><th>科目</th><th>メモ</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.teachers.map((t) => (
-                        <tr key={t.id}><td>{t.name}</td><td>{t.email || '-'}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td>
-                          <td><button className="btn secondary" type="button" onClick={() => void removeTeacher(t.id)}>削除</button></td>
-                        </tr>
+                        editingTeacherId === t.id ? (
+                          <tr key={t.id}>
+                            <td><input value={editTeacherName} onChange={(e) => setEditTeacherName(e.target.value)} /></td>
+                            <td><input value={editTeacherEmail} onChange={(e) => setEditTeacherEmail(e.target.value)} type="email" /></td>
+                            <td>
+                              <select onChange={(e) => { const v = e.target.value; if (v && !editTeacherSubjects.includes(v)) setEditTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
+                                <option value="">科目追加</option>
+                                {FIXED_SUBJECTS.filter((s) => !editTeacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
+                              </select>
+                              <div>{editTeacherSubjects.map((s) => (
+                                <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setEditTeacherSubjects((p) => p.filter((x) => x !== s))}>{s} ×</span>
+                              ))}</div>
+                            </td>
+                            <td><input value={editTeacherMemo} onChange={(e) => setEditTeacherMemo(e.target.value)} /></td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => void saveEditTeacher()}>保存</button>
+                              <button className="btn secondary" type="button" onClick={() => setEditingTeacherId(null)} style={{ marginLeft: 4 }}>キャンセル</button>
+                            </td>
+                          </tr>
+                        ) : (
+                          <tr key={t.id}><td>{t.name}</td><td>{t.email || '-'}</td><td>{t.subjects.join(', ')}</td><td>{t.memo}</td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => startEditTeacher(t)} style={{ marginRight: 4 }}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeTeacher(t.id)}>削除</button>
+                            </td>
+                          </tr>
+                        )
                       ))}
                     </tbody>
                   </table>
@@ -1820,9 +1901,29 @@ const HomePage = () => {
                     <thead><tr><th>名前</th><th>メール</th><th>学年</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.students.map((s) => (
-                        <tr key={s.id}><td>{s.name}</td><td>{s.email || '-'}</td><td>{s.grade}</td>
-                          <td><button className="btn secondary" type="button" onClick={() => void removeStudent(s.id)}>削除</button></td>
-                        </tr>
+                        editingStudentId === s.id ? (
+                          <tr key={s.id}>
+                            <td><input value={editStudentName} onChange={(e) => setEditStudentName(e.target.value)} /></td>
+                            <td><input value={editStudentEmail} onChange={(e) => setEditStudentEmail(e.target.value)} type="email" /></td>
+                            <td>
+                              <select value={editStudentGrade} onChange={(e) => setEditStudentGrade(e.target.value)}>
+                                <option value="">学年を選択</option>
+                                {GRADE_OPTIONS.map((g) => (<option key={g} value={g}>{g}</option>))}
+                              </select>
+                            </td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => void saveEditStudent()}>保存</button>
+                              <button className="btn secondary" type="button" onClick={() => setEditingStudentId(null)} style={{ marginLeft: 4 }}>キャンセル</button>
+                            </td>
+                          </tr>
+                        ) : (
+                          <tr key={s.id}><td>{s.name}</td><td>{s.email || '-'}</td><td>{s.grade}</td>
+                            <td>
+                              <button className="btn" type="button" onClick={() => startEditStudent(s)} style={{ marginRight: 4 }}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeStudent(s.id)}>削除</button>
+                            </td>
+                          </tr>
+                        )
                       ))}
                     </tbody>
                   </table>
@@ -2384,7 +2485,7 @@ const AdminPage = () => {
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
-  const [bulkEmailPanel, setBulkEmailPanel] = useState<{ persons: { id: string; name: string; email: string }[]; personType: PersonType; groupLabel: string } | null>(null)
+
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
@@ -2473,20 +2574,6 @@ const AdminPage = () => {
     } catch {
       window.prompt('URLをコピーしてください:', url)
     }
-  }
-
-  /** Bulk-share: show panel with individual mailto links per person */
-  const bulkShareByEmail = (
-    persons: { id: string; name: string; email: string }[],
-    personType: PersonType,
-    groupLabel: string,
-  ): void => {
-    const withEmail = persons.filter((p) => p.email.trim())
-    if (withEmail.length === 0) {
-      alert(`メールアドレスが登録されている${groupLabel}がいません。\n先にメールアドレスを登録してください。`)
-      return
-    }
-    setBulkEmailPanel({ persons: withEmail, personType, groupLabel })
   }
 
   const buildMailtoForPerson = (person: { id: string; name: string; email: string }, personType: PersonType): string => {
@@ -3284,17 +3371,7 @@ service cloud.firestore {
       ) : (
         <>
           <div className="panel">
-            <div className="row" style={{ alignItems: 'center', gap: '12px' }}>
-              <h3>{instructorLabel}一覧</h3>
-              <button
-                className="btn secondary"
-                type="button"
-                style={{ fontSize: '13px' }}
-                onClick={() => bulkShareByEmail(instructors, instructorPersonType, instructorLabel)}
-              >
-                ✉ 一括メール共有
-              </button>
-            </div>
+            <h3>{instructorLabel}一覧</h3>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
@@ -3320,7 +3397,12 @@ service cloud.firestore {
                       )}
                     </td>
                     <td><button className="btn secondary" type="button" onClick={() => void openInputPage(instructorPersonType, instructor.id)}>入力ページ</button></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl(instructorPersonType, instructor.id)}>URLコピー</button></td>
+                    <td>
+                      {instructor.email
+                        ? <a className="btn secondary" href={buildMailtoForPerson(instructor, instructorPersonType)} style={{ textDecoration: 'none', display: 'inline-block' }}>✉ メール送信</a>
+                        : <button className="btn secondary" type="button" onClick={() => void copyInputUrl(instructorPersonType, instructor.id)}>URLコピー</button>
+                      }
+                    </td>
                   </tr>
                   )
                 })}
@@ -3329,17 +3411,7 @@ service cloud.firestore {
           </div>
 
           <div className="panel">
-            <div className="row" style={{ alignItems: 'center', gap: '12px' }}>
-              <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
-              <button
-                className="btn secondary"
-                type="button"
-                style={{ fontSize: '13px' }}
-                onClick={() => bulkShareByEmail(data.students, 'student', isMendan ? '保護者' : '生徒')}
-              >
-                ✉ 一括メール共有
-              </button>
-            </div>
+            <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
             <p className="muted">{isMendan ? '面談可能時間帯は保護者が希望URLから入力します。' : '希望コマ数・不可日は生徒本人が希望URLから入力します。'}</p>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
@@ -3364,7 +3436,12 @@ service cloud.firestore {
                       )}
                     </td>
                     <td><button className="btn secondary" type="button" onClick={() => void openInputPage('student', student.id)}>入力ページ</button></td>
-                    <td><button className="btn secondary" type="button" onClick={() => void copyInputUrl('student', student.id)}>URLコピー</button></td>
+                    <td>
+                      {student.email
+                        ? <a className="btn secondary" href={buildMailtoForPerson(student, 'student')} style={{ textDecoration: 'none', display: 'inline-block' }}>✉ メール送信</a>
+                        : <button className="btn secondary" type="button" onClick={() => void copyInputUrl('student', student.id)}>URLコピー</button>
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3923,49 +4000,6 @@ service cloud.firestore {
         </>
       )}
 
-      {/* Bulk email panel overlay */}
-      {bulkEmailPanel && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
-          display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px',
-        }} onClick={(e) => { if (e.target === e.currentTarget) setBulkEmailPanel(null) }}>
-          <div style={{
-            background: '#fff', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '100%',
-            maxHeight: '80vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0 }}>✉ {bulkEmailPanel.groupLabel}へメール送信</h3>
-              <button className="btn secondary" type="button" onClick={() => setBulkEmailPanel(null)} style={{ fontSize: '13px', padding: '4px 12px' }}>✕ 閉じる</button>
-            </div>
-            <p className="muted" style={{ marginBottom: '12px', fontSize: '13px' }}>
-              メールアドレスが登録されている{bulkEmailPanel.groupLabel} {bulkEmailPanel.persons.length}名です。各リンクをクリックするとメールソフトが開きます。
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {bulkEmailPanel.persons.map((person) => (
-                <div key={person.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '8px 12px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0',
-                }}>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{person.name}</div>
-                    <div style={{ fontSize: '12px', color: '#64748b' }}>{person.email}</div>
-                  </div>
-                  <a
-                    href={buildMailtoForPerson(person, bulkEmailPanel.personType)}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: '4px',
-                      padding: '5px 12px', background: '#2563eb', color: '#fff', borderRadius: '6px',
-                      fontSize: '13px', textDecoration: 'none', whiteSpace: 'nowrap',
-                    }}
-                  >
-                    ✉ メール作成
-                  </a>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
