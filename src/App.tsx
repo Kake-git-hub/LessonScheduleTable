@@ -18,6 +18,7 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
+import { downloadEmailReceiptPdf, exportSchedulePdf } from './utils/pdf'
 
 const APP_VERSION = '1.0.0'
 
@@ -2485,6 +2486,8 @@ const AdminPage = () => {
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
+  const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
+  const [emailContentType, setEmailContentType] = useState<'input-request' | 'confirmed' | 'changed'>('input-request')
 
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
@@ -2576,20 +2579,75 @@ const AdminPage = () => {
     }
   }
 
-  const buildMailtoForPerson = (person: { id: string; name: string; email: string }, personType: PersonType): string => {
+  const EMAIL_TYPE_LABELS: Record<string, string> = {
+    'input-request': '予定入力依頼',
+    'confirmed': 'コマ割り確定',
+    'changed': 'コマ割り変更',
+  }
+
+  const buildMailtoForPerson = (person: { id: string; name: string; email: string }, personType: PersonType, contentType: string): string => {
     const sessionName = data?.settings.name ?? ''
-    const subject = `【${sessionName}】希望入力URLのご案内`
     const url = buildInputUrl(personType, person.id)
-    const body = [
-      `${person.name} 様`,
-      '',
-      `${sessionName}の希望入力URLをお送りします。`,
-      '',
-      '以下のURLからご自身の希望を入力してください。',
-      '',
-      url,
-    ].join('\n')
-    return `mailto:${encodeURIComponent(person.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    let subject: string
+    let bodyLines: string[]
+    switch (contentType) {
+      case 'confirmed':
+        subject = `【${sessionName}】コマ割り確定のお知らせ`
+        bodyLines = [
+          `${person.name} 様`,
+          '',
+          `${sessionName}のコマ割りが確定しましたのでお知らせします。`,
+          '',
+          '以下のURLから確定したスケジュールをご確認ください。',
+          '',
+          url,
+        ]
+        break
+      case 'changed':
+        subject = `【${sessionName}】コマ割り変更のお知らせ`
+        bodyLines = [
+          `${person.name} 様`,
+          '',
+          `${sessionName}のコマ割りに変更がありましたのでお知らせします。`,
+          '',
+          '以下のURLから最新のスケジュールをご確認ください。',
+          '',
+          url,
+        ]
+        break
+      default: // input-request
+        subject = `【${sessionName}】希望入力URLのご案内`
+        bodyLines = [
+          `${person.name} 様`,
+          '',
+          `${sessionName}の希望入力URLをお送りします。`,
+          '',
+          '以下のURLからご自身の希望を入力してください。',
+          '',
+          url,
+        ]
+        break
+    }
+    return `mailto:${encodeURIComponent(person.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`
+  }
+
+  const handleEmailSend = (person: { id: string; name: string; email: string }, personType: PersonType): void => {
+    const contentType = emailContentType
+    const typeLabel = EMAIL_TYPE_LABELS[contentType] ?? '予定入力依頼'
+    const now = new Date()
+    const timeStr = now.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    // Open mailto
+    window.location.href = buildMailtoForPerson(person, personType, contentType)
+    // Log the send
+    setEmailSendLog((prev) => ({ ...prev, [person.id]: { time: timeStr, type: typeLabel } }))
+    // Download receipt PDF
+    const sentAt = now.toLocaleString('ja-JP')
+    void downloadEmailReceiptPdf({
+      sessionName: data?.settings.name ?? '',
+      recipientName: person.name,
+      emailType: typeLabel,
+      sentAt,
+    })
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
@@ -2885,148 +2943,6 @@ const AdminPage = () => {
       assignments: {},
       autoAssignHighlights: { added: {}, changed: {} },
     }))
-  }
-
-  /** Export schedule to Excel: weekly sheets (Mon–Sun) */
-  const exportScheduleExcel = (): void => {
-    if (!data) return
-    const { startDate, endDate, slotsPerDay, holidays } = data.settings
-    if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
-
-    const holidaySet = new Set(holidays)
-    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-
-    // Build all dates in range
-    const allDates: string[] = []
-    const start = new Date(`${startDate}T00:00:00`)
-    const end = new Date(`${endDate}T00:00:00`)
-    for (let cursor = new Date(start); cursor <= end; cursor = new Date(cursor.getTime() + 86400000)) {
-      const y = cursor.getFullYear()
-      const m = String(cursor.getMonth() + 1).padStart(2, '0')
-      const d = String(cursor.getDate()).padStart(2, '0')
-      allDates.push(`${y}-${m}-${d}`)
-    }
-
-    if (allDates.length === 0) { alert('期間に日付がありません。'); return }
-
-    // Group dates into weeks (Mon–Sun)
-    const weeks: string[][] = []
-    let currentWeek: string[] = []
-    for (const date of allDates) {
-      const dow = getIsoDayOfWeek(date)
-      if (dow === 1 && currentWeek.length > 0) {
-        weeks.push(currentWeek)
-        currentWeek = []
-      }
-      currentWeek.push(date)
-    }
-    if (currentWeek.length > 0) weeks.push(currentWeek)
-
-    // Build cell text for a slot assignment (pairs on separate lines, compact format)
-    const buildCellText = (slotKey: string): string => {
-      const slotAssignments = data.assignments[slotKey] ?? []
-      if (slotAssignments.length === 0) return ''
-      return slotAssignments.map((a) => {
-        const tName = instructors.find((t) => t.id === a.teacherId)?.name ?? ''
-        const regular = a.isRegular ? '★' : ''
-        // Per-student subjects
-        const studentParts = a.studentIds.map((sid) => {
-          const sName = data.students.find((st) => st.id === sid)?.name ?? ''
-          const subj = getStudentSubject(a, sid)
-          return `${sName}(${subj})`
-        })
-        return `${regular}${tName}/${studentParts.join(',')}`
-      }).join('\n')
-    }
-
-    try {
-      const wb = XLSX.utils.book_new()
-
-      for (let wi = 0; wi < weeks.length; wi++) {
-        const weekDates = weeks[wi]
-        const firstDate = weekDates[0]
-        const lastDate = weekDates[weekDates.length - 1]
-        const [, fm, fd] = firstDate.split('-')
-        const [, lm, ld] = lastDate.split('-')
-
-        // Pad to full Mon–Sun week
-        const fullWeek: (string | null)[] = []
-        const firstDow = getIsoDayOfWeek(firstDate)
-        const startPad = firstDow === 0 ? 6 : firstDow - 1
-        for (let p = 0; p < startPad; p++) fullWeek.push(null)
-        for (const d of weekDates) fullWeek.push(d)
-        while (fullWeek.length < 7) fullWeek.push(null)
-
-        // Header row
-        const dowOrder = [1, 2, 3, 4, 5, 6, 0]
-        const header: string[] = ['']
-        for (let i = 0; i < 7; i++) {
-          const date = fullWeek[i]
-          if (!date) {
-            header.push(`${dayNames[dowOrder[i]]}`)
-          } else {
-            const [, mm, dd] = date.split('-')
-            header.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`)
-          }
-        }
-
-        // Data rows
-        const rows: string[][] = []
-        for (let s = 1; s <= slotsPerDay; s++) {
-          const row: string[] = [`${s}限`]
-          for (let i = 0; i < 7; i++) {
-            const date = fullWeek[i]
-            if (!date) {
-              row.push('')
-            } else if (holidaySet.has(date)) {
-              row.push('休')
-            } else {
-              row.push(buildCellText(`${date}_${s}`))
-            }
-          }
-          rows.push(row)
-        }
-
-        const aoa = [header, ...rows]
-        const ws = XLSX.utils.aoa_to_sheet(aoa)
-
-        // Apply wrapText + vertical top alignment to all data cells
-        const cellStyle = { alignment: { wrapText: true, vertical: 'top' } }
-        const headerStyle = { alignment: { horizontal: 'center', vertical: 'center' }, font: { bold: true } }
-        const range = XLSX.utils.decode_range(ws['!ref'] ?? 'A1')
-        for (let R = range.s.r; R <= range.e.r; R++) {
-          for (let C = range.s.c; C <= range.e.c; C++) {
-            const addr = XLSX.utils.encode_cell({ r: R, c: C })
-            if (ws[addr]) {
-              ws[addr].s = R === 0 ? headerStyle : cellStyle
-            }
-          }
-        }
-
-        // Row heights: header fixed, data rows based on max newlines per row
-        const rowHeights: XLSX.RowInfo[] = [{ hpt: 22 }]
-        for (const row of rows) {
-          const maxLines = Math.max(1, ...row.map((cell) => (cell.match(/\n/g) ?? []).length + 1))
-          rowHeights.push({ hpt: Math.max(20, maxLines * 16) })
-        }
-        ws['!rows'] = rowHeights
-
-        // A3 portrait, fit one week to one page
-        // Column widths: slot label narrow, 7 day columns sized for A3 width (~420mm ≈ 170 chars)
-        ws['!cols'] = [{ wch: 4 }, ...Array(7).fill({ wch: 22 })]
-        ws['!margins'] = { left: 0.3, right: 0.3, top: 0.3, bottom: 0.3, header: 0.15, footer: 0.15 }
-        ws['!pageSetup'] = { paperSize: 8, orientation: 'portrait', fitToWidth: 1, fitToHeight: 1, scale: 0 }
-        ws['!print'] = { fitToPage: true }
-
-        const sheetName = `${Number(fm)}月${Number(fd)}日-${Number(lm)}月${Number(ld)}日`
-        XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 31))
-      }
-
-      XLSX.writeFile(wb, `コマ割り_${data.settings.name}.xlsx`)
-    } catch (err) {
-      console.error('Excel export error:', err)
-      alert('Excel出力に失敗しました: ' + String(err))
-    }
   }
 
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
@@ -3372,6 +3288,15 @@ service cloud.firestore {
         <>
           <div className="panel">
             <h3>{instructorLabel}一覧</h3>
+            <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
+              <label style={{ fontSize: '0.85em', fontWeight: 600 }}>メール送信内容:</label>
+              <select value={emailContentType} onChange={(e) => setEmailContentType(e.target.value as 'input-request' | 'confirmed' | 'changed')}
+                style={{ fontSize: '0.85em', padding: '4px 8px' }}>
+                <option value="input-request">予定入力依頼</option>
+                <option value="confirmed">コマ割り確定</option>
+                <option value="changed">コマ割り変更</option>
+              </select>
+            </div>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
@@ -3399,7 +3324,14 @@ service cloud.firestore {
                     <td><button className="btn secondary" type="button" onClick={() => void openInputPage(instructorPersonType, instructor.id)}>入力ページ</button></td>
                     <td>
                       {instructor.email
-                        ? <a className="btn secondary" href={buildMailtoForPerson(instructor, instructorPersonType)} style={{ textDecoration: 'none', display: 'inline-block' }}>✉ メール送信</a>
+                        ? <>
+                            <button className="btn secondary" type="button" onClick={() => handleEmailSend(instructor, instructorPersonType)}>✉ メール送信</button>
+                            {emailSendLog[instructor.id] && (
+                              <span style={{ fontSize: '0.75em', color: '#2563eb', marginLeft: 6 }}>
+                                {emailSendLog[instructor.id].time} {emailSendLog[instructor.id].type}
+                              </span>
+                            )}
+                          </>
                         : <button className="btn secondary" type="button" onClick={() => void copyInputUrl(instructorPersonType, instructor.id)}>URLコピー</button>
                       }
                     </td>
@@ -3438,7 +3370,14 @@ service cloud.firestore {
                     <td><button className="btn secondary" type="button" onClick={() => void openInputPage('student', student.id)}>入力ページ</button></td>
                     <td>
                       {student.email
-                        ? <a className="btn secondary" href={buildMailtoForPerson(student, 'student')} style={{ textDecoration: 'none', display: 'inline-block' }}>✉ メール送信</a>
+                        ? <>
+                            <button className="btn secondary" type="button" onClick={() => handleEmailSend(student, 'student')}>✉ メール送信</button>
+                            {emailSendLog[student.id] && (
+                              <span style={{ fontSize: '0.75em', color: '#2563eb', marginLeft: 6 }}>
+                                {emailSendLog[student.id].time} {emailSendLog[student.id].type}
+                              </span>
+                            )}
+                          </>
                         : <button className="btn secondary" type="button" onClick={() => void copyInputUrl('student', student.id)}>URLコピー</button>
                       }
                     </td>
@@ -3546,8 +3485,22 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
               </button>
-              <button className="btn" type="button" onClick={exportScheduleExcel}>
-                Excel出力
+              <button className="btn" type="button" onClick={() => {
+                if (!data) return
+                void exportSchedulePdf({
+                  sessionName: data.settings.name,
+                  startDate: data.settings.startDate,
+                  endDate: data.settings.endDate,
+                  slotsPerDay: data.settings.slotsPerDay,
+                  holidays: data.settings.holidays,
+                  assignments: data.assignments,
+                  getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? '',
+                  getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? '',
+                  getStudentSubject,
+                  getIsoDayOfWeek,
+                })
+              }}>
+                PDF出力
               </button>
               <button className={`btn${showAnalytics ? '' : ' secondary'}`} type="button" onClick={() => setShowAnalytics((v) => !v)}>
                 📊 データ分析
@@ -3598,7 +3551,7 @@ service cloud.firestore {
                           <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
                           <li>「＋」ボタンでコマ内にペアを追加</li>
                           <li>「×」ボタンでペアを削除</li>
-                          <li>Excel出力でスケジュール表を出力（A3用紙対応）</li>
+                          <li>PDF出力でスケジュール表を出力（A3用紙対応）</li>
                         </ul>
                       </section>
                     </>
@@ -3653,7 +3606,7 @@ service cloud.firestore {
                       <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
                       <li>「＋」ボタンでコマ内にペアを追加</li>
                       <li>「×」ボタンでペアを削除</li>
-                      <li>Excel出力でスケジュール表を出力（A3用紙対応）</li>
+                      <li>PDF出力でスケジュール表を出力（A3用紙対応）</li>
                     </ul>
                   </section>
                     </>
