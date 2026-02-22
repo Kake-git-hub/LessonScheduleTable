@@ -338,6 +338,16 @@ const isStudentAvailable = (student: Student, slotKey: string): boolean => {
   return !student.unavailableDates.includes(date)
 }
 
+/** For mendan sessions: check if parent has positive availability for a slot */
+const isParentAvailableForMendan = (
+  availability: SessionData['availability'],
+  studentId: string,
+  slotKey: string,
+): boolean => {
+  const key = personKey('student', studentId)
+  return (availability[key] ?? []).includes(slotKey)
+}
+
 const getIsoDayOfWeek = (isoDate: string): number => {
   const [year, month, day] = isoDate.split('-').map(Number)
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay()
@@ -953,6 +963,93 @@ const buildIncrementalAutoAssignments = (
   }
 
   return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures }
+}
+
+/** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */
+const buildMendanAutoAssignments = (
+  data: SessionData,
+  slots: string[],
+): { assignments: Record<string, Assignment[]>; unassignedParents: string[] } => {
+  // Get managers and their availability
+  const managerAvailability = new Map<string, Set<string>>()
+  for (const manager of (data.managers ?? [])) {
+    const key = personKey('manager', manager.id)
+    managerAvailability.set(manager.id, new Set(data.availability[key] ?? []))
+  }
+
+  // Get parents sorted by submittedAt (FCFS) — only submitted parents
+  const sortedParents = data.students
+    .filter((s) => s.submittedAt > 0)
+    .sort((a, b) => a.submittedAt - b.submittedAt)
+
+  const result: Record<string, Assignment[]> = {}
+  // Copy existing assignments
+  for (const slot of slots) {
+    if (data.assignments[slot]?.length) {
+      result[slot] = [...data.assignments[slot]]
+    }
+  }
+
+  // Track which parents are already assigned
+  const assignedParents = new Set<string>()
+  for (const slot of slots) {
+    for (const a of (result[slot] ?? [])) {
+      for (const sid of a.studentIds) assignedParents.add(sid)
+    }
+  }
+
+  const unassignedParents: string[] = []
+
+  for (const parent of sortedParents) {
+    if (assignedParents.has(parent.id)) continue
+
+    const parentKey = personKey('student', parent.id)
+    const parentSlots = new Set(data.availability[parentKey] ?? [])
+    if (parentSlots.size === 0) {
+      unassignedParents.push(parent.name)
+      continue
+    }
+
+    let assigned = false
+    for (const slot of slots) {
+      if (!parentSlots.has(slot)) continue
+
+      const slotAssignments = result[slot] ?? []
+      const usedManagers = new Set(slotAssignments.map((a) => a.teacherId))
+      const usedStudents = new Set(slotAssignments.flatMap((a) => a.studentIds))
+
+      if (usedStudents.has(parent.id)) continue
+
+      // Check desk count
+      const deskCount = data.settings.deskCount ?? 0
+      if (deskCount > 0 && slotAssignments.length >= deskCount) continue
+
+      // Find available manager for this slot
+      for (const [managerId, mSlots] of managerAvailability) {
+        if (!mSlots.has(slot)) continue
+        if (usedManagers.has(managerId)) continue
+
+        // Assign!
+        const assignment: Assignment = {
+          teacherId: managerId,
+          studentIds: [parent.id],
+          subject: '面談',
+        }
+        result[slot] = [...(result[slot] ?? []), assignment]
+        assignedParents.add(parent.id)
+        assigned = true
+        break
+      }
+
+      if (assigned) break
+    }
+
+    if (!assigned) {
+      unassignedParents.push(parent.name)
+    }
+  }
+
+  return { assignments: result, unassignedParents }
 }
 
 const emptyMasterData = (): MasterData => ({
@@ -2513,18 +2610,28 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
-    // For mendan sessions, adapt data: use managers as teachers with '面談' subject
-    const effectiveData = isMendan
-      ? {
-          ...data,
-          teachers: (data.managers ?? []).map((m) => ({ id: m.id, name: m.name, email: m.email, subjects: ['面談'] as string[], memo: '' })),
-          // Remap manager availability keys to teacher keys for the algorithm
-          availability: Object.fromEntries(
-            Object.entries(data.availability).map(([k, v]) => [k.replace(/^manager:/, 'teacher:'), v]),
-          ),
-        }
-      : data
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(effectiveData, slotKeys)
+
+    // Mendan FCFS auto-assign
+    if (isMendan) {
+      const { assignments: nextAssignments, unassignedParents } = buildMendanAutoAssignments(data, slotKeys)
+      const submittedCount = data.students.filter((s) => s.submittedAt > 0).length
+      const assignedCount = submittedCount - unassignedParents.length
+
+      await update((current) => ({
+        ...current,
+        assignments: nextAssignments,
+        autoAssignHighlights: { added: {}, changed: {} },
+      }))
+
+      const msg = unassignedParents.length > 0
+        ? `自動割当完了: ${assignedCount}/${submittedCount}名を割当しました。\n\n未割当の保護者:\n${unassignedParents.join('\n')}`
+        : `自動割当完了: 提出済み${assignedCount}名全員を割当しました。`
+      alert(msg)
+      return
+    }
+
+    // Lecture auto-assign (existing logic)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -2912,9 +3019,11 @@ const AdminPage = () => {
       // Check teacher has availability for target slot
       if (moved.teacherId && !hasAvailability(current.availability, instructorPersonType, moved.teacherId, targetSlot)) return current
 
-      // Check all assigned students are available in target slot
+      // Check all assigned students/parents are available in target slot
       const movedStudents = current.students.filter((s) => moved.studentIds.includes(s.id))
-      if (movedStudents.some((student) => !isStudentAvailable(student, targetSlot))) return current
+      if (movedStudents.some((student) =>
+        isMendan ? !isParentAvailableForMendan(current.availability, student.id, targetSlot) : !isStudentAvailable(student, targetSlot),
+      )) return current
 
       // Move
       srcAssignments.splice(sourceIdx, 1)
@@ -2944,9 +3053,11 @@ const AdminPage = () => {
       if (!srcAssignment || srcAssignment.isRegular) return current
       if (!srcAssignment.studentIds.includes(studentId)) return current
 
-      // Check student availability in target slot
+      // Check student/parent availability in target slot
       const student = current.students.find((s) => s.id === studentId)
-      if (student && !isStudentAvailable(student, targetSlot)) return current
+      if (student && (isMendan
+        ? !isParentAvailableForMendan(current.availability, student.id, targetSlot)
+        : !isStudentAvailable(student, targetSlot))) return current
 
       // Check student not already in target slot
       const targetAssignments = [...(current.assignments[targetSlot] ?? [])]
@@ -3113,20 +3224,20 @@ service cloud.firestore {
           </div>
 
           <div className="panel">
-            <h3>生徒一覧</h3>
-            <p className="muted">希望コマ数・不可日は生徒本人が希望URLから入力します。</p>
+            <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
+            <p className="muted">{isMendan ? '面談可能時間帯は保護者が希望URLから入力します。' : '希望コマ数・不可日は生徒本人が希望URLから入力します。'}</p>
             <table className="table">
-              <thead><tr><th>名前</th><th>学年</th><th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => (
                   <tr key={student.id}>
                     <td>
-                      {student.name}
+                      {student.name}{isMendan ? ' 保護者' : ''}
                       {recentlyUpdated.has(student.id) && (
                         <span className="badge ok" style={{ marginLeft: '8px', fontSize: '11px', animation: 'fadeIn 0.3s' }}>✓ 更新済</span>
                       )}
                     </td>
-                    <td>{student.grade}</td>
+                    {!isMendan && <td>{student.grade}</td>}
                     <td>
                       {student.submittedAt ? (
                         <span style={{ fontSize: '0.85em', color: '#16a34a' }}>
@@ -3149,6 +3260,40 @@ service cloud.firestore {
             <div className="row">
               <h3>コマ割り</h3>
               {(() => {
+                if (isMendan) {
+                  // Mendan: show simple assigned/unassigned parent counts
+                  const assignedParentIds = new Set<string>()
+                  for (const slotAssignments of Object.values(data.assignments)) {
+                    for (const a of slotAssignments) {
+                      for (const sid of a.studentIds) assignedParentIds.add(sid)
+                    }
+                  }
+                  const submittedParents = data.students.filter((s) => s.submittedAt > 0)
+                  const assignedCount = submittedParents.filter((s) => assignedParentIds.has(s.id)).length
+                  const unassignedCount = submittedParents.length - assignedCount
+                  const totalParents = data.students.length
+                  const unsubmittedCount = totalParents - submittedParents.length
+
+                  return (
+                    <>
+                      {assignedCount === 0 ? (
+                        <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
+                      ) : unassignedCount > 0 ? (
+                        <span className="badge warn" title={`提出済み${submittedParents.length}名中、${unassignedCount}名が未割当`} style={{ cursor: 'help' }}>
+                          未割当: {unassignedCount}名
+                        </span>
+                      ) : (
+                        <span className="badge ok">提出済み{assignedCount}名全員割当完了</span>
+                      )}
+                      {unsubmittedCount > 0 && (
+                        <span className="badge" style={{ background: '#fff7ed', color: '#c2410c', border: '1px solid #fed7aa', cursor: 'help' }} title={`${unsubmittedCount}名の保護者が未提出`}>
+                          未提出: {unsubmittedCount}名
+                        </span>
+                      )}
+                    </>
+                  )
+                }
+
                 const studentsWithRemaining = data.students
                   .map((student) => {
                     const remaining = Object.entries(student.subjectSlots)
@@ -3204,7 +3349,7 @@ service cloud.firestore {
                 )
               })()}
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
-                自動提案
+                {isMendan ? '自動割当（先着順）' : '自動提案'}
               </button>
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
@@ -3219,12 +3364,42 @@ service cloud.firestore {
                 📖 ルール説明
               </button>
             </div>
-            <p className="muted">{isMendan ? `マネージャー1人 + 生徒1〜2人の面談を自動提案で割当。` : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
+            <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
                 <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>📖 コマ割りルール</h3>
                 <div style={{ display: 'grid', gap: '12px' }}>
+                  {isMendan ? (
+                    <>
+                      <section>
+                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🏫 基本構成</h4>
+                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                          <li>1コマ = <b>マネージャー1人</b> ＋ <b>保護者1人</b></li>
+                          <li>同じコマに複数の面談を配置可能（机数上限あり）</li>
+                          <li>各保護者は1回の面談を割当されます</li>
+                        </ul>
+                      </section>
+                      <section>
+                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🤖 自動割当（先着順）</h4>
+                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                          <li>保護者の提出順（先着）で優先的に割当します</li>
+                          <li>マネージャーの空き時間帯と保護者の希望時間帯が一致するコマに割当</li>
+                          <li>自動割当後、手動で調整可能です</li>
+                        </ul>
+                      </section>
+                      <section>
+                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🔄 操作方法</h4>
+                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
+                          <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
+                          <li>「＋」ボタンでコマ内にペアを追加</li>
+                          <li>「×」ボタンでペアを削除</li>
+                          <li>Excel出力でスケジュール表を出力（A3用紙対応）</li>
+                        </ul>
+                      </section>
+                    </>
+                  ) : (
+                    <>
                   <section>
                     <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🏫 基本構成</h4>
                     <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
@@ -3277,6 +3452,8 @@ service cloud.firestore {
                       <li>Excel出力でスケジュール表を出力（A3用紙対応）</li>
                     </ul>
                   </section>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -3294,7 +3471,8 @@ service cloud.firestore {
                 const isDeskFull = isDragActive && !isStudentDrag && deskCount > 0 && slotAssignments.length >= deskCount
                 const isTeacherConflict = isDragActive && !isStudentDrag && dragInfo.teacherId && usedTeacherIds.has(dragInfo.teacherId)
                 const draggedStudents = isDragActive ? data.students.filter((s) => dragInfo.studentIds.includes(s.id)) : []
-                const hasUnavailableStudent = isDragActive && draggedStudents.some((student) => !isStudentAvailable(student, slot))
+                const hasUnavailableStudent = isDragActive && draggedStudents.some((student) =>
+                  isMendan ? !isParentAvailableForMendan(data.availability, student.id, slot) : !isStudentAvailable(student, slot))
                 const hasStudentConflict = isDragActive && dragInfo.studentIds.some((sid) => {
                   // For student drag within same slot, exclude the source assignment from conflict check
                   if (isStudentDrag && isSameSlot) {
@@ -3460,7 +3638,7 @@ service cloud.firestore {
 
                             {assignment.teacherId && (
                               <>
-                                {[0, 1].map((pos) => {
+                                {(isMendan ? [0] : [0, 1]).map((pos) => {
                                   const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
                                   const currentStudentId = assignment.studentIds[pos] ?? ''
                                   const currentStudent = data.students.find((s) => s.id === currentStudentId)
@@ -3523,16 +3701,20 @@ service cloud.firestore {
                                         void setSlotStudent(slot, idx, pos, selectedId)
                                       }}
                                     >
-                                      <option value="">{`生徒${pos + 1}を選択`}</option>
+                                      <option value="">{isMendan ? `保護者を選択` : `生徒${pos + 1}を選択`}</option>
                                       {data.students
                                         .filter((student) => {
                                           // Always show currently assigned student
                                           if (student.id === currentStudentId) return true
-                                          // Unsubmitted students are unavailable (skip for mendan)
-                                          if (!isMendan && !student.submittedAt) return false
+                                          if (isMendan) {
+                                            // For mendan: must have submitted, and have positive availability for this slot
+                                            if (!student.submittedAt) return false
+                                            return isParentAvailableForMendan(data.availability, student.id, slot)
+                                          }
+                                          // Unsubmitted students are unavailable
+                                          if (!student.submittedAt) return false
                                           // Filter out students unavailable for this specific slot
                                           if (!isStudentAvailable(student, slot)) return false
-                                          if (isMendan) return true // For mendan, no subject/slot filtering
                                           // Subject compatibility: student must share at least one subject with the teacher
                                           if (teacherSubjects.length > 0 && !teacherSubjects.some((subj) => student.subjects.includes(subj))) return false
                                           // Remaining slots for at least one teacher-compatible subject must be > 0
@@ -3565,7 +3747,7 @@ service cloud.firestore {
                                         )
                                       })}
                                     </select>
-                                    {currentStudentId && !assignment.isRegular && (
+                                    {currentStudentId && !assignment.isRegular && !isMendan && (
                                       <select
                                         className="subject-select-inline"
                                         value={studentSubject}
@@ -3576,7 +3758,7 @@ service cloud.firestore {
                                         ))}
                                       </select>
                                     )}
-                                    {currentStudentId && assignment.isRegular && (
+                                    {currentStudentId && assignment.isRegular && !isMendan && (
                                       <span className="subject-label-inline">{studentSubject}</span>
                                     )}
                                     </div>
@@ -4219,6 +4401,228 @@ const StudentInputPage = ({
   )
 }
 
+// Mendan Parent Input Component — parents mark available time slots
+const MendanParentInputPage = ({
+  sessionId,
+  data,
+  student,
+  returnToAdminOnComplete,
+}: {
+  sessionId: string
+  data: SessionData
+  student: Student
+  returnToAdminOnComplete: boolean
+}) => {
+  const navigate = useNavigate()
+  const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const showDevRandom = true
+
+  // Compute which slots have at least one manager available
+  const managerAvailableSlots = useMemo(() => {
+    const slots = new Set<string>()
+    for (const manager of (data.managers ?? [])) {
+      const key = personKey('manager', manager.id)
+      for (const sk of (data.availability[key] ?? [])) {
+        slots.add(sk)
+      }
+    }
+    return slots
+  }, [data])
+
+  const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
+    const key = personKey('student', student.id)
+    return new Set(data.availability[key] ?? [])
+  })
+
+  const toggleSlot = (date: string, slotNum: number) => {
+    const slotKey = `${date}_${slotNum}`
+    // Only allow toggling on slots where at least one manager is available
+    if (!managerAvailableSlots.has(slotKey)) return
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (next.has(slotKey)) {
+        next.delete(slotKey)
+      } else {
+        next.add(slotKey)
+      }
+      return next
+    })
+  }
+
+  const toggleDateAllSlots = (date: string) => {
+    const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+    const selectableKeys = allSlotKeys.filter((sk) => managerAvailableSlots.has(sk))
+    if (selectableKeys.length === 0) return
+    const allOn = selectableKeys.every((sk) => localAvailability.has(sk))
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (allOn) {
+        for (const sk of selectableKeys) next.delete(sk)
+      } else {
+        for (const sk of selectableKeys) next.add(sk)
+      }
+      return next
+    })
+  }
+
+  const toggleColumnAllSlots = (slotNum: number) => {
+    const targetKeys = dates
+      .map((date) => `${date}_${slotNum}`)
+      .filter((sk) => managerAvailableSlots.has(sk))
+    if (targetKeys.length === 0) return
+    const allOn = targetKeys.every((sk) => localAvailability.has(sk))
+    setLocalAvailability((prev) => {
+      const next = new Set(prev)
+      if (allOn) {
+        for (const sk of targetKeys) next.delete(sk)
+      } else {
+        for (const sk of targetKeys) next.add(sk)
+      }
+      return next
+    })
+  }
+
+  const handleSubmit = () => {
+    const key = personKey('student', student.id)
+    const availabilityArray = Array.from(localAvailability)
+
+    const logEntry: SubmissionLogEntry = {
+      personId: student.id,
+      personType: 'student',
+      submittedAt: Date.now(),
+      type: student.submittedAt ? 'update' : 'initial',
+      availability: availabilityArray,
+    }
+
+    const updatedStudents = data.students.map((s) =>
+      s.id === student.id
+        ? { ...s, submittedAt: Date.now() }
+        : s,
+    )
+
+    const next: SessionData = {
+      ...data,
+      students: updatedStudents,
+      availability: {
+        ...data.availability,
+        [key]: availabilityArray,
+      },
+      submissionLog: [...(data.submissionLog ?? []), logEntry],
+    }
+    saveSession(sessionId, next).catch(() => { /* ignore */ })
+    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+  }
+
+  return (
+    <div className="availability-container">
+      <div className="availability-header">
+        <h2>{data.settings.name} - 保護者面談希望入力</h2>
+        <p>
+          対象: <strong>{student.name}</strong> 保護者
+        </p>
+        <p className="muted">面談可能な時間帯をタップして選択してください。色付きのコマはマネージャーが対応可能な時間帯です。</p>
+      </div>
+
+      <div className="teacher-table-wrapper">
+        <table className="teacher-table compact-grid">
+          <thead>
+            <tr>
+              <th className="date-header">日付</th>
+              {Array.from({ length: data.settings.slotsPerDay }, (_, i) => (
+                <th
+                  key={i}
+                  style={{ cursor: 'pointer', userSelect: 'none' }}
+                  onClick={() => toggleColumnAllSlots(i + 1)}
+                  title="この時間帯を一括切替"
+                >
+                  {i + 1}限
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dates.map((date) => {
+              const selectableKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`).filter((sk) => managerAvailableSlots.has(sk))
+              const allOn = selectableKeys.length > 0 && selectableKeys.every((sk) => localAvailability.has(sk))
+              return (
+                <tr key={date}>
+                  <td
+                    className="date-cell"
+                    style={{ cursor: 'pointer', userSelect: 'none' }}
+                    onClick={() => toggleDateAllSlots(date)}
+                    title="全時限を一括切替"
+                  >
+                    <span style={{ fontWeight: allOn ? 700 : 400, color: allOn ? '#2563eb' : undefined }}>
+                      {formatShortDate(date)}
+                    </span>
+                  </td>
+                  {Array.from({ length: data.settings.slotsPerDay }, (_, i) => {
+                    const slotNum = i + 1
+                    const slotKey = `${date}_${slotNum}`
+                    const managerAvail = managerAvailableSlots.has(slotKey)
+                    const isOn = localAvailability.has(slotKey)
+                    return (
+                      <td key={slotNum}>
+                        <button
+                          className={`teacher-slot-btn ${!managerAvail ? '' : isOn ? 'active' : 'manager-avail'}`}
+                          onClick={() => toggleSlot(date, slotNum)}
+                          type="button"
+                          disabled={!managerAvail}
+                          style={!managerAvail ? { opacity: 0.3, cursor: 'not-allowed' } : undefined}
+                        >
+                          {!managerAvail ? '' : isOn ? '○' : ''}
+                        </button>
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="submit-section">
+        {showDevRandom && (
+          <button
+            className="btn secondary"
+            type="button"
+            style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => {
+              // Randomly select ~50% of manager-available slots
+              const next = new Set<string>()
+              for (const sk of managerAvailableSlots) {
+                if (Math.random() < 0.5) next.add(sk)
+              }
+              setLocalAvailability(next)
+            }}
+          >
+            🎲 ランダム入力 (DEV)
+          </button>
+        )}
+        {(() => {
+          const selectedCount = localAvailability.size
+          return (
+            <>
+              {selectedCount === 0 && (
+                <p style={{ color: '#dc2626', fontWeight: 600, marginBottom: '8px', fontSize: '14px' }}>※ 面談可能な時間帯を1つ以上選択してください</p>
+              )}
+              <button
+                className="submit-btn"
+                onClick={handleSubmit}
+                type="button"
+                disabled={selectedCount === 0}
+              >
+                送信
+              </button>
+            </>
+          )
+        })()}
+      </div>
+    </div>
+  )
+}
+
 const AvailabilityPage = () => {
   const location = useLocation()
   const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
@@ -4523,7 +4927,9 @@ service cloud.firestore {
           </div>
         )
       }
-      return <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
+      return data.settings.sessionType === 'mendan'
+        ? <MendanParentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
+        : <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   }
 

@@ -362,6 +362,12 @@
   font-weight: 700;
 }
 
+.teacher-slot-btn.manager-avail {
+  background: #ede9fe;
+  border-color: #a78bfa;
+  color: #7c3aed;
+}
+
 .teacher-slot-btn:active {
   transform: scale(0.95);
 }
