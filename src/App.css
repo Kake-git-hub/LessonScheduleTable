@@ -639,6 +639,11 @@
   letter-spacing: 0.04em;
 }
 
+.auto-diff-badge-new {
+  background: #16a34a;
+  color: #fff;
+}
+
 .auto-diff-badge-update {
   background: #d97706;
   color: #fff;

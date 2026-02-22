@@ -469,21 +469,31 @@ interface ChangeLogEntry {
 const buildIncrementalAutoAssignments = (
   data: SessionData,
   slots: string[],
-): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]> } => {
+): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> } => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
   const addedPairSigSetBySlot: Record<string, Set<string>> = {}
-  const markChangedPair = (slot: string, assignment: Assignment): void => {
+  const changeDetailsBySlot: Record<string, Record<string, string>> = {}
+  const markChangedPair = (slot: string, assignment: Assignment, detail: string): void => {
     if (assignment.isRegular) return
     if (!hasMeaningfulManualAssignment(assignment)) return
     if (!changedPairSigSetBySlot[slot]) changedPairSigSetBySlot[slot] = new Set<string>()
-    changedPairSigSetBySlot[slot].add(assignmentSignature(assignment))
+    const sig = assignmentSignature(assignment)
+    changedPairSigSetBySlot[slot].add(sig)
+    if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
+    const prev = changeDetailsBySlot[slot][sig]
+    changeDetailsBySlot[slot][sig] = prev ? `${prev}\n${detail}` : detail
   }
-  const markAddedPair = (slot: string, assignment: Assignment): void => {
+  const markAddedPair = (slot: string, assignment: Assignment, detail?: string): void => {
     if (assignment.isRegular) return
     if (!hasMeaningfulManualAssignment(assignment)) return
     if (!addedPairSigSetBySlot[slot]) addedPairSigSetBySlot[slot] = new Set<string>()
-    addedPairSigSetBySlot[slot].add(assignmentSignature(assignment))
+    const sig = assignmentSignature(assignment)
+    addedPairSigSetBySlot[slot].add(sig)
+    if (detail) {
+      if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
+      changeDetailsBySlot[slot][sig] = detail
+    }
   }
   const teacherIds = new Set(data.teachers.map((t) => t.id))
   const studentIds = new Set(data.students.map((s) => s.id))
@@ -537,7 +547,7 @@ const buildIncrementalAutoAssignments = (
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
           cleaned.push(changedAssignment)
-          markChangedPair(slot, changedAssignment)
+          markChangedPair(slot, changedAssignment, `講師差替: ${replacement.name} に変更（元の講師が削除済）`)
           changeLog.push({ slot, action: '講師差替', detail: `${replacement.name} に変更（元の講師が削除済）` })
         } else {
           changeLog.push({ slot, action: '講師削除', detail: `割当解除（講師が削除済・代替不可）` })
@@ -557,7 +567,7 @@ const buildIncrementalAutoAssignments = (
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
           cleaned.push(changedAssignment)
-          markChangedPair(slot, changedAssignment)
+          markChangedPair(slot, changedAssignment, `講師差替: ${teacherName} → ${replacement.name}（希望取消のため）`)
           changeLog.push({ slot, action: '講師差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
         } else {
           changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
@@ -587,7 +597,8 @@ const buildIncrementalAutoAssignments = (
         const changedAssignment = { ...assignment, studentIds: validStudentIds }
         cleaned.push(changedAssignment)
         if (assignment.studentIds.length !== validStudentIds.length) {
-          markChangedPair(slot, changedAssignment)
+          const removedNames = removedStudentIds.map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid).join(', ')
+          markChangedPair(slot, changedAssignment, `生徒解除: ${removedNames}`)
         }
       } else if (removedStudentIds.length > 0) {
         const changedAssignment = { ...assignment, studentIds: [] }
@@ -647,7 +658,7 @@ const buildIncrementalAutoAssignments = (
       if (removedAny) {
         assignment.studentIds = remainingStudentIds
         if (remainingStudentIds.length > 0) {
-          markChangedPair(slot, assignment)
+          markChangedPair(slot, assignment, `希望減で一部生徒解除`)
         }
       }
     }
@@ -704,7 +715,7 @@ const buildIncrementalAutoAssignments = (
         studentSubjects[best.id] = bestSubj
         assignment.studentIds = [...assignment.studentIds, best.id]
         assignment.studentSubjects = studentSubjects
-        markChangedPair(slot, assignment)
+        markChangedPair(slot, assignment, `生徒追加: ${best.name}(${bestSubj})`)
         changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
       }
     }
@@ -938,13 +949,13 @@ const buildIncrementalAutoAssignments = (
       result[slot] = slotAssignments
       // Only log newly added assignments
       for (const a of slotAssignments.slice(existingAssignments.length)) {
-        markAddedPair(slot, a)
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
         const sNames = a.studentIds.map((sid) => {
           const name = data.students.find((s) => s.id === sid)?.name ?? '?'
           const subj = getStudentSubject(a, sid)
           return `${name}(${subj})`
         }).join(', ')
+        markAddedPair(slot, a, `新規割当: ${tName} × ${sNames}`)
         changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames}` })
       }
     }
@@ -963,7 +974,7 @@ const buildIncrementalAutoAssignments = (
     if (signatureSet.size > 0) addedPairSignatures[slot] = [...signatureSet]
   }
 
-  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures }
+  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, changeDetails: changeDetailsBySlot }
 }
 
 /** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */
@@ -2635,17 +2646,19 @@ const AdminPage = () => {
     const typeLabel = EMAIL_TYPE_LABELS[contentType] ?? '予定入力依頼'
     const now = new Date()
     const timeStr = now.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    // Open mailto
-    window.location.href = buildMailtoForPerson(person, personType, contentType)
     // Log the send
     setEmailSendLog((prev) => ({ ...prev, [person.id]: { time: timeStr, type: typeLabel } }))
-    // Download receipt PDF
+    // Download receipt PDF first, then open mailto after a short delay
     const sentAt = now.toLocaleString('ja-JP')
+    const mailtoUrl = buildMailtoForPerson(person, personType, contentType)
     void downloadEmailReceiptPdf({
       sessionName: data?.settings.name ?? '',
       recipientName: person.name,
       emailType: typeLabel,
       sentAt,
+    }).finally(() => {
+      // Open mailto after PDF is generated (or on error)
+      setTimeout(() => { window.location.href = mailtoUrl }, 300)
     })
   }
 
@@ -2706,6 +2719,44 @@ const AdminPage = () => {
   const update = async (updater: (current: SessionData) => SessionData): Promise<void> => {
     if (!data) return
     await persist(updater(data))
+  }
+
+  // --- Undo / Redo for assignments ---
+  const undoStackRef = useRef<Record<string, Assignment[]>[]>([])
+  const redoStackRef = useRef<Record<string, Assignment[]>[]>([])
+  const [undoCount, setUndoCount] = useState(0)
+  const [redoCount, setRedoCount] = useState(0)
+  const MAX_UNDO = 50
+
+  const pushUndo = (assignments: Record<string, Assignment[]>): void => {
+    undoStackRef.current = [...undoStackRef.current.slice(-(MAX_UNDO - 1)), JSON.parse(JSON.stringify(assignments))]
+    redoStackRef.current = []
+    setUndoCount(undoStackRef.current.length)
+    setRedoCount(0)
+  }
+
+  const updateAssignments = async (updater: (current: SessionData) => SessionData): Promise<void> => {
+    if (!data) return
+    pushUndo(data.assignments)
+    await persist(updater(data))
+  }
+
+  const handleUndo = async (): Promise<void> => {
+    if (undoStackRef.current.length === 0 || !data) return
+    const prev = undoStackRef.current.pop()!
+    redoStackRef.current.push(JSON.parse(JSON.stringify(data.assignments)))
+    setUndoCount(undoStackRef.current.length)
+    setRedoCount(redoStackRef.current.length)
+    await persist({ ...data, assignments: prev })
+  }
+
+  const handleRedo = async (): Promise<void> => {
+    if (redoStackRef.current.length === 0 || !data) return
+    const next = redoStackRef.current.pop()!
+    undoStackRef.current.push(JSON.parse(JSON.stringify(data.assignments)))
+    setUndoCount(undoStackRef.current.length)
+    setRedoCount(redoStackRef.current.length)
+    await persist({ ...data, assignments: next })
   }
 
   const createSession = async (): Promise<void> => {
@@ -2856,7 +2907,7 @@ const AdminPage = () => {
       const submittedCount = data.students.filter((s) => s.submittedAt > 0).length
       const assignedCount = submittedCount - unassignedParents.length
 
-      await update((current) => ({
+      await updateAssignments((current) => ({
         ...current,
         assignments: nextAssignments,
         autoAssignHighlights: { added: {}, changed: {} },
@@ -2870,14 +2921,16 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures } = buildIncrementalAutoAssignments(data, slotKeys)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = buildIncrementalAutoAssignments(data, slotKeys)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
+    const highlightDetails: Record<string, Record<string, string>> = {}
     const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
     for (const slot of allSlotSet) {
       if ((addedPairSignatures[slot] ?? []).length > 0) highlightAdded[slot] = [...addedPairSignatures[slot]]
       if ((changedPairSignatures[slot] ?? []).length > 0) highlightChanged[slot] = [...changedPairSignatures[slot]]
+      if (changeDetails[slot]) highlightDetails[slot] = { ...changeDetails[slot] }
     }
 
     const remainingStudents = data.students
@@ -2908,10 +2961,10 @@ const AdminPage = () => {
 
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
 
-    await update((current) => ({
+    await updateAssignments((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged },
+      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, changeDetails: highlightDetails },
     }))
     const remainingMessage = remainingStudents.length > 0
       ? `\n\n未充足の生徒:\n${remainingStudents
@@ -2937,7 +2990,7 @@ const AdminPage = () => {
 
   const resetAssignments = async (): Promise<void> => {
     if (!window.confirm('コマ割りをリセットしますか？\n（手動割当と自動提案結果を全てクリアします）')) return
-    await update((current) => ({
+    await updateAssignments((current) => ({
       ...current,
       assignments: {},
       autoAssignHighlights: { added: {}, changed: {} },
@@ -2945,7 +2998,7 @@ const AdminPage = () => {
   }
 
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       if (!teacherId) {
         slotAssignments.splice(idx, 1)
@@ -2982,7 +3035,7 @@ const AdminPage = () => {
   }
 
   const addSlotAssignment = async (slot: string): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const deskCount = current.settings.deskCount ?? 0
       if (deskCount > 0 && slotAssignments.length >= deskCount) {
@@ -2998,7 +3051,7 @@ const AdminPage = () => {
   }
 
   const setSlotStudent = async (slot: string, idx: number, position: number, studentId: string): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const assignment = slotAssignments[idx]
       if (!assignment) {
@@ -3065,7 +3118,7 @@ const AdminPage = () => {
 
   /** Set subject for a specific student within an assignment pair */
   const setSlotSubject = async (slot: string, idx: number, subject: string, studentId?: string): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const assignment = slotAssignments[idx]
       if (!assignment) {
@@ -3097,7 +3150,7 @@ const AdminPage = () => {
 
   /** Move an assignment from one slot to another (drag-and-drop) */
   const moveAssignment = async (sourceSlot: string, sourceIdx: number, targetSlot: string): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
       const moved = srcAssignments[sourceIdx]
       if (!moved || moved.isRegular) return current
@@ -3144,7 +3197,7 @@ const AdminPage = () => {
     targetSlot: string,
     targetIdx?: number, // if provided, add to existing assignment; otherwise create new
   ): Promise<void> => {
-    await update((current) => {
+    await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
       const srcAssignment = srcAssignments[sourceIdx]
       if (!srcAssignment || srcAssignment.isRegular) return current
@@ -3472,6 +3525,12 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
                 {isMendan ? '自動割当（先着順）' : '自動提案'}
               </button>
+              <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
+                ↩ 戻す
+              </button>
+              <button className="btn secondary" type="button" onClick={() => void handleRedo()} disabled={redoCount === 0} title="やり直し (Redo)">
+                ↪ やり直し
+              </button>
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
               </button>
@@ -3696,6 +3755,7 @@ service cloud.firestore {
                         const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
                         const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
                         const isAutoDiff = isAutoAdded || isAutoChanged
+                        const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
 
                         return (
                           <div
@@ -3758,8 +3818,8 @@ service cloud.firestore {
                             )}
                             {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
-                            {isAutoAdded && <span className="badge auto-diff-badge" title="自動提案で新規追加">NEW</span>}
-                            {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title="自動提案で再割当">UPDATE</span>}
+                            {isAutoAdded && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>NEW</span>}
+                            {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>UPDATE</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
@@ -4677,9 +4737,9 @@ const StudentInputPage = ({
                     key={i}
                     style={{ cursor: 'pointer', userSelect: 'none' }}
                     onClick={() => toggleColumnAllSlots(i + 1)}
-                    title="この時間帯を一括切替"
+                    title="この時限を一括切替"
                   >
-                    {mendanTimeLabel(i + 1, data.settings.mendanStartHour)}
+                    {`${i + 1}限`}
                   </th>
                 ))}
               </tr>

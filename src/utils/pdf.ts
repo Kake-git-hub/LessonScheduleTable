@@ -19,11 +19,11 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 async function loadJapaneseFont(doc: jsPDF): Promise<void> {
   if (!cachedFontBase64) {
-    // Try multiple CDN sources for Noto Sans JP
+    // Try multiple CDN sources for Japanese TTF fonts (jsPDF needs TrueType, not CFF-based OTF)
     const urls = [
-      'https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main/Sans/SubsetOTF/JP/NotoSansCJKjp-Regular.otf',
-      'https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/SubsetOTF/JP/NotoSansCJKjp-Regular.otf',
-      'https://fonts.gstatic.com/ea/notosansjp/v5/NotoSansJP-Regular.otf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
+      'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/kosugimaru/KosugiMaru-Regular.ttf',
     ]
     let buf: ArrayBuffer | null = null
     for (const url of urls) {
