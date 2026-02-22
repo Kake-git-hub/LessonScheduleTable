@@ -2384,7 +2384,32 @@ const AdminPage = () => {
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
+  const [bulkEmailPanel, setBulkEmailPanel] = useState<{ persons: { id: string; name: string; email: string }[]; personType: PersonType; groupLabel: string } | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
+  const masterSyncDoneRef = useRef(false)
+
+  // Sync master data (regularLessons, constraints) into session on first load
+  useEffect(() => {
+    if (!data || masterSyncDoneRef.current) return
+    masterSyncDoneRef.current = true
+    const isMendanSession = data.settings.sessionType === 'mendan'
+    loadMasterData().then((master) => {
+      if (!master) return
+      const needsUpdate =
+        JSON.stringify(data.constraints) !== JSON.stringify(master.constraints) ||
+        JSON.stringify(data.gradeConstraints) !== JSON.stringify(isMendanSession ? [] : master.gradeConstraints) ||
+        JSON.stringify(data.regularLessons) !== JSON.stringify(isMendanSession ? [] : master.regularLessons)
+      if (!needsUpdate) return
+      const next: SessionData = {
+        ...data,
+        constraints: master.constraints,
+        gradeConstraints: isMendanSession ? [] : (master.gradeConstraints ?? []),
+        regularLessons: isMendanSession ? [] : master.regularLessons,
+      }
+      setData(next)
+      saveSession(sessionId, next).catch(() => { /* ignore */ })
+    }).catch(() => { /* ignore */ })
+  }, [data, sessionId])
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -2450,7 +2475,7 @@ const AdminPage = () => {
     }
   }
 
-  /** Bulk-share: open mailto: with individual URLs per person */
+  /** Bulk-share: show panel with individual mailto links per person */
   const bulkShareByEmail = (
     persons: { id: string; name: string; email: string }[],
     personType: PersonType,
@@ -2461,35 +2486,23 @@ const AdminPage = () => {
       alert(`メールアドレスが登録されている${groupLabel}がいません。\n先にメールアドレスを登録してください。`)
       return
     }
+    setBulkEmailPanel({ persons: withEmail, personType, groupLabel })
+  }
+
+  const buildMailtoForPerson = (person: { id: string; name: string; email: string }, personType: PersonType): string => {
     const sessionName = data?.settings.name ?? ''
     const subject = `【${sessionName}】希望入力URLのご案内`
-    const bodyLines: string[] = [
+    const url = buildInputUrl(personType, person.id)
+    const body = [
+      `${person.name} 様`,
+      '',
       `${sessionName}の希望入力URLをお送りします。`,
       '',
       '以下のURLからご自身の希望を入力してください。',
       '',
-      ...withEmail.flatMap((p) => [
-        `■ ${p.name}`,
-        buildInputUrl(personType, p.id),
-        '',
-      ]),
-    ]
-    const toEmails = withEmail.map((p) => p.email).join(',')
-    const mailtoUrl = `mailto:${encodeURIComponent(toEmails)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`
-
-    // mailto: URL length limit workaround
-    if (mailtoUrl.length > 2000) {
-      // Fallback: copy body to clipboard and open mailto with just recipients
-      const clipText = `件名: ${subject}\n\n${bodyLines.join('\n')}`
-      navigator.clipboard.writeText(clipText).then(() => {
-        alert(`URLが長いため、メール本文をクリップボードにコピーしました。\nメールソフトが開きますので、本文を貼り付けてください。`)
-        window.location.href = `mailto:${encodeURIComponent(toEmails)}?subject=${encodeURIComponent(subject)}`
-      }).catch(() => {
-        window.prompt('以下のメール本文をコピーしてください:', clipText)
-      })
-    } else {
-      window.location.href = mailtoUrl
-    }
+      url,
+    ].join('\n')
+    return `mailto:${encodeURIComponent(person.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
@@ -3908,6 +3921,50 @@ service cloud.firestore {
             </div>
           </div>
         </>
+      )}
+
+      {/* Bulk email panel overlay */}
+      {bulkEmailPanel && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000,
+          display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px',
+        }} onClick={(e) => { if (e.target === e.currentTarget) setBulkEmailPanel(null) }}>
+          <div style={{
+            background: '#fff', borderRadius: '12px', padding: '24px', maxWidth: '500px', width: '100%',
+            maxHeight: '80vh', overflow: 'auto', boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0 }}>✉ {bulkEmailPanel.groupLabel}へメール送信</h3>
+              <button className="btn secondary" type="button" onClick={() => setBulkEmailPanel(null)} style={{ fontSize: '13px', padding: '4px 12px' }}>✕ 閉じる</button>
+            </div>
+            <p className="muted" style={{ marginBottom: '12px', fontSize: '13px' }}>
+              メールアドレスが登録されている{bulkEmailPanel.groupLabel} {bulkEmailPanel.persons.length}名です。各リンクをクリックするとメールソフトが開きます。
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {bulkEmailPanel.persons.map((person) => (
+                <div key={person.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '8px 12px', background: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0',
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{person.name}</div>
+                    <div style={{ fontSize: '12px', color: '#64748b' }}>{person.email}</div>
+                  </div>
+                  <a
+                    href={buildMailtoForPerson(person, bulkEmailPanel.personType)}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '4px',
+                      padding: '5px 12px', background: '#2563eb', color: '#fff', borderRadius: '6px',
+                      fontSize: '13px', textDecoration: 'none', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    ✉ メール作成
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
