@@ -81,6 +81,7 @@ export type SessionSettings = {
   confirmed?: boolean
   createdAt?: number
   updatedAt?: number
+  lastAutoAssignedAt?: number
 }
 
 /** A snapshot of a student's submission (or change delta). */

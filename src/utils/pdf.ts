@@ -19,11 +19,12 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 async function loadJapaneseFont(doc: jsPDF): Promise<void> {
   if (!cachedFontBase64) {
-    // Try multiple CDN sources for Japanese TTF fonts (jsPDF needs TrueType, not CFF-based OTF)
+    // Try bundled font first, then CDN fallbacks (must be static TrueType TTF, NOT variable fonts)
+    const base = import.meta.env.BASE_URL ?? '/'
     const urls = [
-      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
-      'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
-      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/kosugimaru/KosugiMaru-Regular.ttf',
+      `${base}fonts/SawarabiGothic-Regular.ttf`,
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/sawarabigothic/SawarabiGothic-Regular.ttf',
+      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/mplusrounded1c/MPLUSRounded1c-Regular.ttf',
     ]
     let buf: ArrayBuffer | null = null
     for (const url of urls) {
@@ -48,7 +49,7 @@ async function loadJapaneseFont(doc: jsPDF): Promise<void> {
   doc.setFont('NotoSansJP')
 }
 
-// ---------- Schedule PDF (A3 landscape, one week per page) ----------
+// ---------- Schedule PDF (A3 portrait, one week per page) ----------
 
 export type SchedulePdfParams = {
   sessionName: string
@@ -99,10 +100,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   }
   if (currentWeek.length > 0) weeks.push(currentWeek)
 
-  // Create PDF - A3 landscape
+  // Create PDF - A3 portrait
   let doc: jsPDF
   try {
-    doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' })
+    doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' })
     await loadJapaneseFont(doc)
   } catch (err) {
     alert('PDF生成に失敗しました: ' + String(err))
@@ -112,7 +113,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const dowOrder = [1, 2, 3, 4, 5, 6, 0] // Mon-Sun
 
   for (let wi = 0; wi < weeks.length; wi++) {
-    if (wi > 0) doc.addPage('a3', 'landscape')
+    if (wi > 0) doc.addPage('a3', 'portrait')
 
     const weekDates = weeks[wi]
     const firstDate = weekDates[0]
@@ -336,4 +337,72 @@ export async function downloadEmailReceiptPdf(params: EmailReceiptPdfParams): Pr
   doc.text(`発行日: ${new Date().toLocaleDateString('ja-JP')}`, centerX, 270, { align: 'center' })
 
   doc.save(`メール送信記録_${recipientName}_${emailType}.pdf`)
+}
+
+// ---------- Submission receipt PDF ----------
+
+export type SubmissionReceiptPdfParams = {
+  sessionName: string
+  personName: string
+  personType: '講師' | '生徒' | '保護者'
+  submittedAt: string
+  details: string[]           // e.g. ["英語: 3コマ", "数学: 2コマ", "不可コマ: 7/1(1限), 7/2(3限)"]
+  isUpdate: boolean
+}
+
+export async function downloadSubmissionReceiptPdf(params: SubmissionReceiptPdfParams): Promise<void> {
+  const { sessionName, personName, personType, submittedAt, details, isUpdate } = params
+
+  let doc: jsPDF
+  try {
+    doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+    await loadJapaneseFont(doc)
+  } catch (err) {
+    // Silently fail for submission receipt — don't block navigation
+    console.error('PDF生成に失敗しました:', err)
+    return
+  }
+
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const centerX = pageWidth / 2
+
+  // Title
+  doc.setFontSize(18)
+  doc.text(isUpdate ? '希望入力 更新記録' : '希望入力 提出記録', centerX, 30, { align: 'center' })
+
+  // Content
+  doc.setFontSize(12)
+  const lines = [
+    isUpdate ? '以下の内容で希望入力を更新しました。' : '以下の内容で希望入力を提出しました。',
+    '',
+    `■ セッション名: ${sessionName}`,
+    `■ ${personType}名: ${personName}`,
+    `■ 提出日時: ${submittedAt}`,
+    '',
+    '【提出内容】',
+    ...details,
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '【重要】この書類は提出記録として大切に保管してください。',
+    '',
+    '　この PDF は希望入力の提出を記録するものです。',
+    '　紛失しないよう、適切なフォルダに保存してください。',
+    '',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+  ]
+
+  let y = 50
+  for (const line of lines) {
+    doc.text(line, 20, y)
+    y += 8
+  }
+
+  // Footer
+  doc.setFontSize(9)
+  doc.setTextColor(120)
+  doc.text(`発行日: ${new Date().toLocaleDateString('ja-JP')}`, centerX, 270, { align: 'center' })
+
+  const label = isUpdate ? '更新記録' : '提出記録'
+  doc.save(`希望入力_${label}_${personName}.pdf`)
 }

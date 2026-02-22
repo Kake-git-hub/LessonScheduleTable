@@ -18,7 +18,7 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { downloadEmailReceiptPdf, exportSchedulePdf } from './utils/pdf'
+import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 
 const APP_VERSION = '1.0.0'
 
@@ -474,6 +474,68 @@ const buildIncrementalAutoAssignments = (
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
   const addedPairSigSetBySlot: Record<string, Set<string>> = {}
   const changeDetailsBySlot: Record<string, Record<string, string>> = {}
+
+  // --- Helpers for detailed submission-based reasons ---
+  const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
+
+  /** Describe what changed in a student's submission since last auto-assign */
+  const describeStudentSubmissionChange = (studentId: string): string => {
+    const student = data.students.find((s) => s.id === studentId)
+    if (!student) return ''
+    // Find the most recent submission log entry for this student after lastAutoAt
+    const recentEntries = (data.submissionLog ?? [])
+      .filter((e) => e.personId === studentId && e.personType === 'student' && e.submittedAt > lastAutoAt)
+      .sort((a, b) => b.submittedAt - a.submittedAt)
+    if (recentEntries.length === 0) return ''
+
+    const latest = recentEntries[0]
+    const timeStr = new Date(latest.submittedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    if (latest.type === 'initial') {
+      // First submission after last auto-assign
+      const slotsDetail = latest.subjectSlots
+        ? Object.entries(latest.subjectSlots).map(([s, c]) => `${s}${c}コマ`).join(', ')
+        : ''
+      return `${student.name}: 前回コマ割り後に希望を新規提出(${timeStr})${slotsDetail ? ` [${slotsDetail}]` : ''}`
+    }
+    // Update submission — find the previous entry to show diff
+    const prevEntries = (data.submissionLog ?? [])
+      .filter((e) => e.personId === studentId && e.personType === 'student' && e.submittedAt <= lastAutoAt)
+      .sort((a, b) => b.submittedAt - a.submittedAt)
+    const prev = prevEntries.length > 0 ? prevEntries[0] : null
+    const changes: string[] = []
+    if (latest.subjectSlots && prev?.subjectSlots) {
+      const allSubjs = new Set([...Object.keys(latest.subjectSlots), ...Object.keys(prev.subjectSlots)])
+      for (const subj of allSubjs) {
+        const oldVal = prev.subjectSlots[subj] ?? 0
+        const newVal = latest.subjectSlots[subj] ?? 0
+        if (oldVal !== newVal) changes.push(`${subj}: ${oldVal}→${newVal}コマ`)
+      }
+    }
+    if (latest.unavailableSlots && prev?.unavailableSlots) {
+      const oldCount = prev.unavailableSlots.length
+      const newCount = latest.unavailableSlots.length
+      if (oldCount !== newCount) changes.push(`不可コマ数: ${oldCount}→${newCount}`)
+    }
+    const diffStr = changes.length > 0 ? ` [${changes.join(', ')}]` : ''
+    return `${student.name}: 前回コマ割り後に希望を変更(${timeStr})${diffStr}`
+  }
+
+  /** Describe what changed in a teacher's submission since last auto-assign */
+  const describeTeacherSubmissionChange = (teacherId: string): string => {
+    const teacher = data.teachers.find((t) => t.id === teacherId)
+    if (!teacher) return ''
+    const recentEntries = (data.submissionLog ?? [])
+      .filter((e) => e.personId === teacherId && e.personType === 'teacher' && e.submittedAt > lastAutoAt)
+      .sort((a, b) => b.submittedAt - a.submittedAt)
+    if (recentEntries.length === 0) return ''
+    const latest = recentEntries[0]
+    const timeStr = new Date(latest.submittedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    if (latest.type === 'initial') {
+      return `${teacher.name}: 前回コマ割り後に出勤希望を新規提出(${timeStr})`
+    }
+    return `${teacher.name}: 前回コマ割り後に出勤希望を変更(${timeStr})`
+  }
+
   const markChangedPair = (slot: string, assignment: Assignment, detail: string): void => {
     if (assignment.isRegular) return
     if (!hasMeaningfulManualAssignment(assignment)) return
@@ -558,6 +620,7 @@ const buildIncrementalAutoAssignments = (
       // Check teacher still has availability for this slot
       if (!hasAvailability(data.availability, 'teacher', assignment.teacherId, slot)) {
         const teacherName = data.teachers.find((t) => t.id === assignment.teacherId)?.name ?? '?'
+        const teacherChangeInfo = describeTeacherSubmissionChange(assignment.teacherId)
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
@@ -567,7 +630,8 @@ const buildIncrementalAutoAssignments = (
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
           cleaned.push(changedAssignment)
-          markChangedPair(slot, changedAssignment, `講師差替: ${teacherName} → ${replacement.name}（希望取消のため）`)
+          const reason = teacherChangeInfo || `${teacherName}がこのコマの希望を取り消したため`
+          markChangedPair(slot, changedAssignment, `講師差替: ${teacherName} → ${replacement.name}\n理由: ${reason}`)
           changeLog.push({ slot, action: '講師差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
         } else {
           changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
@@ -589,7 +653,9 @@ const buildIncrementalAutoAssignments = (
         if (!studentIds.has(sid)) {
           changeLog.push({ slot, action: '生徒削除', detail: `${studentName} を解除（削除済）` })
         } else {
-          changeLog.push({ slot, action: '生徒解除', detail: `${studentName} を解除（予定変更のため）` })
+          const changeInfo = describeStudentSubmissionChange(sid)
+          const reason = changeInfo || `${studentName}がこのコマを不可に変更したため`
+          changeLog.push({ slot, action: '生徒解除', detail: `${studentName} を解除\n理由: ${reason}` })
         }
       }
 
@@ -597,8 +663,12 @@ const buildIncrementalAutoAssignments = (
         const changedAssignment = { ...assignment, studentIds: validStudentIds }
         cleaned.push(changedAssignment)
         if (assignment.studentIds.length !== validStudentIds.length) {
-          const removedNames = removedStudentIds.map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid).join(', ')
-          markChangedPair(slot, changedAssignment, `生徒解除: ${removedNames}`)
+          const removedNames = removedStudentIds.map((sid) => {
+            const name = data.students.find((s) => s.id === sid)?.name ?? sid
+            const changeInfo = describeStudentSubmissionChange(sid)
+            return changeInfo || `${name}: このコマを不可に変更`
+          }).join('\n')
+          markChangedPair(slot, changedAssignment, `生徒解除:\n${removedNames}`)
         }
       } else if (removedStudentIds.length > 0) {
         const changedAssignment = { ...assignment, studentIds: [] }
@@ -649,7 +719,9 @@ const buildIncrementalAutoAssignments = (
         if (currentLoad > requested) {
           specialLoadMap.set(key, currentLoad - 1)
           removedAny = true
-          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${subj})` })
+          const changeInfo = describeStudentSubmissionChange(studentId)
+          const reason = changeInfo || `${student?.name ?? studentId}が${subj}の希望コマ数を${requested}コマに減らしたため`
+          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${subj}) を解除\n理由: ${reason}` })
           continue
         }
         remainingStudentIds.push(studentId)
@@ -658,7 +730,7 @@ const buildIncrementalAutoAssignments = (
       if (removedAny) {
         assignment.studentIds = remainingStudentIds
         if (remainingStudentIds.length > 0) {
-          markChangedPair(slot, assignment, `希望減で一部生徒解除`)
+          markChangedPair(slot, assignment, `希望コマ数減少により一部生徒を解除`)
         }
       }
     }
@@ -715,7 +787,9 @@ const buildIncrementalAutoAssignments = (
         studentSubjects[best.id] = bestSubj
         assignment.studentIds = [...assignment.studentIds, best.id]
         assignment.studentSubjects = studentSubjects
-        markChangedPair(slot, assignment, `生徒追加: ${best.name}(${bestSubj})`)
+        const addChangeInfo = describeStudentSubmissionChange(best.id)
+        const addReason = addChangeInfo || `${best.name}の${bestSubj}が未充足(残${(best.subjectSlots[bestSubj] ?? 0) - countStudentSubjectLoad(result, best.id, bestSubj)}コマ)のため空き枠に追加`
+        markChangedPair(slot, assignment, `生徒追加: ${best.name}(${bestSubj})\n理由: ${addReason}`)
         changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
       }
     }
@@ -950,13 +1024,22 @@ const buildIncrementalAutoAssignments = (
       // Only log newly added assignments
       for (const a of slotAssignments.slice(existingAssignments.length)) {
         const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
+        const tChange = describeTeacherSubmissionChange(a.teacherId)
         const sNames = a.studentIds.map((sid) => {
           const name = data.students.find((s) => s.id === sid)?.name ?? '?'
           const subj = getStudentSubject(a, sid)
           return `${name}(${subj})`
         }).join(', ')
-        markAddedPair(slot, a, `新規割当: ${tName} × ${sNames}`)
-        changeLog.push({ slot, action: '新規割当', detail: `${tName} × ${sNames}` })
+        const sChanges = a.studentIds
+          .map((sid) => describeStudentSubmissionChange(sid))
+          .filter(Boolean)
+          .join(' / ')
+        const detailParts = [`新規割当: ${tName} × ${sNames}`]
+        if (tChange) detailParts.push(`[講師] ${tChange}`)
+        if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
+        const fullDetail = detailParts.join(' | ')
+        markAddedPair(slot, a, fullDetail)
+        changeLog.push({ slot, action: '新規割当', detail: fullDetail })
       }
     }
   }
@@ -2911,6 +2994,7 @@ const AdminPage = () => {
         ...current,
         assignments: nextAssignments,
         autoAssignHighlights: { added: {}, changed: {} },
+        settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }))
 
       const msg = unassignedParents.length > 0
@@ -2965,6 +3049,7 @@ const AdminPage = () => {
       ...current,
       assignments: nextAssignments,
       autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, changeDetails: highlightDetails },
+      settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
     }))
     const remainingMessage = remainingStudents.length > 0
       ? `\n\n未充足の生徒:\n${remainingStudents
@@ -4151,7 +4236,19 @@ const TeacherInputPage = ({
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
-    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    const submittedAt = new Date().toLocaleString('ja-JP')
+    const availCount = availabilityArray.length
+    const personTypeLabel = personKeyPrefix === 'manager' ? '講師' : '講師'
+    void downloadSubmissionReceiptPdf({
+      sessionName: data.settings.name,
+      personName: teacher.name,
+      personType: personTypeLabel,
+      submittedAt,
+      details: [`出勤可能コマ数: ${availCount}コマ`],
+      isUpdate,
+    }).finally(() => {
+      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    })
   }
 
   // --- Manager-specific: per-day time range input ---
@@ -4652,11 +4749,24 @@ const StudentInputPage = ({
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
-    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    const submittedAt = new Date().toLocaleString('ja-JP')
+    const subjectDetails = Object.entries(subjectSlots)
+      .filter(([, count]) => count > 0)
+      .map(([subj, count]) => `${subj}: ${count}コマ`)
+    const unavailCount = unavailableSlots.size
+    void downloadSubmissionReceiptPdf({
+      sessionName: data.settings.name,
+      personName: student.name,
+      personType: '生徒',
+      submittedAt,
+      details: [...subjectDetails, `不可コマ数: ${unavailCount}`],
+      isUpdate,
+    }).finally(() => {
+      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    })
   }
 
-  return (
-    <div className="availability-container">
+  return (    <div className="availability-container">
       <div className="availability-header">
         <h2>{data.settings.name} - 生徒希望入力</h2>
         <p>
@@ -4955,7 +5065,19 @@ const MendanParentInputPage = ({
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
     saveSession(sessionId, next).catch(() => { /* ignore */ })
-    navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    const submittedAt = new Date().toLocaleString('ja-JP')
+    const isUpdate = !!(student.submittedAt)
+    const availCount = availabilityArray.length
+    void downloadSubmissionReceiptPdf({
+      sessionName: data.settings.name,
+      personName: `${student.name} 保護者`,
+      personType: '保護者',
+      submittedAt,
+      details: [`面談希望コマ数: ${availCount}コマ`],
+      isUpdate,
+    }).finally(() => {
+      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+    })
   }
 
   // Compute which slot numbers have at least one manager available (for column display)
