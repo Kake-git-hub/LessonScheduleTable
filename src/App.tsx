@@ -1081,6 +1081,8 @@ const HomePage = () => {
   const [newSubmissionEnd, setNewSubmissionEnd] = useState('')
   const [newDeskCount, setNewDeskCount] = useState(0)
   const [newHolidays, setNewHolidays] = useState<string[]>([])
+  const [newMendanStartHour, setNewMendanStartHour] = useState(13)
+  const [newMendanEndHour, setNewMendanEndHour] = useState(20)
 
   // Master data form state
   const [managerName, setManagerName] = useState('')
@@ -1524,7 +1526,9 @@ const HomePage = () => {
     seed.settings.holidays = [...newHolidays]
     seed.settings.sessionType = isMendanSession ? 'mendan' : 'lecture'
     if (isMendanSession) {
-      seed.settings.slotsPerDay = 7 // 13:00-20:00 in 1-hour slots
+      const slots = newMendanEndHour - newMendanStartHour
+      seed.settings.slotsPerDay = slots > 0 ? slots : 7
+      seed.settings.mendanStartHour = newMendanStartHour
     } else {
       seed.settings.slotsPerDay = newDeskCount > 0 ? 5 : 5
     }
@@ -1646,6 +1650,25 @@ const HomePage = () => {
                       <span style={{ fontSize: '11px' }}>0=無制限</span>
                     </label>
                   </div>
+                  {newTerm.includes('mendan') && (
+                    <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                      <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        面談時間帯:
+                        <select value={newMendanStartHour} onChange={(e) => setNewMendanStartHour(Number(e.target.value))}>
+                          {Array.from({ length: 12 }, (_, i) => i + 9).map((h) => (
+                            <option key={h} value={h}>{h}:00</option>
+                          ))}
+                        </select>
+                        〜
+                        <select value={newMendanEndHour} onChange={(e) => setNewMendanEndHour(Number(e.target.value))}>
+                          {Array.from({ length: 12 }, (_, i) => i + 10).map((h) => (
+                            <option key={h} value={h}>{h}:00</option>
+                          ))}
+                        </select>
+                        <span style={{ fontSize: '11px' }}>({Math.max(0, newMendanEndHour - newMendanStartHour)}コマ)</span>
+                      </label>
+                    </div>
+                  )}
                   <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                     <span className="muted">休日:</span>
                     <input
@@ -2456,6 +2479,7 @@ const AdminPage = () => {
 
   // Mendan (interview) mode: managers act as instructors instead of teachers
   const isMendan = data?.settings.sessionType === 'mendan'
+  const mendanStart = data?.settings.mendanStartHour ?? 13
   const instructors: Teacher[] = useMemo(() => {
     if (!data) return []
     if (isMendan) {
@@ -2695,7 +2719,7 @@ const AdminPage = () => {
       : ''
     const shortageMessage = shortageEntries.length > 0
       ? `\n\n講師不足:\n${shortageEntries
-          .map((item) => `${slotLabel(item.slot, isMendan)} ${item.detail}`)
+          .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail}`)
           .join('\n')}`
       : ''
     if (changeLog.length > 0) {
@@ -3327,7 +3351,7 @@ service cloud.firestore {
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
                   .join('\n')
                 const shortageTooltip = teacherShortages
-                  .map((item) => `${slotLabel(item.slot, isMendan)}: ${item.detail}`)
+                  .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)}: ${item.detail}`)
                   .join('\n')
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
@@ -3374,6 +3398,40 @@ service cloud.firestore {
               </button>
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
+            {isMendan && (
+              <div className="row" style={{ gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '4px' }}>
+                <span className="muted" style={{ fontSize: '13px' }}>面談時間帯:</span>
+                <select
+                  value={mendanStart}
+                  onChange={(e) => {
+                    const newStart = Number(e.target.value)
+                    const currentEnd = mendanStart + data.settings.slotsPerDay
+                    const newSlots = Math.max(1, currentEnd - newStart)
+                    void update((c) => ({ ...c, settings: { ...c.settings, mendanStartHour: newStart, slotsPerDay: newSlots } }))
+                  }}
+                  style={{ fontSize: '13px' }}
+                >
+                  {Array.from({ length: 12 }, (_, i) => i + 9).map((h) => (
+                    <option key={h} value={h}>{h}:00</option>
+                  ))}
+                </select>
+                <span className="muted">〜</span>
+                <select
+                  value={mendanStart + data.settings.slotsPerDay}
+                  onChange={(e) => {
+                    const newEnd = Number(e.target.value)
+                    const newSlots = Math.max(1, newEnd - mendanStart)
+                    void update((c) => ({ ...c, settings: { ...c.settings, slotsPerDay: newSlots } }))
+                  }}
+                  style={{ fontSize: '13px' }}
+                >
+                  {Array.from({ length: 12 }, (_, i) => i + 10).map((h) => (
+                    <option key={h} value={h}>{h}:00</option>
+                  ))}
+                </select>
+                <span className="muted" style={{ fontSize: '12px' }}>({data.settings.slotsPerDay}コマ)</span>
+              </div>
+            )}
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
@@ -3527,7 +3585,7 @@ service cloud.firestore {
                   >
                     <div className="slot-title">
                       <div>
-                        {slotLabel(slot, isMendan)}
+                        {slotLabel(slot, isMendan, mendanStart)}
                         {(data.settings.deskCount ?? 0) > 0 && (
                           <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
                             {slotAssignments.length}/{data.settings.deskCount}
@@ -3977,7 +4035,7 @@ const TeacherInputPage = ({
                   onClick={() => toggleColumnAllSlots(i + 1)}
                   title="この時限を一括切替"
                 >
-                  {personKeyPrefix === 'manager' ? mendanTimeLabel(i + 1) : `${i + 1}限`}
+                  {personKeyPrefix === 'manager' ? mendanTimeLabel(i + 1, data.settings.mendanStartHour) : `${i + 1}限`}
                 </th>
               ))}
             </tr>
@@ -4303,7 +4361,7 @@ const StudentInputPage = ({
                     onClick={() => toggleColumnAllSlots(i + 1)}
                     title="この時間帯を一括切替"
                   >
-                    {mendanTimeLabel(i + 1)}
+                    {mendanTimeLabel(i + 1, data.settings.mendanStartHour)}
                   </th>
                 ))}
               </tr>
@@ -4544,7 +4602,7 @@ const MendanParentInputPage = ({
                   onClick={() => toggleColumnAllSlots(i + 1)}
                   title="この時間帯を一括切替"
                 >
-                  {i + 1}限
+                  {mendanTimeLabel(i + 1, data.settings.mendanStartHour)}
                 </th>
               ))}
             </tr>

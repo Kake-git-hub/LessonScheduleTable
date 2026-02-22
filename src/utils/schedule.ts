@@ -39,18 +39,18 @@ export const formatShortDate = (iso: string): string => {
   return `${d.getMonth() + 1}/${d.getDate()}(${DAY_NAMES[d.getDay()]})`
 }
 
-export const slotLabel = (slotKey: string, isMendan = false): string => {
+export const slotLabel = (slotKey: string, isMendan = false, startHour = 13): string => {
   const [date, slot] = slotKey.split('_')
   if (isMendan) {
-    const hour = 12 + Number(slot)
+    const hour = startHour - 1 + Number(slot)
     return `${formatShortDate(date)} ${hour}:00`
   }
   return `${formatShortDate(date)} ${slot}限`
 }
 
 /** Convert mendan slot number (1-based) to time label "HH:00" */
-export const mendanTimeLabel = (slotNum: number): string => {
-  const hour = 12 + slotNum
+export const mendanTimeLabel = (slotNum: number, startHour = 13): string => {
+  const hour = startHour - 1 + slotNum
   return `${hour}:00`
 }
 

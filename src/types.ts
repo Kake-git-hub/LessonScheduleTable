@@ -77,6 +77,7 @@ export type SessionSettings = {
   submissionStartDate?: string
   submissionEndDate?: string
   sessionType?: 'lecture' | 'mendan'
+  mendanStartHour?: number
   createdAt?: number
   updatedAt?: number
 }
