@@ -1524,8 +1524,8 @@ const HomePage = () => {
     seed.settings.holidays = [...newHolidays]
     seed.settings.sessionType = isMendanSession ? 'mendan' : 'lecture'
     if (isMendanSession) {
-      seed.settings.slotsPerDay = 12 // 9:00-21:00 full range; managers define their own times
-      seed.settings.mendanStartHour = 9
+      seed.settings.slotsPerDay = 10 // 10:00-20:00 range; managers define their own times
+      seed.settings.mendanStartHour = 10
     } else {
       seed.settings.slotsPerDay = newDeskCount > 0 ? 5 : 5
     }
@@ -2450,6 +2450,48 @@ const AdminPage = () => {
     }
   }
 
+  /** Bulk-share: open mailto: with individual URLs per person */
+  const bulkShareByEmail = (
+    persons: { id: string; name: string; email: string }[],
+    personType: PersonType,
+    groupLabel: string,
+  ): void => {
+    const withEmail = persons.filter((p) => p.email.trim())
+    if (withEmail.length === 0) {
+      alert(`メールアドレスが登録されている${groupLabel}がいません。\n先にメールアドレスを登録してください。`)
+      return
+    }
+    const sessionName = data?.settings.name ?? ''
+    const subject = `【${sessionName}】希望入力URLのご案内`
+    const bodyLines: string[] = [
+      `${sessionName}の希望入力URLをお送りします。`,
+      '',
+      '以下のURLからご自身の希望を入力してください。',
+      '',
+      ...withEmail.flatMap((p) => [
+        `■ ${p.name}`,
+        buildInputUrl(personType, p.id),
+        '',
+      ]),
+    ]
+    const toEmails = withEmail.map((p) => p.email).join(',')
+    const mailtoUrl = `mailto:${encodeURIComponent(toEmails)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(bodyLines.join('\n'))}`
+
+    // mailto: URL length limit workaround
+    if (mailtoUrl.length > 2000) {
+      // Fallback: copy body to clipboard and open mailto with just recipients
+      const clipText = `件名: ${subject}\n\n${bodyLines.join('\n')}`
+      navigator.clipboard.writeText(clipText).then(() => {
+        alert(`URLが長いため、メール本文をクリップボードにコピーしました。\nメールソフトが開きますので、本文を貼り付けてください。`)
+        window.location.href = `mailto:${encodeURIComponent(toEmails)}?subject=${encodeURIComponent(subject)}`
+      }).catch(() => {
+        window.prompt('以下のメール本文をコピーしてください:', clipText)
+      })
+    } else {
+      window.location.href = mailtoUrl
+    }
+  }
+
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
     navigate(`/availability/${sessionId}/${personType}/${personId}`, { state: { fromAdminInput: true } })
   }
@@ -2462,7 +2504,7 @@ const AdminPage = () => {
 
   // Mendan (interview) mode: managers act as instructors instead of teachers
   const isMendan = data?.settings.sessionType === 'mendan'
-  const mendanStart = data?.settings.mendanStartHour ?? 9
+  const mendanStart = data?.settings.mendanStartHour ?? 10
 
   // For mendan: compute which slot numbers actually have manager availability
   const mendanActiveSlots = useMemo(() => {
@@ -3229,7 +3271,17 @@ service cloud.firestore {
       ) : (
         <>
           <div className="panel">
-            <h3>{instructorLabel}一覧</h3>
+            <div className="row" style={{ alignItems: 'center', gap: '12px' }}>
+              <h3>{instructorLabel}一覧</h3>
+              <button
+                className="btn secondary"
+                type="button"
+                style={{ fontSize: '13px' }}
+                onClick={() => bulkShareByEmail(instructors, instructorPersonType, instructorLabel)}
+              >
+                ✉ 一括メール共有
+              </button>
+            </div>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
@@ -3264,7 +3316,17 @@ service cloud.firestore {
           </div>
 
           <div className="panel">
-            <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
+            <div className="row" style={{ alignItems: 'center', gap: '12px' }}>
+              <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
+              <button
+                className="btn secondary"
+                type="button"
+                style={{ fontSize: '13px' }}
+                onClick={() => bulkShareByEmail(data.students, 'student', isMendan ? '保護者' : '生徒')}
+              >
+                ✉ 一括メール共有
+              </button>
+            </div>
             <p className="muted">{isMendan ? '面談可能時間帯は保護者が希望URLから入力します。' : '希望コマ数・不可日は生徒本人が希望URLから入力します。'}</p>
             <table className="table">
               <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
@@ -3988,7 +4050,7 @@ const TeacherInputPage = ({
 
   // --- Manager-specific: per-day time range input ---
   const isManagerMode = personKeyPrefix === 'manager'
-  const mStartHour = data.settings.mendanStartHour ?? 9
+  const mStartHour = data.settings.mendanStartHour ?? 10
   const mEndHour = mStartHour + data.settings.slotsPerDay // exclusive end
 
   // Compute per-day start/end from current availability
@@ -4036,7 +4098,7 @@ const TeacherInputPage = ({
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const [defaultStart, setDefaultStart] = useState(13)
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const [defaultEnd, setDefaultEnd] = useState(18)
+  const [defaultEnd, setDefaultEnd] = useState(17)
 
   const applyDefaultToAll = () => {
     setLocalAvailability(() => {
@@ -4791,7 +4853,7 @@ const MendanParentInputPage = ({
   }
 
   // Compute which slot numbers have at least one manager available (for column display)
-  const mendanStartHour = data.settings.mendanStartHour ?? 9
+  const mendanStartHour = data.settings.mendanStartHour ?? 10
   const activeSlotNums = useMemo(() => {
     const nums = new Set<number>()
     for (const sk of managerAvailableSlots) {
