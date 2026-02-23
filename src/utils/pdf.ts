@@ -279,7 +279,9 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   }
 
   try {
-    doc.save(`コマ割り_${sessionName}.pdf`)
+    const now = new Date()
+    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+    doc.save(`コマ割り_${sessionName}_${ts}.pdf`)
   } catch (err) {
     console.error('PDF save error:', err)
     alert('PDF出力に失敗しました: ' + String(err))
@@ -471,5 +473,6 @@ export async function downloadSubmissionReceiptPdf(params: SubmissionReceiptPdfP
   doc.text(`発行日: ${new Date().toLocaleDateString('ja-JP')}`, centerX, lastPageH - 10, { align: 'center' })
 
   const label = isUpdate ? '更新記録' : '提出記録'
-  doc.save(`希望入力_${label}_${personName}.pdf`)
+  const ts = submittedAt.replace(/[\/:]/g, '').replace(/\s+/g, '_')
+  doc.save(`希望入力_${label}_${sessionName}_${personName}_${ts}.pdf`)
 }

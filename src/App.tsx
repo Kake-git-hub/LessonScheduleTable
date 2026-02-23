@@ -1216,6 +1216,15 @@ const HomePage = () => {
   const [editStudentEmail, setEditStudentEmail] = useState('')
   const [editStudentGrade, setEditStudentGrade] = useState('')
 
+  // Editing state for regular lessons
+  const [editingRegularLessonId, setEditingRegularLessonId] = useState<string | null>(null)
+
+  // Editing state for pair constraints
+  const [editingConstraintId, setEditingConstraintId] = useState<string | null>(null)
+
+  // Editing state for grade constraints
+  const [editingGradeConstraintId, setEditingGradeConstraintId] = useState<string | null>(null)
+
   useEffect(() => {
     if (import.meta.env.DEV) {
       navigate('/boot', { replace: true })
@@ -1379,6 +1388,97 @@ const HomePage = () => {
 
   const removeRegularLesson = async (lessonId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, regularLessons: c.regularLessons.filter((l) => l.id !== lessonId) }))
+  }
+
+  // Edit regular lesson: populate form fields with existing data
+  const startEditRegularLesson = (l: RegularLesson): void => {
+    setEditingRegularLessonId(l.id)
+    setRegularTeacherId(l.teacherId)
+    setRegularStudent1Id(l.studentIds[0] ?? '')
+    setRegularStudent2Id(l.studentIds[1] ?? '')
+    setRegularSubject(l.subject)
+    setRegularDayOfWeek(String(l.dayOfWeek))
+    setRegularSlotNumber(String(l.slotNumber))
+  }
+
+  const saveEditRegularLesson = async (): Promise<void> => {
+    if (!editingRegularLessonId) return
+    const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
+    if (!regularTeacherId || studentIds.length === 0 || !regularSubject || !regularDayOfWeek || !regularSlotNumber) return
+    await updateMaster((c) => ({
+      ...c,
+      regularLessons: c.regularLessons.map((l) =>
+        l.id === editingRegularLessonId
+          ? { ...l, teacherId: regularTeacherId, studentIds, subject: regularSubject, dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10) }
+          : l,
+      ),
+    }))
+    setEditingRegularLessonId(null)
+    setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
+    setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+  }
+
+  const cancelEditRegularLesson = (): void => {
+    setEditingRegularLessonId(null)
+    setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
+    setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+  }
+
+  // Edit pair constraint: populate form
+  const startEditConstraint = (c: PairConstraint): void => {
+    setEditingConstraintId(c.id)
+    setConstraintTeacherId(c.teacherId)
+    setConstraintStudentId(c.studentId)
+    setConstraintType(c.type)
+  }
+
+  const saveEditConstraint = async (): Promise<void> => {
+    if (!editingConstraintId || !constraintTeacherId || !constraintStudentId) return
+    await updateMaster((c) => ({
+      ...c,
+      constraints: c.constraints.map((item) =>
+        item.id === editingConstraintId
+          ? { ...item, teacherId: constraintTeacherId, studentId: constraintStudentId, type: constraintType }
+          : item,
+      ),
+    }))
+    setEditingConstraintId(null)
+    setConstraintTeacherId(''); setConstraintStudentId('')
+  }
+
+  const cancelEditConstraint = (): void => {
+    setEditingConstraintId(null)
+    setConstraintTeacherId(''); setConstraintStudentId('')
+  }
+
+  // Edit grade constraint: populate form
+  const startEditGradeConstraint = (gc: GradeConstraint): void => {
+    setEditingGradeConstraintId(gc.id)
+    setGradeConstraintTeacherId(gc.teacherId)
+    setGradeConstraintGrade(gc.grade)
+    setGradeConstraintType(gc.type)
+    setGradeConstraintSubjects(gc.subjects ? [...gc.subjects] : [])
+  }
+
+  const saveEditGradeConstraint = async (): Promise<void> => {
+    if (!editingGradeConstraintId || !gradeConstraintTeacherId || !gradeConstraintGrade) return
+    await updateMaster((c) => ({
+      ...c,
+      gradeConstraints: (c.gradeConstraints ?? []).map((item) =>
+        item.id === editingGradeConstraintId
+          ? { ...item, teacherId: gradeConstraintTeacherId, grade: gradeConstraintGrade, type: gradeConstraintType, ...(gradeConstraintSubjects.length > 0 ? { subjects: gradeConstraintSubjects } : { subjects: undefined }) }
+          : item,
+      ),
+    }))
+    setEditingGradeConstraintId(null)
+    setGradeConstraintTeacherId(''); setGradeConstraintGrade('')
+    setGradeConstraintSubjects([])
+  }
+
+  const cancelEditGradeConstraint = (): void => {
+    setEditingGradeConstraintId(null)
+    setGradeConstraintTeacherId(''); setGradeConstraintGrade('')
+    setGradeConstraintSubjects([])
   }
 
   // --- Excel (operates on master data) ---
@@ -2049,7 +2149,14 @@ const HomePage = () => {
                       <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
                     </select>
                     <input type="number" value={regularSlotNumber} onChange={(e) => setRegularSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
-                    <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
+                    {editingRegularLessonId ? (
+                      <>
+                        <button className="btn" type="button" onClick={() => void saveEditRegularLesson()}>更新</button>
+                        <button className="btn secondary" type="button" onClick={cancelEditRegularLesson}>キャンセル</button>
+                      </>
+                    ) : (
+                      <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
+                    )}
                   </div>
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
                   <table className="table">
@@ -2062,7 +2169,10 @@ const HomePage = () => {
                             <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
                             <td>{l.studentIds.map((id) => masterData.students.find((s) => s.id === id)?.name ?? '-').join(', ')}</td>
                             <td>{l.subject}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
-                            <td><button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button></td>
+                            <td>
+                              <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
+                            </td>
                           </tr>
                         )
                       })}
@@ -2084,7 +2194,14 @@ const HomePage = () => {
                     <select value={constraintType} onChange={(e) => setConstraintType(e.target.value as ConstraintType)}>
                       <option value="incompatible">組み合わせ不可</option>
                     </select>
-                    <button className="btn" type="button" onClick={() => void upsertConstraint()}>保存</button>
+                    {editingConstraintId ? (
+                      <>
+                        <button className="btn" type="button" onClick={() => void saveEditConstraint()}>更新</button>
+                        <button className="btn secondary" type="button" onClick={cancelEditConstraint}>キャンセル</button>
+                      </>
+                    ) : (
+                      <button className="btn" type="button" onClick={() => void upsertConstraint()}>保存</button>
+                    )}
                   </div>
                   <table className="table">
                     <thead><tr><th>講師</th><th>生徒</th><th>種別</th><th>操作</th></tr></thead>
@@ -2094,7 +2211,10 @@ const HomePage = () => {
                           <td>{masterData.teachers.find((t) => t.id === c.teacherId)?.name ?? '-'}</td>
                           <td>{masterData.students.find((s) => s.id === c.studentId)?.name ?? '-'}</td>
                           <td><span className="badge warn">不可</span></td>
-                          <td><button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button></td>
+                          <td>
+                            <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditConstraint(c)}>編集</button>
+                            <button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -2133,7 +2253,10 @@ const HomePage = () => {
                       ))}
                       <span style={{ fontSize: '11px', color: '#94a3b8' }}>未選択=全科目</span>
                     </div>
-                    <button className="btn" type="button" onClick={() => void upsertGradeConstraint()}>保存</button>
+                    <button className="btn" type="button" onClick={() => void (editingGradeConstraintId ? saveEditGradeConstraint() : upsertGradeConstraint())}>{editingGradeConstraintId ? '更新' : '保存'}</button>
+                    {editingGradeConstraintId && (
+                      <button className="btn secondary" type="button" onClick={cancelEditGradeConstraint}>キャンセル</button>
+                    )}
                   </div>
                   <table className="table">
                     <thead><tr><th>講師</th><th>学年</th><th>科目</th><th>種別</th><th>操作</th></tr></thead>
@@ -2144,7 +2267,10 @@ const HomePage = () => {
                           <td>{gc.grade}</td>
                           <td>{gc.subjects && gc.subjects.length > 0 ? gc.subjects.join(', ') : '全科目'}</td>
                           <td><span className="badge warn">不可</span></td>
-                          <td><button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button></td>
+                          <td>
+                            <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditGradeConstraint(gc)}>編集</button>
+                            <button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
