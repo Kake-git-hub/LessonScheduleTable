@@ -5,6 +5,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
   onSnapshot,
   orderBy,
@@ -28,25 +29,32 @@ const app = initializeApp(firebaseConfig)
 const db = getFirestore(app)
 const auth = getAuth(app)
 
-const sessionRef = (sessionId: string) => doc(db, 'sessions', sessionId)
+// ---------- Path helpers ----------
+// Data is scoped per classroom:
+//   classrooms/{classroomId}                       — classroom metadata
+//   classrooms/{classroomId}/master/default         — master data
+//   classrooms/{classroomId}/sessions/{sessionId}   — session data
+
+const classroomRef = (classroomId: string) => doc(db, 'classrooms', classroomId)
+const classroomSessionsCol = (classroomId: string) => collection(db, 'classrooms', classroomId, 'sessions')
+const classroomSessionRef = (classroomId: string, sessionId: string) => doc(db, 'classrooms', classroomId, 'sessions', sessionId)
+const classroomMasterRef = (classroomId: string) => doc(db, 'classrooms', classroomId, 'master', 'default')
 
 // ---------- Anonymous Auth ----------
 
 let authReady: Promise<User | null> | null = null
 
-/** Sign in anonymously. Call once at app start. */
 export const initAuth = (): Promise<User | null> => {
   if (authReady) return authReady
   authReady = signInAnonymously(auth)
     .then((cred) => cred.user)
     .catch((e) => {
-      console.warn('Anonymous auth failed (enable it in Firebase Console → Authentication → Sign-in method):', e)
+      console.warn('Anonymous auth failed:', e)
       return null
     })
   return authReady
 }
 
-/** Wait until auth is settled. Returns current user or null. */
 export const waitForAuth = (): Promise<User | null> => authReady ?? Promise.resolve(null)
 
 // ---------- Diagnostics ----------
@@ -61,8 +69,7 @@ export type FirestoreDiag = {
   error?: string
 }
 
-/** Run a full diagnostic: auth state, read access, and session existence. */
-export const diagnoseFirestore = async (sessionId: string): Promise<FirestoreDiag> => {
+export const diagnoseFirestore = async (classroomId: string, sessionId: string): Promise<FirestoreDiag> => {
   const result: FirestoreDiag = {
     authenticated: auth.currentUser != null,
     uid: auth.currentUser?.uid ?? '',
@@ -72,7 +79,7 @@ export const diagnoseFirestore = async (sessionId: string): Promise<FirestoreDia
     studentCount: 0,
   }
   try {
-    const snap = await getDoc(sessionRef(sessionId))
+    const snap = await getDoc(classroomSessionRef(classroomId, sessionId))
     result.canRead = true
     result.sessionFound = snap.exists()
     if (snap.exists()) {
@@ -86,7 +93,53 @@ export const diagnoseFirestore = async (sessionId: string): Promise<FirestoreDia
   return result
 }
 
-// ---------- Session CRUD ----------
+// ---------- Classroom CRUD ----------
+
+export type ClassroomInfo = {
+  id: string
+  name: string
+  createdAt: number
+}
+
+export const watchClassrooms = (
+  callback: (items: ClassroomInfo[]) => void,
+  onError?: (error: Error) => void,
+): Unsubscribe => {
+  const q = query(collection(db, 'classrooms'))
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items = snapshot.docs
+        .filter((d) => d.data().name)
+        .map((d) => ({
+          id: d.id,
+          name: (d.data().name as string) ?? d.id,
+          createdAt: (d.data().createdAt as number) ?? 0,
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt)
+      callback(items)
+    },
+    (error) => {
+      if (onError) onError(error)
+      else console.error('watchClassrooms error:', error)
+    },
+  )
+}
+
+export const createClassroom = async (id: string, name: string): Promise<void> => {
+  await setDoc(classroomRef(id), { name, createdAt: Date.now() })
+}
+
+export const deleteClassroom = async (id: string): Promise<void> => {
+  const sessionsSnap = await getDocs(classroomSessionsCol(id))
+  for (const sDoc of sessionsSnap.docs) {
+    await deleteDoc(sDoc.ref)
+  }
+  try { await deleteDoc(doc(db, 'classrooms', id, 'master', 'default')) } catch { /* ignore */ }
+  await deleteDoc(classroomRef(id))
+}
+
+// ---------- Session CRUD (classroom-scoped) ----------
 
 export type SessionListItem = {
   id: string
@@ -96,10 +149,11 @@ export type SessionListItem = {
 }
 
 export const watchSessionsList = (
+  classroomId: string,
   callback: (items: SessionListItem[]) => void,
   onError?: (error: Error) => void,
 ): Unsubscribe => {
-  const q = query(collection(db, 'sessions'), orderBy('settings.createdAt', 'desc'))
+  const q = query(classroomSessionsCol(classroomId), orderBy('settings.createdAt', 'desc'))
   return onSnapshot(
     q,
     (snapshot) => {
@@ -107,12 +161,7 @@ export const watchSessionsList = (
         const data = docSnap.data() as SessionData
         const createdAt = data.settings.createdAt ?? 0
         const updatedAt = data.settings.updatedAt ?? createdAt
-        return {
-          id: docSnap.id,
-          name: data.settings.name,
-          createdAt,
-          updatedAt,
-        }
+        return { id: docSnap.id, name: data.settings.name, createdAt, updatedAt }
       })
       callback(items)
     },
@@ -124,12 +173,13 @@ export const watchSessionsList = (
 }
 
 export const watchSession = (
+  classroomId: string,
   sessionId: string,
   callback: (value: SessionData | null) => void,
   onError?: (error: Error) => void,
 ): Unsubscribe =>
   onSnapshot(
-    sessionRef(sessionId),
+    classroomSessionRef(classroomId, sessionId),
     (snapshot) => {
       callback(snapshot.exists() ? (snapshot.data() as SessionData) : null)
     },
@@ -139,47 +189,40 @@ export const watchSession = (
     },
   )
 
-export const loadSession = async (sessionId: string): Promise<SessionData | null> => {
-  const snapshot = await getDoc(sessionRef(sessionId))
+export const loadSession = async (classroomId: string, sessionId: string): Promise<SessionData | null> => {
+  const snapshot = await getDoc(classroomSessionRef(classroomId, sessionId))
   return snapshot.exists() ? (snapshot.data() as SessionData) : null
 }
 
-export const saveSession = async (sessionId: string, data: SessionData): Promise<void> => {
+export const saveSession = async (classroomId: string, sessionId: string, data: SessionData): Promise<void> => {
   const now = Date.now()
   const createdAt = data.settings.createdAt ?? now
   const next: SessionData = {
     ...data,
-    settings: {
-      ...data.settings,
-      createdAt,
-      updatedAt: now,
-    },
+    settings: { ...data.settings, createdAt, updatedAt: now },
   }
-  await setDoc(sessionRef(sessionId), next)
+  await setDoc(classroomSessionRef(classroomId, sessionId), next)
 }
 
-/** Save and immediately verify the write was committed to the server. */
-export const saveAndVerify = async (sessionId: string, data: SessionData): Promise<boolean> => {
-  await saveSession(sessionId, data)
-  // Read back to verify server-side persistence
-  const snap = await getDoc(sessionRef(sessionId))
+export const saveAndVerify = async (classroomId: string, sessionId: string, data: SessionData): Promise<boolean> => {
+  await saveSession(classroomId, sessionId, data)
+  const snap = await getDoc(classroomSessionRef(classroomId, sessionId))
   return snap.exists()
 }
 
-export const deleteSession = async (sessionId: string): Promise<void> => {
-  await deleteDoc(sessionRef(sessionId))
+export const deleteSession = async (classroomId: string, sessionId: string): Promise<void> => {
+  await deleteDoc(classroomSessionRef(classroomId, sessionId))
 }
 
-// --- Master Data ---
-
-const masterRef = doc(db, 'master', 'default')
+// ---------- Master Data (classroom-scoped) ----------
 
 export const watchMasterData = (
+  classroomId: string,
   callback: (data: MasterData | null) => void,
   onError?: (error: Error) => void,
 ): Unsubscribe =>
   onSnapshot(
-    masterRef,
+    classroomMasterRef(classroomId),
     (snapshot) => {
       callback(snapshot.exists() ? (snapshot.data() as MasterData) : null)
     },
@@ -189,11 +232,40 @@ export const watchMasterData = (
     },
   )
 
-export const loadMasterData = async (): Promise<MasterData | null> => {
-  const snapshot = await getDoc(masterRef)
+export const loadMasterData = async (classroomId: string): Promise<MasterData | null> => {
+  const snapshot = await getDoc(classroomMasterRef(classroomId))
   return snapshot.exists() ? (snapshot.data() as MasterData) : null
 }
 
-export const saveMasterData = async (data: MasterData): Promise<void> => {
-  await setDoc(masterRef, data)
+export const saveMasterData = async (classroomId: string, data: MasterData): Promise<void> => {
+  await setDoc(classroomMasterRef(classroomId), data)
+}
+
+// ---------- Migration ----------
+
+/** Migrate legacy data (sessions/*, master/default) into a classroom. */
+export const migrateLegacyData = async (classroomId: string): Promise<boolean> => {
+  let migrated = false
+  try {
+    const legacyMaster = await getDoc(doc(db, 'master', 'default'))
+    if (legacyMaster.exists()) {
+      const existing = await getDoc(classroomMasterRef(classroomId))
+      if (!existing.exists()) {
+        await setDoc(classroomMasterRef(classroomId), legacyMaster.data())
+        migrated = true
+      }
+    }
+    const legacySessionsSnap = await getDocs(collection(db, 'sessions'))
+    for (const sDoc of legacySessionsSnap.docs) {
+      const targetRef = classroomSessionRef(classroomId, sDoc.id)
+      const existing = await getDoc(targetRef)
+      if (!existing.exists()) {
+        await setDoc(targetRef, sDoc.data())
+        migrated = true
+      }
+    }
+  } catch (e) {
+    console.warn('Legacy migration error:', e)
+  }
+  return migrated
 }

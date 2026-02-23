@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { deleteSession, initAuth, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchMasterData, watchSession, watchSessionsList } from './firebase'
+import { createClassroom, deleteClassroom, deleteSession, initAuth, loadMasterData, loadSession, migrateLegacyData, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type ClassroomInfo } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -172,7 +172,7 @@ const createTemplateSession = (): SessionData => {
   }
 }
 
-const useSessionData = (sessionId: string) => {
+const useSessionData = (classroomId: string, sessionId: string) => {
   const [data, setData] = useState<SessionData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -181,6 +181,7 @@ const useSessionData = (sessionId: string) => {
     setLoading(true)
     setError(null)
     const unsub = watchSession(
+      classroomId,
       sessionId,
       (value) => {
         setData(value)
@@ -193,7 +194,7 @@ const useSessionData = (sessionId: string) => {
       },
     )
     return () => unsub()
-  }, [sessionId])
+  }, [classroomId, sessionId])
 
   return { data, setData, loading, error }
 }
@@ -1160,6 +1161,7 @@ const emptyMasterData = (): MasterData => ({
 })
 
 const HomePage = () => {
+  const { classroomId = '' } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const [unlocked, setUnlocked] = useState(false)
@@ -1227,7 +1229,7 @@ const HomePage = () => {
 
   useEffect(() => {
     if (import.meta.env.DEV) {
-      navigate('/boot', { replace: true })
+      navigate(`/c/${classroomId}/boot`, { replace: true })
     }
   }, [navigate])
 
@@ -1252,25 +1254,25 @@ const HomePage = () => {
 
   useEffect(() => {
     if (!unlocked) return
-    const unsub1 = watchSessionsList((items) => setSessions(items))
-    const unsub2 = watchMasterData((md) => {
+    const unsub1 = watchSessionsList(classroomId, (items) => setSessions(items))
+    const unsub2 = watchMasterData(classroomId, (md) => {
       if (md) {
         setMasterData(md)
       } else {
         const empty = emptyMasterData()
-        saveMasterData(empty).catch(() => {})
+        saveMasterData(classroomId, empty).catch(() => {})
         setMasterData(empty)
       }
     })
     return () => { unsub1(); unsub2() }
-  }, [unlocked])
+  }, [unlocked, classroomId])
 
   // --- Master data helpers ---
   const updateMaster = async (updater: (current: MasterData) => MasterData): Promise<void> => {
     if (!masterData) return
     const next = updater(masterData)
     setMasterData(next)
-    await saveMasterData(next)
+    await saveMasterData(classroomId, next)
   }
 
   const addManager = async (): Promise<void> => {
@@ -1713,9 +1715,9 @@ const HomePage = () => {
 
   // --- Session management ---
   const cleanupLegacyDevSession = async (): Promise<void> => {
-    const legacyDev = await loadSession('dev')
+    const legacyDev = await loadSession(classroomId, 'dev')
     if (!legacyDev) return
-    await deleteSession('dev')
+    await deleteSession(classroomId, 'dev')
   }
 
   const onUnlock = async (): Promise<void> => {
@@ -1776,7 +1778,7 @@ const HomePage = () => {
     seed.gradeConstraints = isMendanSession ? [] : masterData.gradeConstraints
     seed.regularLessons = isMendanSession ? [] : masterData.regularLessons
     try {
-      const verified = await saveAndVerify(id, seed)
+      const verified = await saveAndVerify(classroomId, id, seed)
       if (!verified) {
         alert('特別講習の作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
       }
@@ -1787,7 +1789,7 @@ const HomePage = () => {
 
   const openAdmin = (sessionId: string): void => {
     saveAdminPassword(adminPassword)
-    navigate(`/admin/${sessionId}`)
+    navigate(`/c/${classroomId}/admin/${sessionId}`)
   }
 
   const handleDeleteSession = async (sessionId: string, sessionName: string): Promise<void> => {
@@ -1798,7 +1800,7 @@ const HomePage = () => {
       alert('パスワードが正しくありません。')
       return
     }
-    await deleteSession(sessionId)
+    await deleteSession(classroomId, sessionId)
     alert('特別講習を削除しました。')
   }
 
@@ -1924,7 +1926,7 @@ const HomePage = () => {
                 <button className="btn secondary" type="button" onClick={() => {
                   // Backup: export all sessions as JSON
                   const payload = { sessions: sessions.map((s) => s.id), exportedAt: Date.now() }
-                  const promises = sessions.map((s) => loadSession(s.id).then((d) => ({ id: s.id, data: d })))
+                  const promises = sessions.map((s) => loadSession(classroomId, s.id).then((d) => ({ id: s.id, data: d })))
                   void Promise.all(promises).then((results) => {
                     const backup = { ...payload, data: Object.fromEntries(results.map((r) => [r.id, r.data])) }
                     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
@@ -1959,7 +1961,7 @@ const HomePage = () => {
                       if (overwriteIds.length > 0) msg += `\n  上書き: ${overwriteIds.join(', ')}`
                       if (!window.confirm(msg + '\n\n取り込みますか？')) return
                       for (const [id, data] of Object.entries(backup.data)) {
-                        if (data) await saveSession(id, data as SessionData)
+                        if (data) await saveSession(classroomId, id, data as SessionData)
                       }
                       alert(`${ids.length}件の特別講習を取り込みました。`)
                     } catch (e) {
@@ -2696,11 +2698,11 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
 }
 
 const AdminPage = () => {
-  const { sessionId = 'main' } = useParams()
+  const { classroomId = '', sessionId = 'main' } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
   const skipAuth = (location.state as { skipAuth?: boolean } | null)?.skipAuth === true
-  const { data, setData, loading, error: sessionError } = useSessionData(sessionId)
+  const { data, setData, loading, error: sessionError } = useSessionData(classroomId, sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
@@ -2716,7 +2718,7 @@ const AdminPage = () => {
     if (!data || masterSyncDoneRef.current) return
     masterSyncDoneRef.current = true
     const isMendanSession = data.settings.sessionType === 'mendan'
-    loadMasterData().then((master) => {
+    loadMasterData(classroomId).then((master) => {
       if (!master) return
       const needsUpdate =
         JSON.stringify(data.constraints) !== JSON.stringify(master.constraints) ||
@@ -2730,7 +2732,7 @@ const AdminPage = () => {
         regularLessons: isMendanSession ? [] : master.regularLessons,
       }
       setData(next)
-      saveSession(sessionId, next).catch(() => { /* ignore */ })
+      saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     }).catch(() => { /* ignore */ })
   }, [data, sessionId])
 
@@ -2872,7 +2874,7 @@ const AdminPage = () => {
   }
 
   const openInputPage = async (personType: PersonType, personId: string): Promise<void> => {
-    navigate(`/availability/${sessionId}/${personType}/${personId}`, { state: { fromAdminInput: true } })
+    navigate(`/c/${classroomId}/availability/${sessionId}/${personType}/${personId}`, { state: { fromAdminInput: true } })
   }
 
   useEffect(() => {
@@ -2922,7 +2924,7 @@ const AdminPage = () => {
 
   const persist = async (next: SessionData): Promise<void> => {
     setData(next)
-    await saveSession(sessionId, next)
+    await saveSession(classroomId, sessionId, next)
   }
 
   const update = async (updater: (current: SessionData) => SessionData): Promise<void> => {
@@ -2971,7 +2973,7 @@ const AdminPage = () => {
   const createSession = async (): Promise<void> => {
     const seed = emptySession()
     try {
-      const verified = await saveAndVerify(sessionId, seed)
+      const verified = await saveAndVerify(classroomId, sessionId, seed)
       if (!verified) {
         alert('特別講習の作成に失敗しました。Firebaseのセキュリティルールを確認してください。')
       }
@@ -2993,7 +2995,7 @@ const AdminPage = () => {
     if (!data || !authorized || masterSyncedRef.current === sessionId) return
     masterSyncedRef.current = sessionId
     void (async () => {
-      const master = await loadMasterData()
+      const master = await loadMasterData(classroomId)
       if (!master) return
       const mergedStudents = master.students.map((ms) => {
         const existing = data.students.find((s) => s.id === ms.id)
@@ -3023,7 +3025,7 @@ const AdminPage = () => {
         JSON.stringify(data.regularLessons) !== JSON.stringify(next.regularLessons)
       if (changed) {
         setData(next)
-        await saveSession(sessionId, next)
+        await saveSession(classroomId, sessionId, next)
       }
     })()
   }, [data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -3506,7 +3508,7 @@ service cloud.firestore {
 }`}
           </pre>
           <p className="muted">上記ルールを設定し、Firebase Console → Authentication → Sign-in method で「匿名」を有効にしてください。</p>
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -3523,7 +3525,7 @@ service cloud.firestore {
             </button>
           </div>
           <p className="muted">作成後に管理パスワードや期間を変更してください。</p>
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -3534,7 +3536,7 @@ service cloud.firestore {
       <div className="panel">
         <div className="row">
           <h2>管理画面: {data.settings.name} ({sessionId})</h2>
-          <Link to="/" state={{ directHome: true }}>ホーム</Link>
+          <Link to={`/c/${classroomId}`} state={{ directHome: true }}>ホーム</Link>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
       </div>
@@ -3545,7 +3547,7 @@ service cloud.firestore {
           <p className="muted">
             トップ画面で管理者パスワードを入力し「続行」してから、もう一度この特別講習を開いてください。
           </p>
-          <Link to="/">トップへ戻る</Link>
+          <Link to={`/c/${classroomId}`}>トップへ戻る</Link>
         </div>
       ) : (
         <>
@@ -4246,12 +4248,14 @@ const getDatesInRange = (settings: SessionData['settings']): string[] => {
 // Teacher Input Component
 // Teacher/Manager Input Component
 const TeacherInputPage = ({
+  classroomId,
   sessionId,
   data,
   teacher,
   returnToAdminOnComplete,
   personKeyPrefix = 'teacher',
 }: {
+  classroomId: string
   sessionId: string
   data: SessionData
   teacher: Teacher
@@ -4362,7 +4366,7 @@ const TeacherInputPage = ({
       },
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
-    saveSession(sessionId, next).catch(() => { /* ignore */ })
+    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const availCount = availabilityArray.length
     const personTypeLabel = personKeyPrefix === 'manager' ? '講師' : '講師'
@@ -4375,7 +4379,7 @@ const TeacherInputPage = ({
       isUpdate,
       captureElement: formRef.current,
     }).finally(() => {
-      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+      navigate(`/c/${classroomId}/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
   }
 
@@ -4719,11 +4723,13 @@ const TeacherInputPage = ({
 
 // Student Input Component
 const StudentInputPage = ({
+  classroomId,
   sessionId,
   data,
   student,
   returnToAdminOnComplete,
 }: {
+  classroomId: string
   sessionId: string
   data: SessionData
   student: Student
@@ -4877,7 +4883,7 @@ const StudentInputPage = ({
       students: updatedStudents,
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
-    saveSession(sessionId, next).catch(() => { /* ignore */ })
+    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const subjectDetails = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
@@ -4892,7 +4898,7 @@ const StudentInputPage = ({
       isUpdate,
       captureElement: formRef.current,
     }).finally(() => {
-      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+      navigate(`/c/${classroomId}/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
   }
 
@@ -5088,11 +5094,13 @@ const StudentInputPage = ({
 
 // Mendan Parent Input Component — parents mark available time slots
 const MendanParentInputPage = ({
+  classroomId,
   sessionId,
   data,
   student,
   returnToAdminOnComplete,
 }: {
+  classroomId: string
   sessionId: string
   data: SessionData
   student: Student
@@ -5195,7 +5203,7 @@ const MendanParentInputPage = ({
       },
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
-    saveSession(sessionId, next).catch(() => { /* ignore */ })
+    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const isUpdate = !!(student.submittedAt)
     const availCount = availabilityArray.length
@@ -5208,7 +5216,7 @@ const MendanParentInputPage = ({
       isUpdate,
       captureElement: formRef.current,
     }).finally(() => {
-      navigate(`/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
+      navigate(`/c/${classroomId}/complete/${sessionId}`, { state: { returnToAdminOnComplete } })
     })
   }
 
@@ -5550,7 +5558,7 @@ const ConfirmedCalendarView = ({
 
 const AvailabilityPage = () => {
   const location = useLocation()
-  const { sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
+  const { classroomId = '', sessionId = 'main', personType: rawPersonType = 'teacher', personId: rawPersonId = '' } = useParams()
   const personType = (rawPersonType === 'student' ? 'student' : rawPersonType === 'manager' ? 'manager' : 'teacher') as PersonType
   const personId = useMemo(() => rawPersonId.split(/[?:&]/)[0], [rawPersonId])
   const [data, setData] = useState<SessionData | null>(null)
@@ -5576,6 +5584,7 @@ const AvailabilityPage = () => {
     }, 10000)
 
     const unsub = watchSession(
+      classroomId,
       sessionId,
       (value) => {
         if (timedOut) return
@@ -5609,7 +5618,7 @@ const AvailabilityPage = () => {
         if (syncingRef.current) return
 
         syncingRef.current = true
-        loadMasterData()
+        loadMasterData(classroomId)
           .then((master) => {
             if (!master) {
               syncDoneRef.current = true
@@ -5635,7 +5644,7 @@ const AvailabilityPage = () => {
             }
             setData(next)
             setPhase('ready')
-            return saveSession(sessionId, next)
+            return saveSession(classroomId, sessionId, next)
           })
           .then(() => {
             syncDoneRef.current = true
@@ -5701,7 +5710,7 @@ service cloud.firestore {
   }
 }`}
           </pre>
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -5722,7 +5731,7 @@ service cloud.firestore {
           <p className="muted" style={{ fontSize: '11px' }}>
             特別講習ID: {sessionId} / {personType} / {personId}
           </p>
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -5736,7 +5745,7 @@ service cloud.firestore {
           <p>{errorDetail}</p>
           <button className="btn" type="button" onClick={() => window.location.reload()}>再読み込み</button>
           <br />
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -5751,7 +5760,7 @@ service cloud.firestore {
           <p className="muted" style={{ fontSize: '11px' }}>
             特別講習ID: {sessionId} / {personType} / {personId}
           </p>
-          <Link to="/">ホームに戻る</Link>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
         </div>
       </div>
     )
@@ -5775,7 +5784,7 @@ service cloud.firestore {
               <h3>提出期間前です</h3>
               <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
               <p className="muted">提出期間になるまでお待ちください。</p>
-              <Link to="/">ホームに戻る</Link>
+              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
             </div>
           </div>
         )
@@ -5787,12 +5796,12 @@ service cloud.firestore {
               <h3>提出期間は終了しました</h3>
               <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
               <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-              <Link to="/">ホームに戻る</Link>
+              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
             </div>
           </div>
         )
       }
-      return <TeacherInputPage sessionId={sessionId} data={data} teacher={currentPerson as Teacher} returnToAdminOnComplete={returnToAdminOnComplete} />
+      return <TeacherInputPage classroomId={classroomId} sessionId={sessionId} data={data} teacher={currentPerson as Teacher} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   } else if (personType === 'manager') {
     // Manager availability input — same as teacher but uses 'manager' personKey
@@ -5807,7 +5816,7 @@ service cloud.firestore {
             <h3>提出期間前です</h3>
             <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
             <p className="muted">提出期間になるまでお待ちください。</p>
-            <Link to="/">ホームに戻る</Link>
+            <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
           </div>
         </div>
       )
@@ -5819,14 +5828,14 @@ service cloud.firestore {
             <h3>提出期間は終了しました</h3>
             <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
             <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-            <Link to="/">ホームに戻る</Link>
+            <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
           </div>
         </div>
       )
     }
     // Wrap manager as a Teacher-like object so TeacherInputPage can be reused
     const managerAsTeacher: Teacher = { id: manager.id, name: manager.name, email: manager.email, subjects: ['面談'], memo: '' }
-    return <TeacherInputPage sessionId={sessionId} data={data} teacher={managerAsTeacher} returnToAdminOnComplete={returnToAdminOnComplete} personKeyPrefix="manager" />
+    return <TeacherInputPage classroomId={classroomId} sessionId={sessionId} data={data} teacher={managerAsTeacher} returnToAdminOnComplete={returnToAdminOnComplete} personKeyPrefix="manager" />
   } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
       // Check submission period for students
@@ -5840,7 +5849,7 @@ service cloud.firestore {
               <h3>提出期間前です</h3>
               <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
               <p className="muted">提出期間になるまでお待ちください。</p>
-              <Link to="/">ホームに戻る</Link>
+              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
             </div>
           </div>
         )
@@ -5852,14 +5861,14 @@ service cloud.firestore {
               <h3>提出期間は終了しました</h3>
               <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
               <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-              <Link to="/">ホームに戻る</Link>
+              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
             </div>
           </div>
         )
       }
       return data.settings.sessionType === 'mendan'
-        ? <MendanParentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
-        : <StudentInputPage sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
+        ? <MendanParentInputPage classroomId={classroomId} sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
+        : <StudentInputPage classroomId={classroomId} sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   }
 
@@ -5868,18 +5877,121 @@ service cloud.firestore {
       <div className="panel">
         入力対象の種別が正しくありません。管理者にURLを確認してください。
         <br />
-        <Link to="/">ホームに戻る</Link>
+        <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
       </div>
+    </div>
+  )
+}
+const ClassroomSelectPage = () => {
+  const navigate = useNavigate()
+  const [classrooms, setClassrooms] = useState<ClassroomInfo[]>([])
+  const [newId, setNewId] = useState('')
+  const [newName, setNewName] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [migrating, setMigrating] = useState(false)
+
+  useEffect(() => {
+    const unsub = watchClassrooms((items) => {
+      setClassrooms(items)
+      setLoading(false)
+    })
+    return () => unsub()
+  }, [])
+
+  const handleCreate = async (): Promise<void> => {
+    const id = newId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    const name = newName.trim()
+    if (!id || !name) { alert('IDと名前を入力してください。'); return }
+    if (classrooms.some((c) => c.id === id)) { alert('同じIDの教室が既に存在します。'); return }
+    await createClassroom(id, name)
+    setNewId('')
+    setNewName('')
+  }
+
+  const handleDelete = async (id: string, name: string): Promise<void> => {
+    if (!window.confirm(`教室「${name}」を削除しますか？\nこの操作は元に戻せません。すべてのセッションデータも削除されます。`)) return
+    await deleteClassroom(id)
+  }
+
+  const handleMigrate = async (): Promise<void> => {
+    const targetId = window.prompt('旧データを移行する教室IDを入力してください:', 'default')
+    if (!targetId) return
+    if (!classrooms.some((c) => c.id === targetId)) {
+      alert('指定された教室が存在しません。先に教室を作成してください。')
+      return
+    }
+    setMigrating(true)
+    const migrated = await migrateLegacyData(targetId)
+    setMigrating(false)
+    if (migrated) {
+      alert('旧データの移行が完了しました。')
+    } else {
+      alert('移行するデータが見つからないか、既に移行済みです。')
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <div className="panel">
+        <h2>教室選択</h2>
+        <p className="muted">管理する教室を選択してください。</p>
+      </div>
+
+      {loading ? (
+        <div className="panel">読み込み中...</div>
+      ) : (
+        <>
+          {classrooms.length === 0 ? (
+            <div className="panel">
+              <p>教室がまだ登録されていません。下のフォームから教室を作成してください。</p>
+            </div>
+          ) : (
+            <div className="panel">
+              <table className="table">
+                <thead><tr><th>教室名</th><th>ID</th><th></th><th></th></tr></thead>
+                <tbody>
+                  {classrooms.map((c) => (
+                    <tr key={c.id}>
+                      <td><strong>{c.name}</strong></td>
+                      <td className="muted">{c.id}</td>
+                      <td><button className="btn" type="button" onClick={() => navigate(`/c/${c.id}`)}>開く</button></td>
+                      <td><button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDelete(c.id, c.name)}>削除</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="panel">
+            <h3>新しい教室を作成</h3>
+            <div className="row" style={{ gap: '8px', flexWrap: 'wrap' }}>
+              <input type="text" placeholder="教室ID（英数字）" value={newId} onChange={(e) => setNewId(e.target.value)} style={{ width: '150px' }} />
+              <input type="text" placeholder="教室名" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ width: '200px' }} />
+              <button className="btn" type="button" onClick={() => void handleCreate()}>作成</button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3>旧データ移行</h3>
+            <p className="muted">以前のバージョンで作成されたデータ（sessions/*, master/default）を指定の教室に移行します。</p>
+            <button className="btn secondary" type="button" onClick={() => void handleMigrate()} disabled={migrating}>
+              {migrating ? '移行中...' : '旧データを移行'}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
 const BootPage = () => {
   const navigate = useNavigate()
+  const classroomId = 'default'
 
   useEffect(() => {
-    saveSession('main', createTemplateSession()).catch(() => {})
-    navigate('/admin/main', { replace: true })
+    saveSession(classroomId, 'main', createTemplateSession()).catch(() => {})
+    navigate(`/c/${classroomId}/admin/main`, { replace: true })
   }, [navigate])
 
   return (
@@ -5891,7 +6003,7 @@ const BootPage = () => {
 
 const CompletionPage = () => {
   const location = useLocation()
-  const { sessionId = 'main' } = useParams()
+  const { classroomId = '', sessionId = 'main' } = useParams()
   const returnToAdminOnComplete = (location.state as { returnToAdminOnComplete?: boolean } | null)?.returnToAdminOnComplete === true
 
   return (
@@ -5901,7 +6013,7 @@ const CompletionPage = () => {
         <p>データの送信が完了しました。ありがとうございます。</p>
         {returnToAdminOnComplete && (
           <div className="row" style={{ marginTop: '10px' }}>
-            <Link className="btn" to={`/admin/${sessionId}`} state={{ skipAuth: true }}>管理画面へ戻る</Link>
+            <Link className="btn" to={`/c/${classroomId}/admin/${sessionId}`} state={{ skipAuth: true }}>管理画面へ戻る</Link>
           </div>
         )}
       </div>
@@ -5928,11 +6040,12 @@ function App() {
     <>
       <div className="version-badge">v{APP_VERSION}</div>
       <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/boot" element={<BootPage />} />
-        <Route path="/admin/:sessionId" element={<AdminPage />} />
-        <Route path="/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
-        <Route path="/complete/:sessionId" element={<CompletionPage />} />
+        <Route path="/" element={<ClassroomSelectPage />} />
+        <Route path="/c/:classroomId" element={<HomePage />} />
+        <Route path="/c/:classroomId/boot" element={<BootPage />} />
+        <Route path="/c/:classroomId/admin/:sessionId" element={<AdminPage />} />
+        <Route path="/c/:classroomId/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
+        <Route path="/c/:classroomId/complete/:sessionId" element={<CompletionPage />} />
       </Routes>
     </>
   )
