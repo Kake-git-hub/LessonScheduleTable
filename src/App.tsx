@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { createClassroom, deleteClassroom, deleteSession, initAuth, loadMasterData, loadSession, migrateLegacyData, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type ClassroomInfo } from './firebase'
+import { createClassroom, deleteClassroom, deleteSession, initAuth, loadAllSessionIds, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type ClassroomInfo } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -10,6 +10,7 @@ import type {
   Manager,
   MasterData,
   PairConstraint,
+  PairConstraintPersonType,
   PersonType,
   RegularLesson,
   SessionData,
@@ -134,7 +135,7 @@ const createTemplateSession = (): SessionData => {
   ]
 
   const constraints: PairConstraint[] = [
-    { id: 'c001', teacherId: 't001', studentId: 's002', type: 'incompatible' },
+    { id: 'c001', personAId: 't001', personBId: 's002', personAType: 'teacher', personBType: 'student', type: 'incompatible' },
   ]
 
   const slotKeys = buildSlotKeys(settings)
@@ -199,12 +200,16 @@ const useSessionData = (classroomId: string, sessionId: string) => {
   return { data, setData, loading, error }
 }
 
+/** Check if a pair constraint exists between two persons (order-independent). */
 const constraintFor = (
   constraints: PairConstraint[],
-  teacherId: string,
-  studentId: string,
+  idA: string,
+  idB: string,
 ): ConstraintType | null => {
-  const hit = constraints.find((item) => item.teacherId === teacherId && item.studentId === studentId)
+  const hit = constraints.find((item) =>
+    (item.personAId === idA && item.personBId === idB) ||
+    (item.personAId === idB && item.personBId === idA),
+  )
   return hit?.type ?? null
 }
 
@@ -757,6 +762,8 @@ const buildIncrementalAutoAssignments = (
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
+        // Check student-student constraints with existing students in this assignment
+        if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach, with remaining demand
         return teacher.subjects.some((subj) => {
           if (!student.subjects.includes(subj)) return false
@@ -887,6 +894,9 @@ const buildIncrementalAutoAssignments = (
         // Avoid assigning the same student to this teacher's consecutive slot
         const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
         if (hasSameStudentConsecutive) continue
+
+        // Check student-student constraints within this combo
+        if (combo.length === 2 && constraintFor(data.constraints, combo[0].id, combo[1].id) === 'incompatible') continue
 
         // --- Determine subject assignment (same or mixed) ---
         // Try same-subject first (shared by all students) — preferred
@@ -1189,8 +1199,10 @@ const HomePage = () => {
   const [studentName, setStudentName] = useState('')
   const [studentEmail, setStudentEmail] = useState('')
   const [studentGrade, setStudentGrade] = useState('')
-  const [constraintTeacherId, setConstraintTeacherId] = useState('')
-  const [constraintStudentId, setConstraintStudentId] = useState('')
+  const [constraintPersonAType, setConstraintPersonAType] = useState<PairConstraintPersonType>('teacher')
+  const [constraintPersonAId, setConstraintPersonAId] = useState('')
+  const [constraintPersonBType, setConstraintPersonBType] = useState<PairConstraintPersonType>('student')
+  const [constraintPersonBId, setConstraintPersonBId] = useState('')
   const [constraintType, setConstraintType] = useState<ConstraintType>('incompatible')
   const [gradeConstraintTeacherId, setGradeConstraintTeacherId] = useState('')
   const [gradeConstraintGrade, setGradeConstraintGrade] = useState('')
@@ -1300,10 +1312,21 @@ const HomePage = () => {
   }
 
   const upsertConstraint = async (): Promise<void> => {
-    if (!constraintTeacherId || !constraintStudentId || !masterData) return
-    const nc: PairConstraint = { id: createId(), teacherId: constraintTeacherId, studentId: constraintStudentId, type: constraintType }
+    if (!constraintPersonAId || !constraintPersonBId || !masterData) return
+    if (constraintPersonAId === constraintPersonBId) { alert('同じ人物は選択できません。'); return }
+    const nc: PairConstraint = {
+      id: createId(),
+      personAId: constraintPersonAId,
+      personBId: constraintPersonBId,
+      personAType: constraintPersonAType,
+      personBType: constraintPersonBType,
+      type: constraintType,
+    }
     await updateMaster((c) => {
-      const filtered = c.constraints.filter((i) => !(i.teacherId === constraintTeacherId && i.studentId === constraintStudentId))
+      const filtered = c.constraints.filter((i) =>
+        !((i.personAId === constraintPersonAId && i.personBId === constraintPersonBId) ||
+          (i.personAId === constraintPersonBId && i.personBId === constraintPersonAId)),
+      )
       return { ...c, constraints: [...filtered, nc] }
     })
   }
@@ -1429,28 +1452,30 @@ const HomePage = () => {
   // Edit pair constraint: populate form
   const startEditConstraint = (c: PairConstraint): void => {
     setEditingConstraintId(c.id)
-    setConstraintTeacherId(c.teacherId)
-    setConstraintStudentId(c.studentId)
+    setConstraintPersonAType(c.personAType)
+    setConstraintPersonAId(c.personAId)
+    setConstraintPersonBType(c.personBType)
+    setConstraintPersonBId(c.personBId)
     setConstraintType(c.type)
   }
 
   const saveEditConstraint = async (): Promise<void> => {
-    if (!editingConstraintId || !constraintTeacherId || !constraintStudentId) return
+    if (!editingConstraintId || !constraintPersonAId || !constraintPersonBId) return
     await updateMaster((c) => ({
       ...c,
       constraints: c.constraints.map((item) =>
         item.id === editingConstraintId
-          ? { ...item, teacherId: constraintTeacherId, studentId: constraintStudentId, type: constraintType }
+          ? { ...item, personAId: constraintPersonAId, personBId: constraintPersonBId, personAType: constraintPersonAType, personBType: constraintPersonBType, type: constraintType }
           : item,
       ),
     }))
     setEditingConstraintId(null)
-    setConstraintTeacherId(''); setConstraintStudentId('')
+    setConstraintPersonAId(''); setConstraintPersonBId('')
   }
 
   const cancelEditConstraint = (): void => {
     setEditingConstraintId(null)
-    setConstraintTeacherId(''); setConstraintStudentId('')
+    setConstraintPersonAId(''); setConstraintPersonBId('')
   }
 
   // Edit grade constraint: populate form
@@ -1496,7 +1521,8 @@ const HomePage = () => {
       ['上田 陽介', '高1', ''],
     ]
     const sampleConstraints = [
-      ['田中講師', '伊藤 花', '不可'],
+      ['講師', '田中講師', '生徒', '伊藤 花', '不可'],
+      ['生徒', '青木 太郎', '生徒', '上田 陽介', '不可'],
     ]
     const sampleGradeConstraints = [
       ['佐藤講師', '高1', '不可'],
@@ -1507,7 +1533,7 @@ const HomePage = () => {
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メールアドレス'], ...sampleStudents]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別(不可)'], ...sampleConstraints]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別(講師/生徒)', '人物A名', '人物B種別(講師/生徒)', '人物B名', '種別(不可)'], ...sampleConstraints]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可)'], ...sampleGradeConstraints]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
@@ -1518,9 +1544,15 @@ const HomePage = () => {
     const md = masterData
     const teacherRows = md.teachers.map((t) => [t.name, t.subjects.join(', '), t.memo, t.email ?? ''])
     const studentRows = md.students.map((s) => [s.name, s.grade, s.memo, s.email ?? ''])
+    const findPersonName = (id: string, pType: string): string => {
+      if (pType === 'teacher') return md.teachers.find((t) => t.id === id)?.name ?? id
+      return md.students.find((s) => s.id === id)?.name ?? id
+    }
     const constraintRows = md.constraints.map((c) => [
-      md.teachers.find((t) => t.id === c.teacherId)?.name ?? c.teacherId,
-      md.students.find((s) => s.id === c.studentId)?.name ?? c.studentId,
+      c.personAType === 'teacher' ? '講師' : '生徒',
+      findPersonName(c.personAId, c.personAType),
+      c.personBType === 'teacher' ? '講師' : '生徒',
+      findPersonName(c.personBId, c.personBType),
       c.type === 'incompatible' ? '不可' : '推奨',
     ])
     const gradeConstraintRows = (md.gradeConstraints ?? []).map((gc) => [
@@ -1538,7 +1570,7 @@ const HomePage = () => {
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒名', '種別'], ...constraintRows]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別'], ...gradeConstraintRows]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
@@ -1601,12 +1633,21 @@ const HomePage = () => {
       const rows = XLSX.utils.sheet_to_json(constraintWs, { header: 1 }) as unknown as unknown[][]
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i]
-        const tn = String(row?.[0] ?? '').trim(); const sn = String(row?.[1] ?? '').trim(); const ts = String(row?.[2] ?? '').trim()
-        const tid = findTeacherId(tn); const sid = findStudentId(sn)
-        if (!tid || !sid) continue
+        const aTypeStr = String(row?.[0] ?? '').trim()
+        const aName = String(row?.[1] ?? '').trim()
+        const bTypeStr = String(row?.[2] ?? '').trim()
+        const bName = String(row?.[3] ?? '').trim()
+        const ts = String(row?.[4] ?? '').trim()
+        const personAType: PairConstraintPersonType = aTypeStr === '生徒' ? 'student' : 'teacher'
+        const personBType: PairConstraintPersonType = bTypeStr === '生徒' ? 'student' : 'teacher'
+        const aid = personAType === 'teacher' ? findTeacherId(aName) : findStudentId(aName)
+        const bid = personBType === 'teacher' ? findTeacherId(bName) : findStudentId(bName)
+        if (!aid || !bid) continue
         const type: ConstraintType = ts === '推奨' ? 'recommended' : 'incompatible'
-        if (md.constraints.some((c) => c.teacherId === tid && c.studentId === sid)) continue
-        importedConstraints.push({ id: createId(), teacherId: tid, studentId: sid, type })
+        if (md.constraints.some((c) =>
+          (c.personAId === aid && c.personBId === bid) || (c.personAId === bid && c.personBId === aid),
+        )) continue
+        importedConstraints.push({ id: createId(), personAId: aid, personBId: bid, personAType, personBType, type })
       }
     }
 
@@ -1674,11 +1715,13 @@ const HomePage = () => {
     }
     // Check constraints reference valid people
     for (const c of importedConstraints) {
-      if (!allTeachers.some((t) => t.id === c.teacherId)) {
-        validationErrors.push(`制約: 講師ID「${c.teacherId}」が見つかりません`)
+      const aList = c.personAType === 'teacher' ? allTeachers : allStudents
+      const bList = c.personBType === 'teacher' ? allTeachers : allStudents
+      if (!aList.some((p) => p.id === c.personAId)) {
+        validationErrors.push(`制約: 人物A「${c.personAId}」が見つかりません`)
       }
-      if (!allStudents.some((s) => s.id === c.studentId)) {
-        validationErrors.push(`制約: 生徒ID「${c.studentId}」が見つかりません`)
+      if (!bList.some((p) => p.id === c.personBId)) {
+        validationErrors.push(`制約: 人物B「${c.personBId}」が見つかりません`)
       }
     }
     // Check grade constraints reference valid teachers
@@ -1922,55 +1965,7 @@ const HomePage = () => {
                 <h3>特別講習一覧（新しい順）</h3>
                 <button className="btn secondary" type="button" onClick={() => setUnlocked(false)}>ロック</button>
               </div>
-              <div className="row" style={{ marginBottom: '8px', gap: '8px' }}>
-                <button className="btn secondary" type="button" onClick={() => {
-                  // Backup: export all sessions as JSON
-                  const payload = { sessions: sessions.map((s) => s.id), exportedAt: Date.now() }
-                  const promises = sessions.map((s) => loadSession(classroomId, s.id).then((d) => ({ id: s.id, data: d })))
-                  void Promise.all(promises).then((results) => {
-                    const backup = { ...payload, data: Object.fromEntries(results.map((r) => [r.id, r.data])) }
-                    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
-                    const url = URL.createObjectURL(blob)
-                    const a = document.createElement('a')
-                    a.href = url
-                    a.download = `特別講習バックアップ_${new Date().toISOString().slice(0, 10)}.json`
-                    a.click()
-                    URL.revokeObjectURL(url)
-                  })
-                }}>📥 全データバックアップ</button>
-                <button className="btn secondary" type="button" onClick={() => {
-                  const input = document.createElement('input')
-                  input.type = 'file'
-                  input.accept = '.json'
-                  input.onchange = async () => {
-                    const file = input.files?.[0]
-                    if (!file) return
-                    try {
-                      const text = await file.text()
-                      const backup = JSON.parse(text) as { data: Record<string, SessionData> }
-                      if (!backup.data || typeof backup.data !== 'object') {
-                        alert('バックアップファイルの形式が正しくありません。')
-                        return
-                      }
-                      const ids = Object.keys(backup.data)
-                      const existingIds = sessions.map((s) => s.id)
-                      const newIds = ids.filter((id) => !existingIds.includes(id))
-                      const overwriteIds = ids.filter((id) => existingIds.includes(id))
-                      let msg = `取り込み対象: ${ids.length}件の特別講習`
-                      if (newIds.length > 0) msg += `\n  新規: ${newIds.join(', ')}`
-                      if (overwriteIds.length > 0) msg += `\n  上書き: ${overwriteIds.join(', ')}`
-                      if (!window.confirm(msg + '\n\n取り込みますか？')) return
-                      for (const [id, data] of Object.entries(backup.data)) {
-                        if (data) await saveSession(classroomId, id, data as SessionData)
-                      }
-                      alert(`${ids.length}件の特別講習を取り込みました。`)
-                    } catch (e) {
-                      alert(`取り込みエラー: ${e instanceof Error ? e.message : String(e)}`)
-                    }
-                  }
-                  input.click()
-                }}>📤 バックアップ取り込み</button>
-              </div>
+
               <table className="table">
                 <thead><tr><th>ID</th><th>名称</th><th>作成</th><th>更新</th><th /><th /></tr></thead>
                 <tbody>
@@ -2183,15 +2178,28 @@ const HomePage = () => {
                 </div>
 
                 <div className="panel">
-                  <h3>講師×生徒 制約</h3>
-                  <div className="row">
-                    <select value={constraintTeacherId} onChange={(e) => setConstraintTeacherId(e.target.value)}>
-                      <option value="">講師を選択</option>
-                      {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                  <h3>ペア制約（講師×生徒 / 生徒×生徒）</h3>
+                  <div className="row" style={{ flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                    <select value={constraintPersonAType} onChange={(e) => { setConstraintPersonAType(e.target.value as PairConstraintPersonType); setConstraintPersonAId('') }}>
+                      <option value="teacher">講師</option>
+                      <option value="student">生徒</option>
                     </select>
-                    <select value={constraintStudentId} onChange={(e) => setConstraintStudentId(e.target.value)}>
-                      <option value="">生徒を選択</option>
-                      {masterData.students.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                    <select value={constraintPersonAId} onChange={(e) => setConstraintPersonAId(e.target.value)}>
+                      <option value="">人物Aを選択</option>
+                      {(constraintPersonAType === 'teacher' ? masterData.teachers : masterData.students).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <span style={{ fontSize: '16px', fontWeight: 'bold' }}>×</span>
+                    <select value={constraintPersonBType} onChange={(e) => { setConstraintPersonBType(e.target.value as PairConstraintPersonType); setConstraintPersonBId('') }}>
+                      <option value="teacher">講師</option>
+                      <option value="student">生徒</option>
+                    </select>
+                    <select value={constraintPersonBId} onChange={(e) => setConstraintPersonBId(e.target.value)}>
+                      <option value="">人物Bを選択</option>
+                      {(constraintPersonBType === 'teacher' ? masterData.teachers : masterData.students).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
                     </select>
                     <select value={constraintType} onChange={(e) => setConstraintType(e.target.value as ConstraintType)}>
                       <option value="incompatible">組み合わせ不可</option>
@@ -2206,19 +2214,30 @@ const HomePage = () => {
                     )}
                   </div>
                   <table className="table">
-                    <thead><tr><th>講師</th><th>生徒</th><th>種別</th><th>操作</th></tr></thead>
+                    <thead><tr><th>人物A</th><th></th><th>人物B</th><th>種別</th><th>操作</th></tr></thead>
                     <tbody>
-                      {masterData.constraints.map((c) => (
-                        <tr key={c.id}>
-                          <td>{masterData.teachers.find((t) => t.id === c.teacherId)?.name ?? '-'}</td>
-                          <td>{masterData.students.find((s) => s.id === c.studentId)?.name ?? '-'}</td>
-                          <td><span className="badge warn">不可</span></td>
-                          <td>
-                            <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditConstraint(c)}>編集</button>
-                            <button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button>
-                          </td>
-                        </tr>
-                      ))}
+                      {masterData.constraints.map((c) => {
+                        const personAName = c.personAType === 'teacher'
+                          ? masterData.teachers.find((t) => t.id === c.personAId)?.name
+                          : masterData.students.find((s) => s.id === c.personAId)?.name
+                        const personBName = c.personBType === 'teacher'
+                          ? masterData.teachers.find((t) => t.id === c.personBId)?.name
+                          : masterData.students.find((s) => s.id === c.personBId)?.name
+                        const personALabel = c.personAType === 'teacher' ? '講師' : '生徒'
+                        const personBLabel = c.personBType === 'teacher' ? '講師' : '生徒'
+                        return (
+                          <tr key={c.id}>
+                            <td>{personAName ?? '-'}<span className="muted" style={{ fontSize: '11px', marginLeft: '4px' }}>({personALabel})</span></td>
+                            <td style={{ textAlign: 'center' }}>×</td>
+                            <td>{personBName ?? '-'}<span className="muted" style={{ fontSize: '11px', marginLeft: '4px' }}>({personBLabel})</span></td>
+                            <td><span className="badge warn">不可</span></td>
+                            <td>
+                              <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditConstraint(c)}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeConstraint(c.id)}>削除</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
 
@@ -3962,7 +3981,7 @@ service cloud.firestore {
                           const subj = getStudentSubject(assignment, s.id)
                           const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade, subj)
                           return pt === 'incompatible' || gt === 'incompatible'
-                        })
+                        }) || (!isMendan && assignment.studentIds.length === 2 && constraintFor(data.constraints, assignment.studentIds[0], assignment.studentIds[1]) === 'incompatible')
                         const sig = assignmentSignature(assignment)
                         const hl = data.autoAssignHighlights ?? {}
                         const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
@@ -4103,11 +4122,13 @@ service cloud.firestore {
                                           if (student) {
                                             const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
                                             const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
-                                            const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
+                                            const studentStudentTag = otherStudentId ? constraintFor(data.constraints, otherStudentId, student.id) : null
+                                            const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible' || studentStudentTag === 'incompatible'
                                             if (isIncompatible) {
                                               const reasons: string[] = []
-                                              if (pairTag === 'incompatible') reasons.push('ペア制約で不可')
+                                              if (pairTag === 'incompatible') reasons.push('講師×生徒ペア制約で不可')
                                               if (gradeTag === 'incompatible') reasons.push(`学年制約(${student.grade})で不可`)
+                                              if (studentStudentTag === 'incompatible') reasons.push('生徒×生徒ペア制約で不可')
                                               const ok = window.confirm(
                                                 `⚠️ ${student.name} は制約ルールにより割当不可です。\n理由: ${reasons.join(', ')}\n\nそれでも割り当てますか？`,
                                               )
@@ -4151,7 +4172,8 @@ service cloud.firestore {
                                         .map((student) => {
                                         const pairTag = isMendan ? null : constraintFor(data.constraints, assignment.teacherId, student.id)
                                         const gradeTag = isMendan ? null : gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
-                                        const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible'
+                                        const ssTag = (!isMendan && otherStudentId) ? constraintFor(data.constraints, otherStudentId, student.id) : null
+                                        const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible' || ssTag === 'incompatible'
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
@@ -5888,7 +5910,6 @@ const ClassroomSelectPage = () => {
   const [newId, setNewId] = useState('')
   const [newName, setNewName] = useState('')
   const [loading, setLoading] = useState(true)
-  const [migrating, setMigrating] = useState(false)
 
   useEffect(() => {
     const unsub = watchClassrooms((items) => {
@@ -5913,21 +5934,68 @@ const ClassroomSelectPage = () => {
     await deleteClassroom(id)
   }
 
-  const handleMigrate = async (): Promise<void> => {
-    const targetId = window.prompt('旧データを移行する教室IDを入力してください:', 'default')
-    if (!targetId) return
-    if (!classrooms.some((c) => c.id === targetId)) {
-      alert('指定された教室が存在しません。先に教室を作成してください。')
-      return
+  const handleBackupExport = async (classroomId: string, classroomName: string): Promise<void> => {
+    try {
+      const masterData = await loadMasterData(classroomId)
+      const sessionIds = await loadAllSessionIds(classroomId)
+      const sessionResults = await Promise.all(
+        sessionIds.map((sid) => loadSession(classroomId, sid).then((d) => ({ id: sid, data: d }))),
+      )
+      const backup = {
+        classroomId,
+        classroomName,
+        exportedAt: Date.now(),
+        masterData,
+        sessions: Object.fromEntries(sessionResults.filter((r) => r.data).map((r) => [r.id, r.data])),
+      }
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `教室バックアップ_${classroomName}_${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(`バックアップエラー: ${e instanceof Error ? e.message : String(e)}`)
     }
-    setMigrating(true)
-    const migrated = await migrateLegacyData(targetId)
-    setMigrating(false)
-    if (migrated) {
-      alert('旧データの移行が完了しました。')
-    } else {
-      alert('移行するデータが見つからないか、既に移行済みです。')
+  }
+
+  const handleBackupImport = (classroomId: string): void => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const backup = JSON.parse(text) as {
+          classroomId?: string
+          classroomName?: string
+          masterData?: MasterData | null
+          sessions?: Record<string, SessionData>
+        }
+        const parts: string[] = []
+        if (backup.masterData) parts.push('管理データ')
+        const sessionIds = Object.keys(backup.sessions ?? {})
+        if (sessionIds.length > 0) parts.push(`セッション${sessionIds.length}件`)
+        if (parts.length === 0) { alert('取り込めるデータがありません。'); return }
+        const srcInfo = backup.classroomName ? ` (元: ${backup.classroomName})` : ''
+        if (!window.confirm(`以下を教室「${classroomId}」に取り込みます${srcInfo}:\n${parts.join(', ')}\n\n既存データは上書きされます。よろしいですか？`)) return
+        if (backup.masterData) {
+          await saveMasterData(classroomId, backup.masterData)
+        }
+        if (backup.sessions) {
+          for (const [sid, sData] of Object.entries(backup.sessions)) {
+            if (sData) await saveSession(classroomId, sid, sData as SessionData)
+          }
+        }
+        alert('バックアップの取り込みが完了しました。')
+      } catch (e) {
+        alert(`取り込みエラー: ${e instanceof Error ? e.message : String(e)}`)
+      }
     }
+    input.click()
   }
 
   return (
@@ -5948,13 +6016,17 @@ const ClassroomSelectPage = () => {
           ) : (
             <div className="panel">
               <table className="table">
-                <thead><tr><th>教室名</th><th>ID</th><th></th><th></th></tr></thead>
+                <thead><tr><th>教室名</th><th>ID</th><th></th><th></th><th></th></tr></thead>
                 <tbody>
                   {classrooms.map((c) => (
                     <tr key={c.id}>
                       <td><strong>{c.name}</strong></td>
                       <td className="muted">{c.id}</td>
                       <td><button className="btn" type="button" onClick={() => navigate(`/c/${c.id}`)}>開く</button></td>
+                      <td>
+                        <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => void handleBackupExport(c.id, c.name)}>📥 バックアップ</button>
+                        <button className="btn secondary" type="button" onClick={() => handleBackupImport(c.id)}>📤 取り込み</button>
+                      </td>
                       <td><button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDelete(c.id, c.name)}>削除</button></td>
                     </tr>
                   ))}
@@ -5972,13 +6044,7 @@ const ClassroomSelectPage = () => {
             </div>
           </div>
 
-          <div className="panel">
-            <h3>旧データ移行</h3>
-            <p className="muted">以前のバージョンで作成されたデータ（sessions/*, master/default）を指定の教室に移行します。</p>
-            <button className="btn secondary" type="button" onClick={() => void handleMigrate()} disabled={migrating}>
-              {migrating ? '移行中...' : '旧データを移行'}
-            </button>
-          </div>
+
         </>
       )}
     </div>

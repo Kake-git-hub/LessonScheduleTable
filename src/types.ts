@@ -32,10 +32,14 @@ export type Student = {
   submittedAt: number
 }
 
+export type PairConstraintPersonType = 'teacher' | 'student'
+
 export type PairConstraint = {
   id: string
-  teacherId: string
-  studentId: string
+  personAId: string
+  personBId: string
+  personAType: PairConstraintPersonType
+  personBType: PairConstraintPersonType
   type: ConstraintType
 }
 

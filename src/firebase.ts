@@ -241,31 +241,10 @@ export const saveMasterData = async (classroomId: string, data: MasterData): Pro
   await setDoc(classroomMasterRef(classroomId), data)
 }
 
-// ---------- Migration ----------
-
-/** Migrate legacy data (sessions/*, master/default) into a classroom. */
-export const migrateLegacyData = async (classroomId: string): Promise<boolean> => {
-  let migrated = false
-  try {
-    const legacyMaster = await getDoc(doc(db, 'master', 'default'))
-    if (legacyMaster.exists()) {
-      const existing = await getDoc(classroomMasterRef(classroomId))
-      if (!existing.exists()) {
-        await setDoc(classroomMasterRef(classroomId), legacyMaster.data())
-        migrated = true
-      }
-    }
-    const legacySessionsSnap = await getDocs(collection(db, 'sessions'))
-    for (const sDoc of legacySessionsSnap.docs) {
-      const targetRef = classroomSessionRef(classroomId, sDoc.id)
-      const existing = await getDoc(targetRef)
-      if (!existing.exists()) {
-        await setDoc(targetRef, sDoc.data())
-        migrated = true
-      }
-    }
-  } catch (e) {
-    console.warn('Legacy migration error:', e)
-  }
-  return migrated
+/** Load all session IDs for a classroom (one-shot). */
+export const loadAllSessionIds = async (classroomId: string): Promise<string[]> => {
+  const snapshot = await getDocs(classroomSessionsCol(classroomId))
+  return snapshot.docs.map((d) => d.id)
 }
+
+
