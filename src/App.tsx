@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { createClassroom, deleteClassroom, deleteSession, initAuth, loadAllSessionIds, loadMasterData, loadSession, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type ClassroomInfo } from './firebase'
+import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, getLastBackupTime, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -1277,6 +1277,27 @@ const HomePage = () => {
       }
     })
     return () => { unsub1(); unsub2() }
+  }, [unlocked, classroomId])
+
+  // --- Auto-backup: create a backup if last one is > 1 hour old ---
+  const autoBackupRan = useRef(false)
+  useEffect(() => {
+    if (!unlocked || !classroomId || autoBackupRan.current) return
+    autoBackupRan.current = true
+    const AUTO_BACKUP_INTERVAL = 60 * 60 * 1000 // 1 hour
+    const MAX_BACKUPS = 10
+    void (async () => {
+      try {
+        const lastTime = await getLastBackupTime(classroomId)
+        if (Date.now() - lastTime > AUTO_BACKUP_INTERVAL) {
+          await createBackup(classroomId, 'auto')
+          await cleanupOldBackups(classroomId, MAX_BACKUPS)
+          console.log('[AutoBackup] Created automatic backup')
+        }
+      } catch (e) {
+        console.warn('[AutoBackup] Failed:', e)
+      }
+    })()
   }, [unlocked, classroomId])
 
   // --- Master data helpers ---
@@ -5910,6 +5931,10 @@ const ClassroomSelectPage = () => {
   const [newId, setNewId] = useState('')
   const [newName, setNewName] = useState('')
   const [loading, setLoading] = useState(true)
+  const [backupClassroomId, setBackupClassroomId] = useState<string | null>(null)
+  const [backups, setBackups] = useState<BackupMeta[]>([])
+  const [backupsLoading, setBackupsLoading] = useState(false)
+  const [backupBusy, setBackupBusy] = useState(false)
 
   useEffect(() => {
     const unsub = watchClassrooms((items) => {
@@ -5934,69 +5959,66 @@ const ClassroomSelectPage = () => {
     await deleteClassroom(id)
   }
 
-  const handleBackupExport = async (classroomId: string, classroomName: string): Promise<void> => {
+  const refreshBackups = useCallback(async (cId: string) => {
+    setBackupsLoading(true)
     try {
-      const masterData = await loadMasterData(classroomId)
-      const sessionIds = await loadAllSessionIds(classroomId)
-      const sessionResults = await Promise.all(
-        sessionIds.map((sid) => loadSession(classroomId, sid).then((d) => ({ id: sid, data: d }))),
-      )
-      const backup = {
-        classroomId,
-        classroomName,
-        exportedAt: Date.now(),
-        masterData,
-        sessions: Object.fromEntries(sessionResults.filter((r) => r.data).map((r) => [r.id, r.data])),
-      }
-      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `教室バックアップ_${classroomName}_${new Date().toISOString().slice(0, 10)}.json`
-      a.click()
-      URL.revokeObjectURL(url)
+      const items = await listBackups(cId)
+      setBackups(items)
     } catch (e) {
-      alert(`バックアップエラー: ${e instanceof Error ? e.message : String(e)}`)
+      console.error('Failed to load backups:', e)
+      setBackups([])
+    }
+    setBackupsLoading(false)
+  }, [])
+
+  const openBackupPanel = async (cId: string): Promise<void> => {
+    if (backupClassroomId === cId) {
+      setBackupClassroomId(null)
+      return
+    }
+    setBackupClassroomId(cId)
+    await refreshBackups(cId)
+  }
+
+  const handleManualBackup = async (cId: string): Promise<void> => {
+    setBackupBusy(true)
+    try {
+      await createBackup(cId, 'manual')
+      await cleanupOldBackups(cId, 10)
+      await refreshBackups(cId)
+      alert('バックアップを作成しました。')
+    } catch (e) {
+      alert(`バックアップ作成エラー: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    setBackupBusy(false)
+  }
+
+  const handleRestore = async (cId: string, backupId: string, createdAt: number): Promise<void> => {
+    const dateStr = new Date(createdAt).toLocaleString('ja-JP')
+    if (!window.confirm(`${dateStr} のバックアップに復元しますか？\n\n現在のデータは上書きされます。この操作は元に戻せません。`)) return
+    setBackupBusy(true)
+    try {
+      const backup = await loadBackup(cId, backupId)
+      if (!backup) { alert('バックアップデータの読み込みに失敗しました。'); setBackupBusy(false); return }
+      await restoreBackup(cId, backup)
+      alert('復元が完了しました。')
+    } catch (e) {
+      alert(`復元エラー: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    setBackupBusy(false)
+  }
+
+  const handleDeleteBackup = async (cId: string, backupId: string): Promise<void> => {
+    if (!window.confirm('このバックアップを削除しますか？')) return
+    try {
+      await deleteBackup(cId, backupId)
+      await refreshBackups(cId)
+    } catch (e) {
+      alert(`削除エラー: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
-  const handleBackupImport = (classroomId: string): void => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json'
-    input.onchange = async () => {
-      const file = input.files?.[0]
-      if (!file) return
-      try {
-        const text = await file.text()
-        const backup = JSON.parse(text) as {
-          classroomId?: string
-          classroomName?: string
-          masterData?: MasterData | null
-          sessions?: Record<string, SessionData>
-        }
-        const parts: string[] = []
-        if (backup.masterData) parts.push('管理データ')
-        const sessionIds = Object.keys(backup.sessions ?? {})
-        if (sessionIds.length > 0) parts.push(`セッション${sessionIds.length}件`)
-        if (parts.length === 0) { alert('取り込めるデータがありません。'); return }
-        const srcInfo = backup.classroomName ? ` (元: ${backup.classroomName})` : ''
-        if (!window.confirm(`以下を教室「${classroomId}」に取り込みます${srcInfo}:\n${parts.join(', ')}\n\n既存データは上書きされます。よろしいですか？`)) return
-        if (backup.masterData) {
-          await saveMasterData(classroomId, backup.masterData)
-        }
-        if (backup.sessions) {
-          for (const [sid, sData] of Object.entries(backup.sessions)) {
-            if (sData) await saveSession(classroomId, sid, sData as SessionData)
-          }
-        }
-        alert('バックアップの取り込みが完了しました。')
-      } catch (e) {
-        alert(`取り込みエラー: ${e instanceof Error ? e.message : String(e)}`)
-      }
-    }
-    input.click()
-  }
+  const formatBackupDate = (ts: number): string => new Date(ts).toLocaleString('ja-JP')
 
   return (
     <div className="app-shell">
@@ -6023,15 +6045,50 @@ const ClassroomSelectPage = () => {
                       <td><strong>{c.name}</strong></td>
                       <td className="muted">{c.id}</td>
                       <td><button className="btn" type="button" onClick={() => navigate(`/c/${c.id}`)}>開く</button></td>
-                      <td>
-                        <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => void handleBackupExport(c.id, c.name)}>📥 バックアップ</button>
-                        <button className="btn secondary" type="button" onClick={() => handleBackupImport(c.id)}>📤 取り込み</button>
-                      </td>
+                      <td><button className="btn secondary" type="button" onClick={() => void openBackupPanel(c.id)}>{backupClassroomId === c.id ? '閉じる' : '🔄 バックアップ'}</button></td>
                       <td><button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDelete(c.id, c.name)}>削除</button></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {backupClassroomId && (
+            <div className="panel">
+              <h3>バックアップ履歴 — {classrooms.find((c) => c.id === backupClassroomId)?.name ?? backupClassroomId}</h3>
+              <p className="muted">管理画面を開くと自動で1時間ごとにバックアップが作成されます（最大10件保持）。</p>
+              <div className="row" style={{ marginBottom: '8px', gap: '8px' }}>
+                <button className="btn" type="button" disabled={backupBusy} onClick={() => void handleManualBackup(backupClassroomId)}>
+                  {backupBusy ? '処理中...' : '📸 今すぐバックアップ'}
+                </button>
+              </div>
+              {backupsLoading ? (
+                <p>読み込み中...</p>
+              ) : backups.length === 0 ? (
+                <p className="muted">バックアップはまだありません。</p>
+              ) : (
+                <table className="table">
+                  <thead><tr><th>日時</th><th>種別</th><th>内容</th><th>操作</th></tr></thead>
+                  <tbody>
+                    {backups.map((b) => (
+                      <tr key={b.id}>
+                        <td>{formatBackupDate(b.createdAt)}</td>
+                        <td>{b.trigger === 'auto' ? '🤖 自動' : '👤 手動'}</td>
+                        <td>
+                          {b.hasMasterData ? '管理データ' : ''}
+                          {b.hasMasterData && b.sessionCount > 0 ? ' + ' : ''}
+                          {b.sessionCount > 0 ? `セッション${b.sessionCount}件` : ''}
+                        </td>
+                        <td>
+                          <button className="btn secondary" type="button" style={{ marginRight: '4px' }} disabled={backupBusy} onClick={() => void handleRestore(backupClassroomId, b.id, b.createdAt)}>復元</button>
+                          <button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDeleteBackup(backupClassroomId, b.id)}>削除</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
 
