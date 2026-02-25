@@ -3983,7 +3983,11 @@ service cloud.firestore {
                   )
                 }
 
-                const effAssignments = buildEffectiveAssignments(data.assignments, data.actualResults)
+                // Use live editing results for the recording slot (so badge updates in real-time during editing)
+                const liveActualResults = recordingSlot
+                  ? { ...(data.actualResults ?? {}), [recordingSlot]: editingResults.map(({ _uid: _, ...rest }) => rest) }
+                  : data.actualResults
+                const effAssignments = buildEffectiveAssignments(data.assignments, liveActualResults)
                 const studentsWithRemaining = data.students
                   .map((student) => {
                     const remaining = Object.entries(student.subjectSlots)
