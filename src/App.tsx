@@ -246,6 +246,30 @@ const hasAvailability = (
 const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[] =>
   Object.values(assignments).flat()
 
+/**
+ * Build "effective" assignments: for each slot, use actual results if recorded,
+ * otherwise use planned assignments. This way, deleted students (absences) in
+ * actual results are properly counted as unassigned.
+ */
+const buildEffectiveAssignments = (
+  assignments: Record<string, Assignment[]>,
+  actualResults?: Record<string, ActualResult[]>,
+): Record<string, Assignment[]> => {
+  const effective: Record<string, Assignment[]> = { ...assignments }
+  if (actualResults) {
+    for (const [slot, results] of Object.entries(actualResults)) {
+      // Always override with actual results (even empty = all absent)
+      effective[slot] = results.map((r) => ({
+        teacherId: r.teacherId,
+        studentIds: [...r.studentIds],
+        subject: r.subject,
+        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+      }))
+    }
+  }
+  return effective
+}
+
 /** Get the subject for a specific student in an assignment (supports per-student subjects). */
 const getStudentSubject = (a: Assignment, studentId: string): string =>
   a.studentSubjects?.[studentId] ?? a.subject
@@ -592,14 +616,13 @@ const buildIncrementalAutoAssignments = (
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
   if (data.actualResults) {
     for (const [slot, results] of Object.entries(data.actualResults)) {
-      if (results.length > 0) {
-        result[slot] = results.map((r) => ({
-          teacherId: r.teacherId,
-          studentIds: [...r.studentIds],
-          subject: r.subject,
-          studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-        }))
-      }
+      // Always seed actual results (even empty = all absent) so countStudentLoad counts correctly
+      result[slot] = results.map((r) => ({
+        teacherId: r.teacherId,
+        studentIds: [...r.studentIds],
+        subject: r.subject,
+        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+      }))
     }
   }
 
@@ -3352,9 +3375,17 @@ const AdminPage = () => {
     if (isMendan) {
       const { assignments: nextAssignments, unassignedParents } = buildMendanAutoAssignments(data, availableSlotKeys)
       // Preserve recorded slot assignments from actual results (already in builder result)
+      // For recorded slots with empty actual results, set empty array (all absent)
       for (const slot of recordedSlots) {
-        if (!nextAssignments[slot] && data.assignments[slot]) {
-          nextAssignments[slot] = data.assignments[slot]
+        if (!nextAssignments[slot]) {
+          nextAssignments[slot] = data.actualResults?.[slot]
+            ? data.actualResults[slot].map((r) => ({
+                teacherId: r.teacherId,
+                studentIds: [...r.studentIds],
+                subject: r.subject,
+                studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+              }))
+            : (data.assignments[slot] ?? [])
         }
       }
       const submittedCount = data.students.filter((s) => s.submittedAt > 0).length
@@ -3417,10 +3448,17 @@ const AdminPage = () => {
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
 
     // Preserve recorded slot assignments from actual results (already seeded in builder)
-    // Do NOT overwrite with data.assignments — actual results may differ from original plan
+    // For recorded slots with empty actual results, set empty array (all absent)
     for (const slot of recordedSlots) {
-      if (!nextAssignments[slot] && data.assignments[slot]) {
-        nextAssignments[slot] = data.assignments[slot]
+      if (!nextAssignments[slot]) {
+        nextAssignments[slot] = data.actualResults?.[slot]
+          ? data.actualResults[slot].map((r) => ({
+              teacherId: r.teacherId,
+              studentIds: [...r.studentIds],
+              subject: r.subject,
+              studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+            }))
+          : (data.assignments[slot] ?? [])
       }
     }
 
@@ -3945,11 +3983,12 @@ service cloud.firestore {
                   )
                 }
 
+                const effAssignments = buildEffectiveAssignments(data.assignments, data.actualResults)
                 const studentsWithRemaining = data.students
                   .map((student) => {
                     const remaining = Object.entries(student.subjectSlots)
                       .map(([subj, desired]) => {
-                        const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
+                        const assigned = countStudentSubjectLoad(effAssignments, student.id, subj)
                         return { subj, rem: desired - assigned }
                       })
                       .filter((r) => r.rem !== 0)
@@ -3960,7 +3999,7 @@ service cloud.firestore {
 
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0))
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
-                const teacherShortages = collectTeacherShortages(data, data.assignments)
+                const teacherShortages = collectTeacherShortages(data, effAssignments)
 
                 const underTooltip = underAssigned
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem > 0).map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
