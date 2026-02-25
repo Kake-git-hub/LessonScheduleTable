@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, getLastBackupTime, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
+import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
   Assignment,
   ConstraintType,
@@ -1279,26 +1279,17 @@ const HomePage = () => {
     return () => { unsub1(); unsub2() }
   }, [unlocked, classroomId])
 
-  // --- Auto-backup: create a backup if last one is > 1 hour old ---
-  const autoBackupRan = useRef(false)
-  useEffect(() => {
-    if (!unlocked || !classroomId || autoBackupRan.current) return
-    autoBackupRan.current = true
-    const AUTO_BACKUP_INTERVAL = 60 * 60 * 1000 // 1 hour
-    const MAX_BACKUPS = 10
-    void (async () => {
-      try {
-        const lastTime = await getLastBackupTime(classroomId)
-        if (Date.now() - lastTime > AUTO_BACKUP_INTERVAL) {
-          await createBackup(classroomId, 'auto')
-          await cleanupOldBackups(classroomId, MAX_BACKUPS)
-          console.log('[AutoBackup] Created automatic backup')
-        }
-      } catch (e) {
-        console.warn('[AutoBackup] Failed:', e)
-      }
-    })()
-  }, [unlocked, classroomId])
+  // --- Save and close: create backup, then navigate to classroom select ---
+  const handleSaveAndClose = async () => {
+    if (!classroomId) return
+    try {
+      await createBackup(classroomId, 'auto')
+      await cleanupOldBackups(classroomId, 30)
+    } catch (e) {
+      console.warn('[SaveAndClose] Backup failed:', e)
+    }
+    navigate('/')
+  }
 
   // --- Master data helpers ---
   const updateMaster = async (updater: (current: MasterData) => MasterData): Promise<void> => {
@@ -1877,7 +1868,10 @@ const HomePage = () => {
   return (
     <div className="app-shell">
       <div className="panel">
-        <h2>講習コマ割りアプリ</h2>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0 }}>講習コマ割りアプリ</h2>
+          <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
+        </div>
         <p className="muted">管理データ（講師・生徒・制約）はここで一元管理し、特別講習ごとに希望コマ数とコマ割りを管理します。</p>
 
         {!unlocked ? (
@@ -3522,6 +3516,18 @@ const AdminPage = () => {
     })
   }
 
+  // --- Save and close: create backup, then navigate to home ---
+  const handleSaveAndClose = async () => {
+    if (!classroomId) return
+    try {
+      await createBackup(classroomId, 'auto')
+      await cleanupOldBackups(classroomId, 30)
+    } catch (e) {
+      console.warn('[SaveAndClose] Backup failed:', e)
+    }
+    navigate(`/c/${classroomId}`)
+  }
+
   if (loading) {
     return (
       <div className="app-shell">
@@ -3574,9 +3580,12 @@ service cloud.firestore {
   return (
     <div className="app-shell">
       <div className="panel">
-        <div className="row">
-          <h2>管理画面: {data.settings.name} ({sessionId})</h2>
-          <Link to={`/c/${classroomId}`} state={{ directHome: true }}>ホーム</Link>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0 }}>管理画面: {data.settings.name} ({sessionId})</h2>
+          <div className="row" style={{ gap: '8px' }}>
+            <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
+            <Link to={`/c/${classroomId}`} state={{ directHome: true }}>ホーム</Link>
+          </div>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
       </div>
@@ -5984,7 +5993,7 @@ const ClassroomSelectPage = () => {
     setBackupBusy(true)
     try {
       await createBackup(cId, 'manual')
-      await cleanupOldBackups(cId, 10)
+      await cleanupOldBackups(cId, 30)
       await refreshBackups(cId)
       alert('バックアップを作成しました。')
     } catch (e) {
