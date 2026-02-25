@@ -4194,6 +4194,9 @@ service cloud.firestore {
             <div className="grid-slots">
               {(isMendan ? effectiveSlotKeys : slotKeys).map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
+                const isRecorded = !!(data.actualResults?.[slot]?.length)
+                // When actual results are recorded, show those instead of original assignments
+                const displayAssignments = isRecorded ? (data.actualResults![slot] as Assignment[]) : slotAssignments
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
 
                 // D&D: compute validity of this slot as a drop target
@@ -4216,7 +4219,6 @@ service cloud.firestore {
                 const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, instructorPersonType, dragInfo.teacherId, slot) : false
                 // For student drag to same slot: valid if dropping onto a different assignment within the same slot
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
-                const isRecorded = !!(data.actualResults?.[slot]?.length)
                 const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
 
@@ -4360,7 +4362,7 @@ service cloud.firestore {
                     )}
                     {recordingSlot !== slot && (
                     <div className="list">
-                      {slotAssignments.map((assignment, idx) => {
+                      {displayAssignments.map((assignment, idx) => {
                         const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
 
                         const isIncompatiblePair = !isMendan && assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
