@@ -2791,7 +2791,7 @@ const AdminPage = () => {
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
   // --- Actual result recording ---
   const [recordingSlot, setRecordingSlot] = useState<string | null>(null)
-  const [editingResults, setEditingResults] = useState<ActualResult[]>([])
+  const [editingResults, setEditingResults] = useState<(ActualResult & { _uid?: number })[]>([])
   // --- Salary calculation ---
   const [showSalary, setShowSalary] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -3194,13 +3194,14 @@ const AdminPage = () => {
   }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Actual result recording helpers ---
+  let editingResultUid = 0
   const startRecording = (slot: string): void => {
     if (!data) return
     const assignments = data.assignments[slot] ?? []
     const existing = data.actualResults?.[slot]
     if (existing) {
       // Edit mode: load existing results
-      setEditingResults(existing.map((r) => ({ ...r, studentIds: [...r.studentIds] })))
+      setEditingResults(existing.map((r) => ({ ...r, studentIds: [...r.studentIds], _uid: ++editingResultUid })))
     } else {
       // New: copy from current assignments
       setEditingResults(assignments.map((a) => ({
@@ -3208,6 +3209,7 @@ const AdminPage = () => {
         studentIds: [...a.studentIds],
         subject: a.subject,
         studentSubjects: a.studentSubjects ? { ...a.studentSubjects } : undefined,
+        _uid: ++editingResultUid,
       })))
     }
     setRecordingSlot(slot)
@@ -3215,7 +3217,9 @@ const AdminPage = () => {
 
   const saveActualResults = async (): Promise<void> => {
     if (!data || !recordingSlot) return
-    const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: editingResults }
+    // Strip _uid before persisting
+    const cleaned: ActualResult[] = editingResults.map(({ _uid: _, ...rest }) => rest)
+    const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: cleaned }
     setRecordingSlot(null)
     setEditingResults([])
     await persist({ ...data, actualResults: nextResults })
@@ -3246,7 +3250,7 @@ const AdminPage = () => {
   }
 
   const addEditingResultPair = (): void => {
-    setEditingResults((prev) => [...prev, { teacherId: '', studentIds: [''], subject: '', studentSubjects: {} }])
+    setEditingResults((prev) => [...prev, { teacherId: '', studentIds: [''], subject: '', studentSubjects: {}, _uid: ++editingResultUid }])
   }
 
   const removeEditingResultPair = (idx: number): void => {
@@ -4294,7 +4298,7 @@ service cloud.firestore {
                       <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '4px' }}>
                         <div className="list">
                           {editingResults.map((result, rIdx) => (
-                            <div key={rIdx} className="assignment-block" style={{ position: 'relative' }}>
+                            <div key={result._uid ?? rIdx} className="assignment-block" style={{ position: 'relative' }}>
                               <button type="button" className="pair-delete-btn" title="このペアを削除"
                                 onClick={() => removeEditingResultPair(rIdx)}>×</button>
                               <select value={result.teacherId}
