@@ -457,6 +457,27 @@ const getTeacherStudentSlotsOnDate = (
   return nums.sort((a, b) => a - b)
 }
 
+/** Get subjects a student is assigned on adjacent (consecutive) slots on the same date */
+const getStudentSubjectsOnAdjacentSlots = (
+  assignments: Record<string, Assignment[]>,
+  studentId: string,
+  date: string,
+  slotNum: number,
+): string[] => {
+  const subjects: string[] = []
+  for (const delta of [-1, 1]) {
+    const adjacentSlot = `${date}_${slotNum + delta}`
+    const slotAssigns = assignments[adjacentSlot]
+    if (!slotAssigns) continue
+    for (const a of slotAssigns) {
+      if (a.studentIds.includes(studentId)) {
+        subjects.push(getStudentSubject(a, studentId))
+      }
+    }
+  }
+  return subjects
+}
+
 const findRegularLessonsForSlot = (
   regularLessons: RegularLesson[],
   slotKey: string,
@@ -1018,6 +1039,16 @@ const buildIncrementalAutoAssignments = (
         // Mixed-subject penalty: same subject pairs are slightly preferred
         const mixedSubjectPenalty = plan.isMixed ? -15 : 0
 
+        // Consecutive same-subject penalty: avoid same student having the same subject in adjacent slots
+        let consecutiveSameSubjectPenalty = 0
+        for (const st of combo) {
+          const subj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
+          const adjacentSubjects = getStudentSubjectsOnAdjacentSlots(result, st.id, currentDate, currentSlotNum)
+          if (adjacentSubjects.includes(subj)) {
+            consecutiveSameSubjectPenalty -= 20
+          }
+        }
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
           teacherConsecutiveBonus +  // Teacher consecutive slot bonus
@@ -1026,6 +1057,7 @@ const buildIncrementalAutoAssignments = (
           pairConsecutiveBonus +  // Same teacher+student consecutive on same day
           (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
           mixedSubjectPenalty +  // Slight penalty for mixed subjects
+          consecutiveSameSubjectPenalty +  // Avoid same student same subject in consecutive slots
           studentScore -
           teacherLoad * 2
 
@@ -3286,10 +3318,14 @@ const AdminPage = () => {
   const computeSalaryData = (rates: { A: number; B: number; C: number; D: number }): SalaryRow[] => {
     if (!data) return []
     const results = data.actualResults ?? {}
+    const assignments = data.assignments ?? {}
     const tierCountMap: Record<string, { A: number; B: number; C: number; D: number }> = {}
     for (const slot of Object.keys(results)) {
       for (const r of results[slot]) {
         if (!r.teacherId) continue
+        // Skip regular lesson slots (check original assignments)
+        const origAssign = (assignments[slot] ?? []).find((a) => a.teacherId === r.teacherId)
+        if (origAssign?.isRegular) continue
         if (!tierCountMap[r.teacherId]) tierCountMap[r.teacherId] = { A: 0, B: 0, C: 0, D: 0 }
         const tier = classifyTier(r)
         tierCountMap[r.teacherId][tier]++
@@ -4038,7 +4074,7 @@ service cloud.firestore {
               return (
                 <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                   <h3 style={{ margin: '0 0 8px', fontSize: '16px' }}>💰 給与計算</h3>
-                  <p style={{ fontSize: '0.8em', color: '#6b7280', margin: '0 0 10px' }}>実績記録済みコマ: {recordedCount} / {slotKeys.length}</p>
+                  <p style={{ fontSize: '0.8em', color: '#6b7280', margin: '0 0 10px' }}>実績記録済みコマ: {recordedCount} / {slotKeys.length}　※通常コマ（固定授業）は給与計算に含まれません</p>
                   {/* Global tier rate settings */}
                   <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '12px', padding: '8px', background: '#ede9fe', borderRadius: '6px' }}>
                     {tierLabels.map((t) => (
