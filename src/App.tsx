@@ -1870,7 +1870,7 @@ const HomePage = () => {
       <div className="panel">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ margin: 0 }}>講習コマ割りアプリ</h2>
-          <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
+          {unlocked && <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>}
         </div>
         <p className="muted">管理データ（講師・生徒・制約）はここで一元管理し、特別講習ごとに希望コマ数とコマ割りを管理します。</p>
 
@@ -6063,7 +6063,7 @@ const ClassroomSelectPage = () => {
           {backupClassroomId && (
             <div className="panel">
               <h3>バックアップ履歴 — {classrooms.find((c) => c.id === backupClassroomId)?.name ?? backupClassroomId}</h3>
-              <p className="muted">管理画面を開くと自動で1時間ごとにバックアップが作成されます（最大10件保持）。</p>
+              <p className="muted">「保存して閉じる」ボタンを押すたびにバックアップが作成されます（最大30件保持）。</p>
               <div className="row" style={{ marginBottom: '8px', gap: '8px' }}>
                 <button className="btn" type="button" disabled={backupBusy} onClick={() => void handleManualBackup(backupClassroomId)}>
                   {backupBusy ? '処理中...' : '📸 今すぐバックアップ'}
