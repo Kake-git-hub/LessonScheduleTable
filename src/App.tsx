@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
@@ -3216,9 +3216,9 @@ const AdminPage = () => {
   const saveActualResults = async (): Promise<void> => {
     if (!data || !recordingSlot) return
     const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: editingResults }
-    await persist({ ...data, actualResults: nextResults })
     setRecordingSlot(null)
     setEditingResults([])
+    await persist({ ...data, actualResults: nextResults })
   }
 
   const cancelRecording = (): void => {
@@ -3254,32 +3254,55 @@ const AdminPage = () => {
   }
 
   // --- Salary calculation helpers ---
-  const saveHourlyRate = async (teacherId: string, rate: number): Promise<void> => {
+  type SalaryTier = 'A' | 'B' | 'C' | 'D'
+  const defaultTierRates = { A: 0, B: 0, C: 0, D: 0 }
+
+  const isHighSchoolOrAbove = (grade: string): boolean => grade.startsWith('高')
+
+  const classifyTier = (result: ActualResult): SalaryTier => {
+    if (!data) return 'A'
+    const studentCount = result.studentIds.filter((s) => s).length
+    const hasHighSchool = result.studentIds.some((sid) => {
+      const student = data.students.find((s) => s.id === sid)
+      return student ? isHighSchoolOrAbove(student.grade) : false
+    })
+    if (studentCount <= 1 && !hasHighSchool) return 'A'
+    if (studentCount >= 2 && !hasHighSchool) return 'B'
+    if (studentCount <= 1 && hasHighSchool) return 'C'
+    return 'D' // 2 students, at least one high school
+  }
+
+  const saveHourlyRate = async (teacherId: string, tier: SalaryTier, rate: number): Promise<void> => {
     if (!data) return
-    const nextRates = { ...(data.teacherHourlyRates ?? {}), [teacherId]: rate }
+    const currentRates = data.teacherHourlyRates ?? {}
+    const current = currentRates[teacherId] ?? { ...defaultTierRates }
+    const nextRates = { ...currentRates, [teacherId]: { ...current, [tier]: rate } }
     await persist({ ...data, teacherHourlyRates: nextRates })
   }
 
-  const computeSalaryData = (): { teacherId: string; name: string; slots: number; rate: number; total: number }[] => {
+  type SalaryRow = { teacherId: string; name: string; A: number; B: number; C: number; D: number; rates: { A: number; B: number; C: number; D: number }; total: number }
+  const computeSalaryData = (): SalaryRow[] => {
     if (!data) return []
     const results = data.actualResults ?? {}
-    const rates = data.teacherHourlyRates ?? {}
-    const countMap: Record<string, number> = {}
+    const ratesMap = data.teacherHourlyRates ?? {}
+    const tierCountMap: Record<string, { A: number; B: number; C: number; D: number }> = {}
     for (const slot of Object.keys(results)) {
       for (const r of results[slot]) {
-        if (r.teacherId) {
-          countMap[r.teacherId] = (countMap[r.teacherId] ?? 0) + 1
-        }
+        if (!r.teacherId) continue
+        if (!tierCountMap[r.teacherId]) tierCountMap[r.teacherId] = { A: 0, B: 0, C: 0, D: 0 }
+        const tier = classifyTier(r)
+        tierCountMap[r.teacherId][tier]++
       }
     }
     return instructors
-      .filter((t) => (countMap[t.id] ?? 0) > 0)
+      .filter((t) => tierCountMap[t.id])
       .map((t) => {
-        const slots = countMap[t.id] ?? 0
-        const rate = rates[t.id] ?? 0
-        return { teacherId: t.id, name: t.name, slots, rate, total: slots * rate }
+        const counts = tierCountMap[t.id]
+        const rates = ratesMap[t.id] ?? { ...defaultTierRates }
+        const total = counts.A * rates.A + counts.B * rates.B + counts.C * rates.C + counts.D * rates.D
+        return { teacherId: t.id, name: t.name, ...counts, rates, total }
       })
-      .sort((a, b) => b.slots - a.slots)
+      .sort((a, b) => (b.A + b.B + b.C + b.D) - (a.A + a.B + a.C + a.D))
   }
 
   const applyAutoAssign = async (): Promise<void> => {
@@ -4003,8 +4026,14 @@ service cloud.firestore {
             {showSalary && (() => {
               const salaryRows = computeSalaryData()
               const grandTotal = salaryRows.reduce((sum, r) => sum + r.total, 0)
-              const totalSlots = salaryRows.reduce((sum, r) => sum + r.slots, 0)
+              const totalAllSlots = salaryRows.reduce((sum, r) => sum + r.A + r.B + r.C + r.D, 0)
               const recordedCount = Object.keys(data.actualResults ?? {}).length
+              const tierLabels: { key: 'A' | 'B' | 'C' | 'D'; label: string; desc: string }[] = [
+                { key: 'A', label: 'A', desc: '生徒1人・中学生以下' },
+                { key: 'B', label: 'B', desc: '生徒2人・両方中学生以下' },
+                { key: 'C', label: 'C', desc: '生徒1人・高校生以上' },
+                { key: 'D', label: 'D', desc: '生徒2人・片方以上が高校生' },
+              ]
               return (
                 <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                   <h3 style={{ margin: '0 0 8px', fontSize: '16px' }}>💰 給与計算</h3>
@@ -4012,45 +4041,67 @@ service cloud.firestore {
                   {salaryRows.length === 0 ? (
                     <p style={{ color: '#6b7280', fontSize: '0.9em' }}>実績が記録されていません。各コマの「📝 実績記録」ボタンから記録してください。</p>
                   ) : (
-                    <>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }}>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em', minWidth: '700px' }}>
                         <thead>
+                          <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                            <th rowSpan={2} style={{ textAlign: 'left', padding: '4px 6px', verticalAlign: 'bottom' }}>{isMendan ? 'マネージャー' : '講師'}</th>
+                            {tierLabels.map((t) => (
+                              <th key={t.key} colSpan={2} style={{ textAlign: 'center', padding: '4px 6px', borderLeft: '1px solid #e5e7eb' }} title={t.desc}>
+                                {t.key}<span style={{ fontSize: '0.8em', color: '#6b7280', display: 'block' }}>{t.desc}</span>
+                              </th>
+                            ))}
+                            <th rowSpan={2} style={{ textAlign: 'right', padding: '4px 6px', verticalAlign: 'bottom' }}>合計 (円)</th>
+                          </tr>
                           <tr style={{ borderBottom: '2px solid #c4b5fd' }}>
-                            <th style={{ textAlign: 'left', padding: '6px 8px' }}>{isMendan ? 'マネージャー' : '講師'}</th>
-                            <th style={{ textAlign: 'center', padding: '6px 8px' }}>稼働コマ数</th>
-                            <th style={{ textAlign: 'center', padding: '6px 8px' }}>単価 (円)</th>
-                            <th style={{ textAlign: 'right', padding: '6px 8px' }}>合計 (円)</th>
+                            {tierLabels.map((t) => (
+                              <Fragment key={t.key}>
+                                <th style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb', fontSize: '0.85em', color: '#6b7280' }}>コマ</th>
+                                <th style={{ textAlign: 'center', padding: '4px 4px', fontSize: '0.85em', color: '#6b7280' }}>単価</th>
+                              </Fragment>
+                            ))}
                           </tr>
                         </thead>
                         <tbody>
                           {salaryRows.map((row) => (
                             <tr key={row.teacherId} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                              <td style={{ padding: '6px 8px' }}>{row.name}</td>
-                              <td style={{ textAlign: 'center', padding: '6px 8px' }}>{row.slots}</td>
-                              <td style={{ textAlign: 'center', padding: '6px 8px' }}>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={100}
-                                  value={row.rate}
-                                  style={{ width: '80px', textAlign: 'right', fontSize: '0.9em' }}
-                                  onChange={(e) => void saveHourlyRate(row.teacherId, Number(e.target.value))}
-                                />
-                              </td>
-                              <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 'bold' }}>{row.total.toLocaleString()}</td>
+                              <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{row.name}</td>
+                              {tierLabels.map((t) => (
+                                <Fragment key={t.key}>
+                                  <td style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb' }}>{row[t.key] || '—'}</td>
+                                  <td style={{ textAlign: 'center', padding: '4px 4px' }}>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={100}
+                                      value={row.rates[t.key]}
+                                      style={{ width: '70px', textAlign: 'right', fontSize: '0.9em' }}
+                                      onChange={(e) => void saveHourlyRate(row.teacherId, t.key, Number(e.target.value))}
+                                    />
+                                  </td>
+                                </Fragment>
+                              ))}
+                              <td style={{ textAlign: 'right', padding: '4px 6px', fontWeight: 'bold' }}>{row.total.toLocaleString()}</td>
                             </tr>
                           ))}
                         </tbody>
                         <tfoot>
                           <tr style={{ borderTop: '2px solid #c4b5fd', fontWeight: 'bold' }}>
-                            <td style={{ padding: '6px 8px' }}>合計</td>
-                            <td style={{ textAlign: 'center', padding: '6px 8px' }}>{totalSlots}</td>
-                            <td style={{ textAlign: 'center', padding: '6px 8px' }}>—</td>
-                            <td style={{ textAlign: 'right', padding: '6px 8px' }}>{grandTotal.toLocaleString()}</td>
+                            <td style={{ padding: '4px 6px' }}>合計</td>
+                            {tierLabels.map((t) => (
+                              <Fragment key={t.key}>
+                                <td style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb' }}>{salaryRows.reduce((s, r) => s + r[t.key], 0) || '—'}</td>
+                                <td style={{ textAlign: 'center', padding: '4px 4px' }}>—</td>
+                              </Fragment>
+                            ))}
+                            <td style={{ textAlign: 'right', padding: '4px 6px' }}>{grandTotal.toLocaleString()}</td>
+                          </tr>
+                          <tr style={{ fontWeight: 'bold', fontSize: '0.9em' }}>
+                            <td colSpan={10} style={{ padding: '6px', textAlign: 'right' }}>総コマ数: {totalAllSlots}　総給与: {grandTotal.toLocaleString()}円</td>
                           </tr>
                         </tfoot>
                       </table>
-                    </>
+                    </div>
                   )}
                 </div>
               )
