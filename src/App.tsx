@@ -3204,14 +3204,6 @@ const AdminPage = () => {
     setEditingResults([])
   }
 
-  const deleteActualResult = async (slot: string): Promise<void> => {
-    if (!data) return
-    if (!window.confirm('この実績記録を削除しますか？')) return
-    const nextResults = { ...(data.actualResults ?? {}) }
-    delete nextResults[slot]
-    await persist({ ...data, actualResults: nextResults })
-  }
-
   const updateEditingResult = (idx: number, field: keyof ActualResult, value: string | string[]): void => {
     setEditingResults((prev) => prev.map((r, i) => {
       if (i !== idx) return r
@@ -4236,64 +4228,70 @@ service cloud.firestore {
                     </div>
                     {/* Actual result recording panel */}
                     {recordingSlot === slot && (
-                      <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '8px' }}>
-                        <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '0.9em' }}>📝 実績記録 - {slotLabel(slot, isMendan, mendanStart)}</div>
-                        {editingResults.map((result, rIdx) => (
-                          <div key={rIdx} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '4px', padding: '8px', marginBottom: '6px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                              <span style={{ fontSize: '0.8em', fontWeight: 'bold' }}>ペア {rIdx + 1}</span>
-                              <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '1px 6px', color: '#dc2626' }}
-                                onClick={() => removeEditingResultPair(rIdx)}>✕</button>
-                            </div>
-                            <div style={{ marginBottom: '4px' }}>
-                              <label style={{ fontSize: '0.75em', color: '#6b7280' }}>{isMendan ? 'マネージャー' : '講師'}</label>
-                              <select style={{ width: '100%', fontSize: '0.85em' }} value={result.teacherId}
+                      <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontWeight: 'bold', fontSize: '0.85em' }}>📝 実績記録</span>
+                          <button className="btn secondary slot-add-btn" type="button" title="ペア追加" onClick={addEditingResultPair}>＋</button>
+                        </div>
+                        <div className="list">
+                          {editingResults.map((result, rIdx) => (
+                            <div key={rIdx} className="assignment-block" style={{ position: 'relative' }}>
+                              <button type="button" className="pair-delete-btn" title="このペアを削除"
+                                onClick={() => removeEditingResultPair(rIdx)}>×</button>
+                              <select value={result.teacherId}
                                 onChange={(e) => updateEditingResult(rIdx, 'teacherId', e.target.value)}>
-                                <option value="">未選択</option>
+                                <option value="">{isMendan ? 'マネージャーを選択' : '講師を選択'}</option>
                                 {instructors.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                               </select>
+                              {result.teacherId && (
+                                <>
+                                  {(isMendan ? [0] : result.studentIds.map((_, i) => i)).map((pos) => {
+                                    const sid = result.studentIds[pos] ?? ''
+                                    const currentStudent = data.students.find((s) => s.id === sid)
+                                    const selectedTeacherForResult = instructors.find((t) => t.id === result.teacherId)
+                                    const studentSubjectOptions = selectedTeacherForResult && currentStudent
+                                      ? selectedTeacherForResult.subjects.filter((subj) => currentStudent.subjects.includes(subj))
+                                      : (selectedTeacherForResult?.subjects ?? [])
+                                    return (
+                                      <div key={pos} className="student-select-row">
+                                        <select value={sid}
+                                          onChange={(e) => {
+                                            const newIds = [...result.studentIds]
+                                            newIds[pos] = e.target.value
+                                            updateEditingResult(rIdx, 'studentIds', newIds)
+                                          }}>
+                                          <option value="">{isMendan ? '保護者を選択' : `生徒${pos + 1}を選択`}</option>
+                                          {data.students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                        </select>
+                                        {!isMendan && sid && studentSubjectOptions.length > 0 && (
+                                          <select className="subject-select-inline"
+                                            value={result.studentSubjects?.[sid] ?? result.subject ?? studentSubjectOptions[0] ?? ''}
+                                            onChange={(e) => updateEditingResultStudentSubject(rIdx, sid, e.target.value)}>
+                                            {studentSubjectOptions.map((subj) => (
+                                              <option key={subj} value={subj}>{subj}</option>
+                                            ))}
+                                          </select>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                  {!isMendan && result.studentIds.filter((s) => s).length < 2 && result.studentIds.length < 2 && (
+                                    <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '2px 6px', marginTop: '4px' }}
+                                      onClick={() => {
+                                        const newIds = [...result.studentIds, '']
+                                        updateEditingResult(rIdx, 'studentIds', newIds)
+                                      }}>
+                                      + 生徒追加
+                                    </button>
+                                  )}
+                                </>
+                              )}
                             </div>
-                            {result.studentIds.map((sid, sIdx) => (
-                              <div key={sIdx} style={{ marginBottom: '4px' }}>
-                                <label style={{ fontSize: '0.75em', color: '#6b7280' }}>{isMendan ? '保護者' : `生徒${sIdx + 1}`}</label>
-                                <select style={{ width: '100%', fontSize: '0.85em' }} value={sid}
-                                  onChange={(e) => {
-                                    const newIds = [...result.studentIds]
-                                    newIds[sIdx] = e.target.value
-                                    updateEditingResult(rIdx, 'studentIds', newIds)
-                                  }}>
-                                  <option value="">未選択</option>
-                                  {data.students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                                </select>
-                                {!isMendan && sid && (
-                                  <select style={{ width: '100%', fontSize: '0.85em', marginTop: '2px' }}
-                                    value={result.studentSubjects?.[sid] ?? result.subject}
-                                    onChange={(e) => updateEditingResultStudentSubject(rIdx, sid, e.target.value)}>
-                                    {(data.students.find((s) => s.id === sid)?.subjects ?? [result.subject]).map((subj) => (
-                                      <option key={subj} value={subj}>{subj}</option>
-                                    ))}
-                                  </select>
-                                )}
-                              </div>
-                            ))}
-                            {!isMendan && result.studentIds.length < 2 && (
-                              <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '2px 6px', marginTop: '2px' }}
-                                onClick={() => {
-                                  const newIds = [...result.studentIds, '']
-                                  updateEditingResult(rIdx, 'studentIds', newIds)
-                                }}>
-                                + 生徒追加
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
-                          <button type="button" className="btn secondary" style={{ fontSize: '0.8em' }} onClick={addEditingResultPair}>+ ペア追加</button>
-                          <button type="button" className="btn" style={{ fontSize: '0.8em', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => void saveActualResults()}>💾 保存</button>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '8px', justifyContent: 'flex-end' }}>
+                          <button type="button" className="btn" style={{ fontSize: '0.8em', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => void saveActualResults()}>保存</button>
                           <button type="button" className="btn secondary" style={{ fontSize: '0.8em' }} onClick={cancelRecording}>キャンセル</button>
-                          {isRecorded && (
-                            <button type="button" className="btn secondary" style={{ fontSize: '0.8em', color: '#dc2626' }} onClick={() => { void deleteActualResult(slot); cancelRecording() }}>🗑 削除</button>
-                          )}
                         </div>
                       </div>
                     )}
