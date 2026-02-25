@@ -1280,12 +1280,12 @@ const HomePage = () => {
   }, [unlocked, classroomId])
 
   // --- Save and close: create backup, then navigate to classroom select ---
-  const dataChangedRef = useRef(false)
+  const changeLogRef = useRef<Set<string>>(new Set())
   const handleSaveAndClose = async () => {
     if (!classroomId) return
-    if (dataChangedRef.current) {
+    if (changeLogRef.current.size > 0) {
       try {
-        await createBackup(classroomId, 'auto')
+        await createBackup(classroomId, 'auto', [...changeLogRef.current])
         await cleanupOldBackups(classroomId, 30)
       } catch (e) {
         console.warn('[SaveAndClose] Backup failed:', e)
@@ -1299,7 +1299,6 @@ const HomePage = () => {
     if (!masterData) return
     const next = updater(masterData)
     setMasterData(next)
-    dataChangedRef.current = true
     await saveMasterData(classroomId, next)
   }
 
@@ -1307,6 +1306,7 @@ const HomePage = () => {
     if (!managerName.trim()) return
     const manager: Manager = { id: createId(), name: managerName.trim(), email: managerEmail.trim() }
     await updateMaster((c) => ({ ...c, managers: [...(c.managers ?? []), manager] }))
+    changeLogRef.current.add('マネージャー追加')
     setManagerName(''); setManagerEmail('')
   }
 
@@ -1314,6 +1314,7 @@ const HomePage = () => {
     if (!teacherName.trim()) return
     const teacher: Teacher = { id: createId(), name: teacherName.trim(), email: teacherEmail.trim(), subjects: teacherSubjects, memo: teacherMemo.trim() }
     await updateMaster((c) => ({ ...c, teachers: [...c.teachers, teacher] }))
+    changeLogRef.current.add('講師追加')
     setTeacherName(''); setTeacherEmail(''); setTeacherSubjects([]); setTeacherMemo('')
   }
 
@@ -1324,6 +1325,7 @@ const HomePage = () => {
       subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
     }
     await updateMaster((c) => ({ ...c, students: [...c.students, student] }))
+    changeLogRef.current.add('生徒追加')
     setStudentName(''); setStudentEmail(''); setStudentGrade('')
   }
 
@@ -1345,6 +1347,7 @@ const HomePage = () => {
       )
       return { ...c, constraints: [...filtered, nc] }
     })
+    changeLogRef.current.add('制約変更')
   }
 
   const upsertGradeConstraint = async (): Promise<void> => {
@@ -1360,6 +1363,7 @@ const HomePage = () => {
       const filtered = (c.gradeConstraints ?? []).filter((i) => !(i.teacherId === gradeConstraintTeacherId && i.grade === gradeConstraintGrade))
       return { ...c, gradeConstraints: [...filtered, nc] }
     })
+    changeLogRef.current.add('学年制約変更')
     setGradeConstraintSubjects([])
   }
 
@@ -1371,6 +1375,7 @@ const HomePage = () => {
       dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10),
     }
     await updateMaster((c) => ({ ...c, regularLessons: [...c.regularLessons, nl] }))
+    changeLogRef.current.add('通常授業追加')
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
     setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
@@ -1381,6 +1386,7 @@ const HomePage = () => {
   const saveEditManager = async (): Promise<void> => {
     if (!editingManagerId || !editManagerName.trim()) return
     await updateMaster((c) => ({ ...c, managers: (c.managers ?? []).map((m) => m.id === editingManagerId ? { ...m, name: editManagerName.trim(), email: editManagerEmail.trim() } : m) }))
+    changeLogRef.current.add('マネージャー編集')
     setEditingManagerId(null)
   }
 
@@ -1391,6 +1397,7 @@ const HomePage = () => {
   const saveEditTeacher = async (): Promise<void> => {
     if (!editingTeacherId || !editTeacherName.trim()) return
     await updateMaster((c) => ({ ...c, teachers: c.teachers.map((t) => t.id === editingTeacherId ? { ...t, name: editTeacherName.trim(), email: editTeacherEmail.trim(), subjects: editTeacherSubjects, memo: editTeacherMemo.trim() } : t) }))
+    changeLogRef.current.add('講師編集')
     setEditingTeacherId(null)
   }
 
@@ -1401,34 +1408,41 @@ const HomePage = () => {
   const saveEditStudent = async (): Promise<void> => {
     if (!editingStudentId || !editStudentName.trim()) return
     await updateMaster((c) => ({ ...c, students: c.students.map((s) => s.id === editingStudentId ? { ...s, name: editStudentName.trim(), email: editStudentEmail.trim(), grade: editStudentGrade.trim() } : s) }))
+    changeLogRef.current.add('生徒編集')
     setEditingStudentId(null)
   }
 
   const removeManager = async (managerId: string): Promise<void> => {
     if (!window.confirm('このマネージャーを削除しますか？')) return
     await updateMaster((c) => ({ ...c, managers: (c.managers ?? []).filter((m) => m.id !== managerId) }))
+    changeLogRef.current.add('マネージャー削除')
   }
 
   const removeTeacher = async (teacherId: string): Promise<void> => {
     if (!window.confirm('この講師を削除しますか？')) return
     await updateMaster((c) => ({ ...c, teachers: c.teachers.filter((t) => t.id !== teacherId) }))
+    changeLogRef.current.add('講師削除')
   }
 
   const removeStudent = async (studentId: string): Promise<void> => {
     if (!window.confirm('この生徒を削除しますか？')) return
     await updateMaster((c) => ({ ...c, students: c.students.filter((s) => s.id !== studentId) }))
+    changeLogRef.current.add('生徒削除')
   }
 
   const removeConstraint = async (constraintId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, constraints: c.constraints.filter((x) => x.id !== constraintId) }))
+    changeLogRef.current.add('制約削除')
   }
 
   const removeGradeConstraint = async (constraintId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, gradeConstraints: (c.gradeConstraints ?? []).filter((x) => x.id !== constraintId) }))
+    changeLogRef.current.add('学年制約削除')
   }
 
   const removeRegularLesson = async (lessonId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, regularLessons: c.regularLessons.filter((l) => l.id !== lessonId) }))
+    changeLogRef.current.add('通常授業削除')
   }
 
   // Edit regular lesson: populate form fields with existing data
@@ -1454,6 +1468,7 @@ const HomePage = () => {
           : l,
       ),
     }))
+    changeLogRef.current.add('通常授業編集')
     setEditingRegularLessonId(null)
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
     setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
@@ -1485,6 +1500,7 @@ const HomePage = () => {
           : item,
       ),
     }))
+    changeLogRef.current.add('制約編集')
     setEditingConstraintId(null)
     setConstraintPersonAId(''); setConstraintPersonBId('')
   }
@@ -1513,6 +1529,7 @@ const HomePage = () => {
           : item,
       ),
     }))
+    changeLogRef.current.add('学年制約編集')
     setEditingGradeConstraintId(null)
     setGradeConstraintTeacherId(''); setGradeConstraintGrade('')
     setGradeConstraintSubjects([])
@@ -1769,6 +1786,7 @@ const HomePage = () => {
       gradeConstraints: [...(c.gradeConstraints ?? []), ...importedGradeConstraints],
       regularLessons: [...c.regularLessons, ...importedRegularLessons],
     }))
+    changeLogRef.current.add(`ファイル取り込み (${added.join(', ')})`)
     setTimeout(() => alert('取り込み完了！'), 50)
   }
 
@@ -1788,7 +1806,6 @@ const HomePage = () => {
   const onCreateSession = async (): Promise<void> => {
     const id = newSessionId.trim()
     if (!id) return
-    dataChangedRef.current = true
     const isMendanSession = newTerm.includes('mendan')
     if (!masterData) {
       alert('管理データが読み込まれていません。')
@@ -1861,7 +1878,7 @@ const HomePage = () => {
       return
     }
     await deleteSession(classroomId, sessionId)
-    dataChangedRef.current = true
+    changeLogRef.current.add(`セッション削除 (${sessionName || sessionId})`)
     alert('特別講習を削除しました。')
   }
 
@@ -3525,8 +3542,9 @@ const AdminPage = () => {
   // --- Save and close: create backup, then navigate to home ---
   const handleSaveAndClose = async () => {
     if (!classroomId) return
+    const sessionName = data?.settings?.name ?? sessionId ?? ''
     try {
-      await createBackup(classroomId, 'auto')
+      await createBackup(classroomId, 'auto', [`セッション編集 (${sessionName})`])
       await cleanupOldBackups(classroomId, 30)
     } catch (e) {
       console.warn('[SaveAndClose] Backup failed:', e)
@@ -6081,16 +6099,17 @@ const ClassroomSelectPage = () => {
                 <p className="muted">バックアップはまだありません。</p>
               ) : (
                 <table className="table">
-                  <thead><tr><th>日時</th><th>種別</th><th>内容</th><th>操作</th></tr></thead>
+                  <thead><tr><th>日時</th><th>種別</th><th>変更内容</th><th>操作</th></tr></thead>
                   <tbody>
                     {backups.map((b) => (
                       <tr key={b.id}>
                         <td>{formatBackupDate(b.createdAt)}</td>
                         <td>{b.trigger === 'auto' ? '🤖 自動' : '👤 手動'}</td>
                         <td>
-                          {b.hasMasterData ? `講師${b.teacherCount}名・生徒${b.studentCount}名` : ''}
-                          {b.hasMasterData && b.sessionCount > 0 ? ' / ' : ''}
-                          {b.sessionCount > 0 ? `${b.sessionNames.join(', ')}` : ''}
+                          {b.changeLog.length > 0
+                            ? b.changeLog.join('、')
+                            : `講師${b.teacherCount}名・生徒${b.studentCount}名${b.sessionCount > 0 ? ` / ${b.sessionNames.join(', ')}` : ''}`
+                          }
                         </td>
                         <td>
                           <button className="btn secondary" type="button" style={{ marginRight: '4px' }} disabled={backupBusy} onClick={() => void handleRestore(backupClassroomId, b.id, b.createdAt)}>復元</button>

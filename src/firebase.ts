@@ -262,6 +262,7 @@ export type BackupMeta = {
   teacherCount: number
   studentCount: number
   sessionNames: string[]
+  changeLog: string[]
 }
 
 export type BackupData = {
@@ -269,10 +270,11 @@ export type BackupData = {
   trigger: 'auto' | 'manual'
   masterData: MasterData | null
   sessions: Record<string, SessionData>
+  changeLog?: string[]
 }
 
 /** Save a full backup of the classroom (master + all sessions). */
-export const createBackup = async (classroomId: string, trigger: 'auto' | 'manual'): Promise<string> => {
+export const createBackup = async (classroomId: string, trigger: 'auto' | 'manual', changeLog: string[] = []): Promise<string> => {
   const masterData = await loadMasterData(classroomId)
   const sessionIds = await loadAllSessionIds(classroomId)
   const sessionResults = await Promise.all(
@@ -282,11 +284,12 @@ export const createBackup = async (classroomId: string, trigger: 'auto' | 'manua
     sessionResults.filter((r) => r.data).map((r) => [r.id, r.data]),
   ) as Record<string, SessionData>
 
-  const backup: BackupData = {
+  const backup: BackupData & { changeLog: string[] } = {
     createdAt: Date.now(),
     trigger,
     masterData,
     sessions,
+    changeLog,
   }
   const ref = await addDoc(classroomBackupsCol(classroomId), backup)
   return ref.id
@@ -309,6 +312,7 @@ export const listBackups = async (classroomId: string): Promise<BackupMeta[]> =>
       teacherCount: master?.teachers?.length ?? 0,
       studentCount: master?.students?.length ?? 0,
       sessionNames: Object.values(sessions).map((s) => (s as { settings?: { name?: string } }).settings?.name ?? '').filter(Boolean),
+      changeLog: (data as { changeLog?: string[] }).changeLog ?? [],
     }
   })
 }
