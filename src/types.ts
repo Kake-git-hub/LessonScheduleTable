@@ -61,6 +61,14 @@ export type Assignment = {
   isRegular?: boolean
 }
 
+/** Actual result for a single pair in a slot (recorded after the lesson). */
+export type ActualResult = {
+  teacherId: string
+  studentIds: string[]
+  subject: string
+  studentSubjects?: Record<string, string>
+}
+
 export type RegularLesson = {
   id: string
   teacherId: string
@@ -118,6 +126,10 @@ export type SessionData = {
   teacherSubmittedAt?: Record<string, number>
   shareTokens?: Record<string, string>
   submissionLog?: SubmissionLogEntry[]
+  /** Per-slot actual results (recorded after lesson is done). Key = slotKey. */
+  actualResults?: Record<string, ActualResult[]>
+  /** Hourly rate per teacher for salary calculation. Maps teacherId → yen per slot. */
+  teacherHourlyRates?: Record<string, number>
 }
 
 export type MasterData = {

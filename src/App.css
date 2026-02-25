@@ -698,6 +698,21 @@
   background: #f3f4f6;
 }
 
+.slot-card.slot-recorded {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.slot-card.slot-recorded .list {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.slot-card.slot-recorded .recording-panel {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .assignment-block + .assignment-block {
   margin-top: 6px;
 }

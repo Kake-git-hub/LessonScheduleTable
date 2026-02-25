@@ -4,6 +4,7 @@ import XLSX from 'xlsx-js-style'
 import './App.css'
 import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
+  ActualResult,
   Assignment,
   ConstraintType,
   GradeConstraint,
@@ -2766,7 +2767,11 @@ const AdminPage = () => {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
-
+  // --- Actual result recording ---
+  const [recordingSlot, setRecordingSlot] = useState<string | null>(null)
+  const [editingResults, setEditingResults] = useState<ActualResult[]>([])
+  // --- Salary calculation ---
+  const [showSalary, setShowSalary] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
@@ -3166,12 +3171,119 @@ const AdminPage = () => {
     }
   }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // --- Actual result recording helpers ---
+  const startRecording = (slot: string): void => {
+    if (!data) return
+    const assignments = data.assignments[slot] ?? []
+    const existing = data.actualResults?.[slot]
+    if (existing) {
+      // Edit mode: load existing results
+      setEditingResults(existing.map((r) => ({ ...r, studentIds: [...r.studentIds] })))
+    } else {
+      // New: copy from current assignments
+      setEditingResults(assignments.map((a) => ({
+        teacherId: a.teacherId,
+        studentIds: [...a.studentIds],
+        subject: a.subject,
+        studentSubjects: a.studentSubjects ? { ...a.studentSubjects } : undefined,
+      })))
+    }
+    setRecordingSlot(slot)
+  }
+
+  const saveActualResults = async (): Promise<void> => {
+    if (!data || !recordingSlot) return
+    const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: editingResults }
+    await persist({ ...data, actualResults: nextResults })
+    setRecordingSlot(null)
+    setEditingResults([])
+  }
+
+  const cancelRecording = (): void => {
+    setRecordingSlot(null)
+    setEditingResults([])
+  }
+
+  const deleteActualResult = async (slot: string): Promise<void> => {
+    if (!data) return
+    if (!window.confirm('この実績記録を削除しますか？')) return
+    const nextResults = { ...(data.actualResults ?? {}) }
+    delete nextResults[slot]
+    await persist({ ...data, actualResults: nextResults })
+  }
+
+  const updateEditingResult = (idx: number, field: keyof ActualResult, value: string | string[]): void => {
+    setEditingResults((prev) => prev.map((r, i) => {
+      if (i !== idx) return r
+      if (field === 'teacherId') return { ...r, teacherId: value as string }
+      if (field === 'studentIds') return { ...r, studentIds: value as string[] }
+      if (field === 'subject') return { ...r, subject: value as string }
+      return r
+    }))
+  }
+
+  const updateEditingResultStudentSubject = (idx: number, studentId: string, subject: string): void => {
+    setEditingResults((prev) => prev.map((r, i) => {
+      if (i !== idx) return r
+      const ss = { ...(r.studentSubjects ?? {}) }
+      ss[studentId] = subject
+      return { ...r, studentSubjects: ss }
+    }))
+  }
+
+  const addEditingResultPair = (): void => {
+    setEditingResults((prev) => [...prev, { teacherId: '', studentIds: [''], subject: '', studentSubjects: {} }])
+  }
+
+  const removeEditingResultPair = (idx: number): void => {
+    setEditingResults((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  // --- Salary calculation helpers ---
+  const saveHourlyRate = async (teacherId: string, rate: number): Promise<void> => {
+    if (!data) return
+    const nextRates = { ...(data.teacherHourlyRates ?? {}), [teacherId]: rate }
+    await persist({ ...data, teacherHourlyRates: nextRates })
+  }
+
+  const computeSalaryData = (): { teacherId: string; name: string; slots: number; rate: number; total: number }[] => {
+    if (!data) return []
+    const results = data.actualResults ?? {}
+    const rates = data.teacherHourlyRates ?? {}
+    const countMap: Record<string, number> = {}
+    for (const slot of Object.keys(results)) {
+      for (const r of results[slot]) {
+        if (r.teacherId) {
+          countMap[r.teacherId] = (countMap[r.teacherId] ?? 0) + 1
+        }
+      }
+    }
+    return instructors
+      .filter((t) => (countMap[t.id] ?? 0) > 0)
+      .map((t) => {
+        const slots = countMap[t.id] ?? 0
+        const rate = rates[t.id] ?? 0
+        return { teacherId: t.id, name: t.name, slots, rate, total: slots * rate }
+      })
+      .sort((a, b) => b.slots - a.slots)
+  }
+
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
 
+    // Filter out slots with actual results
+    const recordedSlots = new Set(Object.keys(data.actualResults ?? {}))
+    const availableSlotKeys = slotKeys.filter((s) => !recordedSlots.has(s))
+
     // Mendan FCFS auto-assign
     if (isMendan) {
-      const { assignments: nextAssignments, unassignedParents } = buildMendanAutoAssignments(data, slotKeys)
+      const { assignments: nextAssignments, unassignedParents } = buildMendanAutoAssignments(data, availableSlotKeys)
+      // Preserve assignments in recorded slots
+      for (const slot of recordedSlots) {
+        if (data.assignments[slot]) {
+          nextAssignments[slot] = data.assignments[slot]
+        }
+      }
       const submittedCount = data.students.filter((s) => s.submittedAt > 0).length
       const assignedCount = submittedCount - unassignedParents.length
 
@@ -3190,7 +3302,7 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = buildIncrementalAutoAssignments(data, slotKeys)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = buildIncrementalAutoAssignments(data, availableSlotKeys)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -3229,6 +3341,13 @@ const AdminPage = () => {
       .filter(Boolean) as { studentName: string; over: { subject: string; over: number }[] }[]
 
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
+
+    // Preserve assignments in recorded slots
+    for (const slot of recordedSlots) {
+      if (data.assignments[slot]) {
+        nextAssignments[slot] = data.assignments[slot]
+      }
+    }
 
     await updateAssignments((current) => ({
       ...current,
@@ -3852,9 +3971,75 @@ service cloud.firestore {
               >
                 {data.settings.confirmed ? '✅ 確定済み' : '確定する'}
               </button>
+              {data.settings.confirmed && (
+                <button
+                  className={`btn${showSalary ? '' : ' secondary'}`}
+                  type="button"
+                  style={showSalary ? { background: '#7c3aed', borderColor: '#7c3aed' } : {}}
+                  onClick={() => setShowSalary((v) => !v)}
+                >
+                  💰 給与計算
+                </button>
+              )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
+            {/* Salary calculation panel */}
+            {showSalary && (() => {
+              const salaryRows = computeSalaryData()
+              const grandTotal = salaryRows.reduce((sum, r) => sum + r.total, 0)
+              const totalSlots = salaryRows.reduce((sum, r) => sum + r.slots, 0)
+              const recordedCount = Object.keys(data.actualResults ?? {}).length
+              return (
+                <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
+                  <h3 style={{ margin: '0 0 8px', fontSize: '16px' }}>💰 給与計算</h3>
+                  <p style={{ fontSize: '0.8em', color: '#6b7280', margin: '0 0 10px' }}>実績記録済みコマ: {recordedCount} / {slotKeys.length}</p>
+                  {salaryRows.length === 0 ? (
+                    <p style={{ color: '#6b7280', fontSize: '0.9em' }}>実績が記録されていません。各コマの「📝 実績記録」ボタンから記録してください。</p>
+                  ) : (
+                    <>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '2px solid #c4b5fd' }}>
+                            <th style={{ textAlign: 'left', padding: '6px 8px' }}>{isMendan ? 'マネージャー' : '講師'}</th>
+                            <th style={{ textAlign: 'center', padding: '6px 8px' }}>稼働コマ数</th>
+                            <th style={{ textAlign: 'center', padding: '6px 8px' }}>単価 (円)</th>
+                            <th style={{ textAlign: 'right', padding: '6px 8px' }}>合計 (円)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {salaryRows.map((row) => (
+                            <tr key={row.teacherId} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                              <td style={{ padding: '6px 8px' }}>{row.name}</td>
+                              <td style={{ textAlign: 'center', padding: '6px 8px' }}>{row.slots}</td>
+                              <td style={{ textAlign: 'center', padding: '6px 8px' }}>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={100}
+                                  value={row.rate}
+                                  style={{ width: '80px', textAlign: 'right', fontSize: '0.9em' }}
+                                  onChange={(e) => void saveHourlyRate(row.teacherId, Number(e.target.value))}
+                                />
+                              </td>
+                              <td style={{ textAlign: 'right', padding: '6px 8px', fontWeight: 'bold' }}>{row.total.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{ borderTop: '2px solid #c4b5fd', fontWeight: 'bold' }}>
+                            <td style={{ padding: '6px 8px' }}>合計</td>
+                            <td style={{ textAlign: 'center', padding: '6px 8px' }}>{totalSlots}</td>
+                            <td style={{ textAlign: 'center', padding: '6px 8px' }}>—</td>
+                            <td style={{ textAlign: 'right', padding: '6px 8px' }}>{grandTotal.toLocaleString()}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </>
+                  )}
+                </div>
+              )
+            })()}
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
                 <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>📖 コマ割りルール</h3>
@@ -3972,11 +4157,12 @@ service cloud.firestore {
                 const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, instructorPersonType, dragInfo.teacherId, slot) : false
                 // For student drag to same slot: valid if dropping onto a different assignment within the same slot
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
-                const isDropValid = isDragActive && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
+                const isRecorded = !!(data.actualResults?.[slot]?.length)
+                const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
 
                 return (
-                  <div className={`slot-card${slotDragClass}`} key={slot}
+                  <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
                     onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = isDropValid ? 'move' : 'none' }}
                     onDrop={(e) => {
                       e.preventDefault()
@@ -4006,23 +4192,111 @@ service cloud.firestore {
                     }}
                   >
                     <div className="slot-title">
-                      <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                         {slotLabel(slot, isMendan, mendanStart)}
                         {(data.settings.deskCount ?? 0) > 0 && (
-                          <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280', marginLeft: '6px' }}>
+                          <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280' }}>
                             {slotAssignments.length}/{data.settings.deskCount}
                           </span>
                         )}
+                        {isRecorded && <span style={{ fontSize: '0.7em', color: '#16a34a', fontWeight: 'bold' }}>✅ 実績済</span>}
                       </div>
-                      <button
-                        className="btn secondary slot-add-btn"
-                        type="button"
-                        title="ペア追加"
-                        onClick={() => void addSlotAssignment(slot)}
-                      >
-                        ＋
-                      </button>
+                      <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        {data.settings.confirmed && !isRecorded && (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            style={{ fontSize: '0.7em', padding: '2px 6px' }}
+                            onClick={() => startRecording(slot)}
+                          >
+                            📝 実績記録
+                          </button>
+                        )}
+                        {isRecorded && (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            style={{ fontSize: '0.7em', padding: '2px 6px' }}
+                            onClick={() => startRecording(slot)}
+                          >
+                            📝 実績修正
+                          </button>
+                        )}
+                        {!isRecorded && (
+                          <button
+                            className="btn secondary slot-add-btn"
+                            type="button"
+                            title="ペア追加"
+                            onClick={() => void addSlotAssignment(slot)}
+                          >
+                            ＋
+                          </button>
+                        )}
+                      </div>
                     </div>
+                    {/* Actual result recording panel */}
+                    {recordingSlot === slot && (
+                      <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '8px' }}>
+                        <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '0.9em' }}>📝 実績記録 - {slotLabel(slot, isMendan, mendanStart)}</div>
+                        {editingResults.map((result, rIdx) => (
+                          <div key={rIdx} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '4px', padding: '8px', marginBottom: '6px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                              <span style={{ fontSize: '0.8em', fontWeight: 'bold' }}>ペア {rIdx + 1}</span>
+                              <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '1px 6px', color: '#dc2626' }}
+                                onClick={() => removeEditingResultPair(rIdx)}>✕</button>
+                            </div>
+                            <div style={{ marginBottom: '4px' }}>
+                              <label style={{ fontSize: '0.75em', color: '#6b7280' }}>{isMendan ? 'マネージャー' : '講師'}</label>
+                              <select style={{ width: '100%', fontSize: '0.85em' }} value={result.teacherId}
+                                onChange={(e) => updateEditingResult(rIdx, 'teacherId', e.target.value)}>
+                                <option value="">未選択</option>
+                                {instructors.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                              </select>
+                            </div>
+                            {result.studentIds.map((sid, sIdx) => (
+                              <div key={sIdx} style={{ marginBottom: '4px' }}>
+                                <label style={{ fontSize: '0.75em', color: '#6b7280' }}>{isMendan ? '保護者' : `生徒${sIdx + 1}`}</label>
+                                <select style={{ width: '100%', fontSize: '0.85em' }} value={sid}
+                                  onChange={(e) => {
+                                    const newIds = [...result.studentIds]
+                                    newIds[sIdx] = e.target.value
+                                    updateEditingResult(rIdx, 'studentIds', newIds)
+                                  }}>
+                                  <option value="">未選択</option>
+                                  {data.students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                                {!isMendan && sid && (
+                                  <select style={{ width: '100%', fontSize: '0.85em', marginTop: '2px' }}
+                                    value={result.studentSubjects?.[sid] ?? result.subject}
+                                    onChange={(e) => updateEditingResultStudentSubject(rIdx, sid, e.target.value)}>
+                                    {(data.students.find((s) => s.id === sid)?.subjects ?? [result.subject]).map((subj) => (
+                                      <option key={subj} value={subj}>{subj}</option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
+                            ))}
+                            {!isMendan && result.studentIds.length < 2 && (
+                              <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '2px 6px', marginTop: '2px' }}
+                                onClick={() => {
+                                  const newIds = [...result.studentIds, '']
+                                  updateEditingResult(rIdx, 'studentIds', newIds)
+                                }}>
+                                + 生徒追加
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                        <div style={{ display: 'flex', gap: '6px', marginTop: '6px' }}>
+                          <button type="button" className="btn secondary" style={{ fontSize: '0.8em' }} onClick={addEditingResultPair}>+ ペア追加</button>
+                          <button type="button" className="btn" style={{ fontSize: '0.8em', background: '#16a34a', borderColor: '#16a34a' }} onClick={() => void saveActualResults()}>💾 保存</button>
+                          <button type="button" className="btn secondary" style={{ fontSize: '0.8em' }} onClick={cancelRecording}>キャンセル</button>
+                          {isRecorded && (
+                            <button type="button" className="btn secondary" style={{ fontSize: '0.8em', color: '#dc2626' }} onClick={() => { void deleteActualResult(slot); cancelRecording() }}>🗑 削除</button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
                         const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
