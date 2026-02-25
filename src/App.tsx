@@ -568,6 +568,20 @@ const buildIncrementalAutoAssignments = (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
+  // Pre-populate result with actual results (recorded slots) so student load counting includes them
+  if (data.actualResults) {
+    for (const [slot, results] of Object.entries(data.actualResults)) {
+      if (results.length > 0) {
+        result[slot] = results.map((r) => ({
+          teacherId: r.teacherId,
+          studentIds: [...r.studentIds],
+          subject: r.subject,
+          studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+        }))
+      }
+    }
+  }
+
   // Build submission order map: earlier initial submission → higher priority (lower rank number)
   const submissionOrderMap = new Map<string, number>()
   if (data.submissionLog) {
@@ -1105,6 +1119,14 @@ const buildMendanAutoAssignments = (
     for (const a of (result[slot] ?? [])) {
       if (a.isRegular) continue
       for (const sid of a.studentIds) assignedParents.add(sid)
+    }
+  }
+  // Also count parents in recorded actual results as already assigned
+  if (data.actualResults) {
+    for (const results of Object.values(data.actualResults)) {
+      for (const r of results) {
+        for (const sid of r.studentIds) assignedParents.add(sid)
+      }
     }
   }
 
@@ -3311,6 +3333,7 @@ const AdminPage = () => {
         const remaining = Object.entries(student.subjectSlots)
           .map(([subject, desired]) => {
             const assigned = countStudentSubjectLoad(nextAssignments, student.id, subject)
+            // actualResults are already in nextAssignments via builder seeding
             return { subject, remaining: desired - assigned }
           })
           .filter((item) => item.remaining > 0)
@@ -4295,6 +4318,7 @@ service cloud.firestore {
                         </div>
                       </div>
                     )}
+                    {recordingSlot !== slot && (
                     <div className="list">
                       {slotAssignments.map((assignment, idx) => {
                         const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
@@ -4553,6 +4577,7 @@ service cloud.firestore {
                         )
                       })()}
                     </div>
+                    )}
                   </div>
                 )
               })}
