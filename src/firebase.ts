@@ -259,6 +259,9 @@ export type BackupMeta = {
   trigger: 'auto' | 'manual'
   sessionCount: number
   hasMasterData: boolean
+  teacherCount: number
+  studentCount: number
+  sessionNames: string[]
 }
 
 export type BackupData = {
@@ -295,12 +298,17 @@ export const listBackups = async (classroomId: string): Promise<BackupMeta[]> =>
   const snapshot = await getDocs(q)
   return snapshot.docs.map((d) => {
     const data = d.data() as BackupData
+    const master = data.masterData
+    const sessions = data.sessions ?? {}
     return {
       id: d.id,
       createdAt: data.createdAt,
       trigger: data.trigger ?? 'manual',
-      sessionCount: Object.keys(data.sessions ?? {}).length,
-      hasMasterData: !!data.masterData,
+      sessionCount: Object.keys(sessions).length,
+      hasMasterData: !!master,
+      teacherCount: master?.teachers?.length ?? 0,
+      studentCount: master?.students?.length ?? 0,
+      sessionNames: Object.values(sessions).map((s) => (s as { settings?: { name?: string } }).settings?.name ?? '').filter(Boolean),
     }
   })
 }

@@ -6057,7 +6057,7 @@ const ClassroomSelectPage = () => {
                       <td><strong>{c.name}</strong></td>
                       <td className="muted">{c.id}</td>
                       <td><button className="btn" type="button" onClick={() => navigate(`/c/${c.id}`)}>開く</button></td>
-                      <td><button className="btn secondary" type="button" onClick={() => void openBackupPanel(c.id)}>{backupClassroomId === c.id ? '閉じる' : '🔄 バックアップ'}</button></td>
+                      <td><button className="btn secondary" type="button" onClick={() => void openBackupPanel(c.id)}>{backupClassroomId === c.id ? '閉じる' : '🔄 データ復元'}</button></td>
                       <td><button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDelete(c.id, c.name)}>削除</button></td>
                     </tr>
                   ))}
@@ -6068,8 +6068,8 @@ const ClassroomSelectPage = () => {
 
           {backupClassroomId && (
             <div className="panel">
-              <h3>バックアップ履歴 — {classrooms.find((c) => c.id === backupClassroomId)?.name ?? backupClassroomId}</h3>
-              <p className="muted">「保存して閉じる」ボタンを押すたびにバックアップが作成されます（最大30件保持）。</p>
+              <h3>データ復元 — {classrooms.find((c) => c.id === backupClassroomId)?.name ?? backupClassroomId}</h3>
+              <p className="muted">「保存して閉じる」ボタンを押すたびにバックアップが作成されます（最大30件保持）。復元すると、その時点の講師・生徒・制約・通常授業・全セッションのデータが復元されます。</p>
               <div className="row" style={{ marginBottom: '8px', gap: '8px' }}>
                 <button className="btn" type="button" disabled={backupBusy} onClick={() => void handleManualBackup(backupClassroomId)}>
                   {backupBusy ? '処理中...' : '📸 今すぐバックアップ'}
@@ -6088,9 +6088,9 @@ const ClassroomSelectPage = () => {
                         <td>{formatBackupDate(b.createdAt)}</td>
                         <td>{b.trigger === 'auto' ? '🤖 自動' : '👤 手動'}</td>
                         <td>
-                          {b.hasMasterData ? '管理データ' : ''}
-                          {b.hasMasterData && b.sessionCount > 0 ? ' + ' : ''}
-                          {b.sessionCount > 0 ? `セッション${b.sessionCount}件` : ''}
+                          {b.hasMasterData ? `講師${b.teacherCount}名・生徒${b.studentCount}名` : ''}
+                          {b.hasMasterData && b.sessionCount > 0 ? ' / ' : ''}
+                          {b.sessionCount > 0 ? `${b.sessionNames.join(', ')}` : ''}
                         </td>
                         <td>
                           <button className="btn secondary" type="button" style={{ marginRight: '4px' }} disabled={backupBusy} onClick={() => void handleRestore(backupClassroomId, b.id, b.createdAt)}>復元</button>
