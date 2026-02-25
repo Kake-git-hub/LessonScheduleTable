@@ -1280,13 +1280,16 @@ const HomePage = () => {
   }, [unlocked, classroomId])
 
   // --- Save and close: create backup, then navigate to classroom select ---
+  const dataChangedRef = useRef(false)
   const handleSaveAndClose = async () => {
     if (!classroomId) return
-    try {
-      await createBackup(classroomId, 'auto')
-      await cleanupOldBackups(classroomId, 30)
-    } catch (e) {
-      console.warn('[SaveAndClose] Backup failed:', e)
+    if (dataChangedRef.current) {
+      try {
+        await createBackup(classroomId, 'auto')
+        await cleanupOldBackups(classroomId, 30)
+      } catch (e) {
+        console.warn('[SaveAndClose] Backup failed:', e)
+      }
     }
     navigate('/')
   }
@@ -1296,6 +1299,7 @@ const HomePage = () => {
     if (!masterData) return
     const next = updater(masterData)
     setMasterData(next)
+    dataChangedRef.current = true
     await saveMasterData(classroomId, next)
   }
 
@@ -1784,6 +1788,7 @@ const HomePage = () => {
   const onCreateSession = async (): Promise<void> => {
     const id = newSessionId.trim()
     if (!id) return
+    dataChangedRef.current = true
     const isMendanSession = newTerm.includes('mendan')
     if (!masterData) {
       alert('管理データが読み込まれていません。')
@@ -1856,6 +1861,7 @@ const HomePage = () => {
       return
     }
     await deleteSession(classroomId, sessionId)
+    dataChangedRef.current = true
     alert('特別講習を削除しました。')
   }
 
