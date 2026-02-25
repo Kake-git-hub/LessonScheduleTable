@@ -4277,12 +4277,12 @@ service cloud.firestore {
                             📝 実績修正
                           </button>
                         )}
-                        {!isRecorded && (
+                        {(!isRecorded || recordingSlot === slot) && (
                           <button
                             className="btn secondary slot-add-btn"
                             type="button"
                             title="ペア追加"
-                            onClick={() => void addSlotAssignment(slot)}
+                            onClick={() => recordingSlot === slot ? addEditingResultPair() : void addSlotAssignment(slot)}
                           >
                             ＋
                           </button>
@@ -4292,10 +4292,6 @@ service cloud.firestore {
                     {/* Actual result recording panel */}
                     {recordingSlot === slot && (
                       <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '4px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                          <span style={{ fontWeight: 'bold', fontSize: '0.85em' }}>📝 実績記録</span>
-                          <button className="btn secondary slot-add-btn" type="button" title="ペア追加" onClick={addEditingResultPair}>＋</button>
-                        </div>
                         <div className="list">
                           {editingResults.map((result, rIdx) => (
                             <div key={rIdx} className="assignment-block" style={{ position: 'relative' }}>
