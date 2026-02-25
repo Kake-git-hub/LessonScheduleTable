@@ -3525,7 +3525,7 @@ const AdminPage = () => {
     } catch (e) {
       console.warn('[SaveAndClose] Backup failed:', e)
     }
-    navigate(`/c/${classroomId}`)
+    navigate(`/c/${classroomId}`, { state: { directHome: true } })
   }
 
   if (loading) {
@@ -3582,10 +3582,7 @@ service cloud.firestore {
       <div className="panel">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ margin: 0 }}>管理画面: {data.settings.name} ({sessionId})</h2>
-          <div className="row" style={{ gap: '8px' }}>
-            <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
-            <Link to={`/c/${classroomId}`} state={{ directHome: true }}>ホーム</Link>
-          </div>
+          <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
         </div>
         <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
       </div>
