@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
@@ -3272,19 +3272,16 @@ const AdminPage = () => {
     return 'D' // 2 students, at least one high school
   }
 
-  const saveHourlyRate = async (teacherId: string, tier: SalaryTier, rate: number): Promise<void> => {
+  const saveTierRate = async (tier: SalaryTier, rate: number): Promise<void> => {
     if (!data) return
-    const currentRates = data.teacherHourlyRates ?? {}
-    const current = currentRates[teacherId] ?? { ...defaultTierRates }
-    const nextRates = { ...currentRates, [teacherId]: { ...current, [tier]: rate } }
-    await persist({ ...data, teacherHourlyRates: nextRates })
+    const current = data.tierRates ?? { ...defaultTierRates }
+    await persist({ ...data, tierRates: { ...current, [tier]: rate } })
   }
 
-  type SalaryRow = { teacherId: string; name: string; A: number; B: number; C: number; D: number; rates: { A: number; B: number; C: number; D: number }; total: number }
-  const computeSalaryData = (): SalaryRow[] => {
+  type SalaryRow = { teacherId: string; name: string; A: number; B: number; C: number; D: number; total: number }
+  const computeSalaryData = (rates: { A: number; B: number; C: number; D: number }): SalaryRow[] => {
     if (!data) return []
     const results = data.actualResults ?? {}
-    const ratesMap = data.teacherHourlyRates ?? {}
     const tierCountMap: Record<string, { A: number; B: number; C: number; D: number }> = {}
     for (const slot of Object.keys(results)) {
       for (const r of results[slot]) {
@@ -3298,9 +3295,8 @@ const AdminPage = () => {
       .filter((t) => tierCountMap[t.id])
       .map((t) => {
         const counts = tierCountMap[t.id]
-        const rates = ratesMap[t.id] ?? { ...defaultTierRates }
         const total = counts.A * rates.A + counts.B * rates.B + counts.C * rates.C + counts.D * rates.D
-        return { teacherId: t.id, name: t.name, ...counts, rates, total }
+        return { teacherId: t.id, name: t.name, ...counts, total }
       })
       .sort((a, b) => (b.A + b.B + b.C + b.D) - (a.A + a.B + a.C + a.D))
   }
@@ -4024,7 +4020,8 @@ service cloud.firestore {
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
-              const salaryRows = computeSalaryData()
+              const rates = data.tierRates ?? { ...defaultTierRates }
+              const salaryRows = computeSalaryData(rates)
               const grandTotal = salaryRows.reduce((sum, r) => sum + r.total, 0)
               const totalAllSlots = salaryRows.reduce((sum, r) => sum + r.A + r.B + r.C + r.D, 0)
               const recordedCount = Object.keys(data.actualResults ?? {}).length
@@ -4038,66 +4035,58 @@ service cloud.firestore {
                 <div style={{ background: '#f5f3ff', border: '1px solid #c4b5fd', borderRadius: '8px', padding: '16px', marginBottom: '12px' }}>
                   <h3 style={{ margin: '0 0 8px', fontSize: '16px' }}>💰 給与計算</h3>
                   <p style={{ fontSize: '0.8em', color: '#6b7280', margin: '0 0 10px' }}>実績記録済みコマ: {recordedCount} / {slotKeys.length}</p>
+                  {/* Global tier rate settings */}
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '12px', padding: '8px', background: '#ede9fe', borderRadius: '6px' }}>
+                    {tierLabels.map((t) => (
+                      <div key={t.key} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <label style={{ fontSize: '0.8em', fontWeight: 'bold' }}>{t.key}<span style={{ fontSize: '0.85em', color: '#6b7280', fontWeight: 'normal' }}>({t.desc})</span></label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={100}
+                          value={rates[t.key]}
+                          style={{ width: '80px', textAlign: 'right', fontSize: '0.9em' }}
+                          onChange={(e) => void saveTierRate(t.key, Number(e.target.value))}
+                        />
+                        <span style={{ fontSize: '0.8em', color: '#6b7280' }}>円</span>
+                      </div>
+                    ))}
+                  </div>
                   {salaryRows.length === 0 ? (
                     <p style={{ color: '#6b7280', fontSize: '0.9em' }}>実績が記録されていません。各コマの「📝 実績記録」ボタンから記録してください。</p>
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8em', minWidth: '700px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85em' }}>
                         <thead>
-                          <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
-                            <th rowSpan={2} style={{ textAlign: 'left', padding: '4px 6px', verticalAlign: 'bottom' }}>{isMendan ? 'マネージャー' : '講師'}</th>
-                            {tierLabels.map((t) => (
-                              <th key={t.key} colSpan={2} style={{ textAlign: 'center', padding: '4px 6px', borderLeft: '1px solid #e5e7eb' }} title={t.desc}>
-                                {t.key}<span style={{ fontSize: '0.8em', color: '#6b7280', display: 'block' }}>{t.desc}</span>
-                              </th>
-                            ))}
-                            <th rowSpan={2} style={{ textAlign: 'right', padding: '4px 6px', verticalAlign: 'bottom' }}>合計 (円)</th>
-                          </tr>
                           <tr style={{ borderBottom: '2px solid #c4b5fd' }}>
+                            <th style={{ textAlign: 'left', padding: '6px 8px' }}>{isMendan ? 'マネージャー' : '講師'}</th>
                             {tierLabels.map((t) => (
-                              <Fragment key={t.key}>
-                                <th style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb', fontSize: '0.85em', color: '#6b7280' }}>コマ</th>
-                                <th style={{ textAlign: 'center', padding: '4px 4px', fontSize: '0.85em', color: '#6b7280' }}>単価</th>
-                              </Fragment>
+                              <th key={t.key} style={{ textAlign: 'center', padding: '6px 4px' }} title={t.desc}>{t.key}</th>
                             ))}
+                            <th style={{ textAlign: 'center', padding: '6px 4px' }}>計</th>
+                            <th style={{ textAlign: 'right', padding: '6px 8px' }}>合計 (円)</th>
                           </tr>
                         </thead>
                         <tbody>
                           {salaryRows.map((row) => (
                             <tr key={row.teacherId} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                              <td style={{ padding: '4px 6px', whiteSpace: 'nowrap' }}>{row.name}</td>
+                              <td style={{ padding: '4px 8px', whiteSpace: 'nowrap' }}>{row.name}</td>
                               {tierLabels.map((t) => (
-                                <Fragment key={t.key}>
-                                  <td style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb' }}>{row[t.key] || '—'}</td>
-                                  <td style={{ textAlign: 'center', padding: '4px 4px' }}>
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      step={100}
-                                      value={row.rates[t.key]}
-                                      style={{ width: '70px', textAlign: 'right', fontSize: '0.9em' }}
-                                      onChange={(e) => void saveHourlyRate(row.teacherId, t.key, Number(e.target.value))}
-                                    />
-                                  </td>
-                                </Fragment>
+                                <td key={t.key} style={{ textAlign: 'center', padding: '4px 4px' }}>{row[t.key] || '—'}</td>
                               ))}
-                              <td style={{ textAlign: 'right', padding: '4px 6px', fontWeight: 'bold' }}>{row.total.toLocaleString()}</td>
+                              <td style={{ textAlign: 'center', padding: '4px 4px', fontWeight: 'bold' }}>{row.A + row.B + row.C + row.D}</td>
+                              <td style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 'bold' }}>{row.total.toLocaleString()}</td>
                             </tr>
                           ))}
                         </tbody>
                         <tfoot>
                           <tr style={{ borderTop: '2px solid #c4b5fd', fontWeight: 'bold' }}>
-                            <td style={{ padding: '4px 6px' }}>合計</td>
+                            <td style={{ padding: '6px 8px' }}>合計</td>
                             {tierLabels.map((t) => (
-                              <Fragment key={t.key}>
-                                <td style={{ textAlign: 'center', padding: '4px 4px', borderLeft: '1px solid #e5e7eb' }}>{salaryRows.reduce((s, r) => s + r[t.key], 0) || '—'}</td>
-                                <td style={{ textAlign: 'center', padding: '4px 4px' }}>—</td>
-                              </Fragment>
+                              <td key={t.key} style={{ textAlign: 'center', padding: '4px 4px' }}>{salaryRows.reduce((s, r) => s + r[t.key], 0) || '—'}</td>
                             ))}
-                            <td style={{ textAlign: 'right', padding: '4px 6px' }}>{grandTotal.toLocaleString()}</td>
-                          </tr>
-                          <tr style={{ fontWeight: 'bold', fontSize: '0.9em' }}>
-                            <td colSpan={10} style={{ padding: '6px', textAlign: 'right' }}>総コマ数: {totalAllSlots}　総給与: {grandTotal.toLocaleString()}円</td>
+                            <td style={{ textAlign: 'center', padding: '4px 4px' }}>{totalAllSlots}</td>
+                            <td style={{ textAlign: 'right', padding: '6px 8px' }}>{grandTotal.toLocaleString()}</td>
                           </tr>
                         </tfoot>
                       </table>

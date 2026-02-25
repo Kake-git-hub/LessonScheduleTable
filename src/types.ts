@@ -128,8 +128,8 @@ export type SessionData = {
   submissionLog?: SubmissionLogEntry[]
   /** Per-slot actual results (recorded after lesson is done). Key = slotKey. */
   actualResults?: Record<string, ActualResult[]>
-  /** Hourly rate per teacher per tier for salary calculation. Maps teacherId → { A, B, C, D } rates. */
-  teacherHourlyRates?: Record<string, { A: number; B: number; C: number; D: number }>
+  /** Global hourly rates per tier (A/B/C/D) for salary calculation. */
+  tierRates?: { A: number; B: number; C: number; D: number }
 }
 
 export type MasterData = {

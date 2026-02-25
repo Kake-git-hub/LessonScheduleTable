@@ -713,6 +713,11 @@
   pointer-events: auto;
 }
 
+.slot-card.slot-recorded .recording-panel .list {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .assignment-block + .assignment-block {
   margin-top: 6px;
 }
