@@ -3351,9 +3351,9 @@ const AdminPage = () => {
     // Mendan FCFS auto-assign
     if (isMendan) {
       const { assignments: nextAssignments, unassignedParents } = buildMendanAutoAssignments(data, availableSlotKeys)
-      // Preserve assignments in recorded slots
+      // Preserve recorded slot assignments from actual results (already in builder result)
       for (const slot of recordedSlots) {
-        if (data.assignments[slot]) {
+        if (!nextAssignments[slot] && data.assignments[slot]) {
           nextAssignments[slot] = data.assignments[slot]
         }
       }
@@ -3416,9 +3416,10 @@ const AdminPage = () => {
 
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
 
-    // Preserve assignments in recorded slots
+    // Preserve recorded slot assignments from actual results (already seeded in builder)
+    // Do NOT overwrite with data.assignments — actual results may differ from original plan
     for (const slot of recordedSlots) {
-      if (data.assignments[slot]) {
+      if (!nextAssignments[slot] && data.assignments[slot]) {
         nextAssignments[slot] = data.assignments[slot]
       }
     }
@@ -4230,7 +4231,7 @@ service cloud.firestore {
             <div className="grid-slots">
               {(isMendan ? effectiveSlotKeys : slotKeys).map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
-                const isRecorded = !!(data.actualResults?.[slot]?.length)
+                const isRecorded = data.actualResults != null && slot in data.actualResults
                 // When actual results are recorded, show those instead of original assignments
                 const displayAssignments = isRecorded ? (data.actualResults![slot] as Assignment[]) : slotAssignments
                 const usedTeacherIds = new Set(slotAssignments.map((a) => a.teacherId).filter(Boolean))
