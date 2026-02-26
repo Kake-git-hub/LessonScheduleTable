@@ -4376,7 +4376,10 @@ service cloud.firestore {
                       </div>
                     </div>
                     {/* Actual result recording panel */}
-                    {recordingSlot === slot && (
+                    {recordingSlot === slot && (() => {
+                      // Collect all student IDs used in this slot's editing results
+                      const allUsedStudentIds = new Set(editingResults.flatMap((r) => r.studentIds.filter(Boolean)))
+                      return (
                       <div className="recording-panel" style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: '6px', padding: '10px', marginBottom: '4px' }}>
                         <div className="list">
                           {editingResults.map((result, rIdx) => (
@@ -4397,6 +4400,11 @@ service cloud.firestore {
                                     const studentSubjectOptions = selectedTeacherForResult && currentStudent
                                       ? selectedTeacherForResult.subjects.filter((subj) => currentStudent.subjects.includes(subj))
                                       : (selectedTeacherForResult?.subjects ?? [])
+                                    // Hide students already used in other pairs in this slot
+                                    const ownStudentIds = new Set(result.studentIds)
+                                    const availableStudents = data.students.filter((s) =>
+                                      ownStudentIds.has(s.id) || !allUsedStudentIds.has(s.id)
+                                    )
                                     return (
                                       <div key={pos} className="student-select-row">
                                         <select value={sid}
@@ -4406,7 +4414,7 @@ service cloud.firestore {
                                             updateEditingResult(rIdx, 'studentIds', newIds)
                                           }}>
                                           <option value="">{isMendan ? '保護者を選択' : `生徒${pos + 1}を選択`}</option>
-                                          {data.students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                          {availableStudents.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                                         </select>
                                         {!isMendan && sid && studentSubjectOptions.length > 0 && (
                                           <select className="subject-select-inline"
@@ -4439,7 +4447,8 @@ service cloud.firestore {
                           <button type="button" className="btn secondary" style={{ fontSize: '0.8em' }} onClick={cancelRecording}>キャンセル</button>
                         </div>
                       </div>
-                    )}
+                      )
+                    })()}
                     {recordingSlot !== slot && (
                     <div className="list">
                       {displayAssignments.map((assignment, idx) => {
