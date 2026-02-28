@@ -724,9 +724,15 @@ const HomePage = () => {
       const teacher = allTeachers.find((t) => t.id === rl.teacherId)
       const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
       let valid = true
-      if (teacher && !teacherHasSubject(teacher.subjects, rl.subject)) {
-        validationWarnings.push(`通常授業スキップ: ${teacher.name} の担当科目に「${rl.subject}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
-        valid = false
+      // Check all per-student subjects (and fallback subject)
+      const subjectsToCheck = rl.studentSubjects
+        ? Object.values(rl.studentSubjects)
+        : [rl.subject]
+      for (const subj of subjectsToCheck) {
+        if (teacher && !teacherHasSubject(teacher.subjects, subj)) {
+          validationWarnings.push(`通常授業スキップ: ${teacher.name} の担当科目に「${subj}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
+          valid = false
+        }
       }
       for (const sid of rl.studentIds) {
         if (!allStudents.find((s) => s.id === sid)) {
