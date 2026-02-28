@@ -715,54 +715,61 @@ const HomePage = () => {
     }
 
     // --- Validation: check for inconsistencies ---
-    const validationErrors: string[] = []
+    const validationWarnings: string[] = []
     // All teachers (existing + imported)
     const allTeachers = [...md.teachers, ...importedTeachers]
     const allStudents = [...md.students, ...importedStudents]
-    // Check regular lessons
-    for (const rl of importedRegularLessons) {
+    // Check regular lessons — remove invalid ones but keep valid ones
+    const validRegularLessons = importedRegularLessons.filter((rl) => {
       const teacher = allTeachers.find((t) => t.id === rl.teacherId)
+      const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
+      let valid = true
       if (teacher && !teacherHasSubject(teacher.subjects, rl.subject)) {
-        const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
-        validationErrors.push(`通常授業: ${teacher.name} の担当科目に「${rl.subject}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
+        validationWarnings.push(`通常授業スキップ: ${teacher.name} の担当科目に「${rl.subject}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
+        valid = false
       }
       for (const sid of rl.studentIds) {
-        const student = allStudents.find((s) => s.id === sid)
-        if (!student) {
-          validationErrors.push(`通常授業: 生徒ID「${sid}」が見つかりません`)
+        if (!allStudents.find((s) => s.id === sid)) {
+          validationWarnings.push(`通常授業スキップ: 生徒ID「${sid}」が見つかりません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
+          valid = false
         }
       }
-    }
-    // Check constraints reference valid people
-    for (const c of importedConstraints) {
+      return valid
+    })
+    // Check constraints reference valid people — remove invalid ones
+    const validConstraints = importedConstraints.filter((c) => {
       const aList = c.personAType === 'teacher' ? allTeachers : allStudents
       const bList = c.personBType === 'teacher' ? allTeachers : allStudents
+      let valid = true
       if (!aList.some((p) => p.id === c.personAId)) {
-        validationErrors.push(`制約: 人物A「${c.personAId}」が見つかりません`)
+        validationWarnings.push(`制約スキップ: 人物A「${c.personAId}」が見つかりません`)
+        valid = false
       }
       if (!bList.some((p) => p.id === c.personBId)) {
-        validationErrors.push(`制約: 人物B「${c.personBId}」が見つかりません`)
+        validationWarnings.push(`制約スキップ: 人物B「${c.personBId}」が見つかりません`)
+        valid = false
       }
-    }
-    if (validationErrors.length > 0) {
-      alert(`⚠️ 取り込みエラー:\n\n${validationErrors.join('\n')}\n\nデータを修正してから再度取り込んでください。`)
-      return
-    }
+      return valid
+    })
 
     const added: string[] = []
     if (importedTeachers.length) added.push(`講師${importedTeachers.length}名`)
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
-    if (importedConstraints.length) added.push(`制約${importedConstraints.length}件`)
-    if (importedRegularLessons.length) added.push(`通常授業${importedRegularLessons.length}件`)
-    if (added.length === 0) { alert('新規データがありませんでした（同名は重複スキップ）。'); return }
-    if (!window.confirm(`以下を取り込みます:\n${added.join(', ')}\n\nよろしいですか？`)) return
+    if (validConstraints.length) added.push(`制約${validConstraints.length}件`)
+    if (validRegularLessons.length) added.push(`通常授業${validRegularLessons.length}件`)
+    if (added.length === 0 && validationWarnings.length === 0) { alert('新規データがありませんでした（同名は重複スキップ）。'); return }
+    if (added.length === 0 && validationWarnings.length > 0) { alert(`⚠️ 以下のデータにエラーがあり、取り込めるデータがありませんでした:\n\n${validationWarnings.join('\n')}`); return }
+    const confirmMsg = validationWarnings.length > 0
+      ? `以下を取り込みます:\n${added.join(', ')}\n\n⚠️ スキップされたデータ:\n${validationWarnings.join('\n')}\n\nよろしいですか？`
+      : `以下を取り込みます:\n${added.join(', ')}\n\nよろしいですか？`
+    if (!window.confirm(confirmMsg)) return
 
     await updateMaster((c) => ({
       ...c,
       teachers: [...c.teachers, ...importedTeachers],
       students: [...c.students, ...importedStudents],
-      constraints: [...c.constraints, ...importedConstraints],
-      regularLessons: [...c.regularLessons, ...importedRegularLessons],
+      constraints: [...c.constraints, ...validConstraints],
+      regularLessons: [...c.regularLessons, ...validRegularLessons],
     }))
     changeLogRef.current.add(`ファイル取り込み (${added.join(', ')})`)
     setTimeout(() => alert('取り込み完了！'), 50)
