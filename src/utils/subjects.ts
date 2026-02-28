@@ -22,10 +22,18 @@ export const ELEMENTARY_COMBO_SUBJECTS = ['算英', '算国', '英国'] as const
 /** Level prefixes ordered from lowest to highest. */
 export const LEVEL_PREFIXES = ['小', '中', '高'] as const
 
-/** All leveled teacher subject options (小英, 中英, 高英, ...). */
-export const TEACHER_SUBJECTS: string[] = LEVEL_PREFIXES.flatMap(lv =>
-  BASE_SUBJECTS.map(s => `${lv}${s}`),
-)
+/** Subjects that only exist at the elementary (小) level — no 中/高 variants. */
+const ELEMENTARY_ONLY_SUBJECTS = ['算'] as const
+
+/** All leveled teacher subject options (小英, 中英, 高英, ... + 小算). */
+export const TEACHER_SUBJECTS: string[] = [
+  ...LEVEL_PREFIXES.flatMap(lv =>
+    (BASE_SUBJECTS as readonly string[])
+      .filter(s => !(ELEMENTARY_ONLY_SUBJECTS as readonly string[]).includes(s))
+      .map(s => `${lv}${s}`),
+  ),
+  ...ELEMENTARY_ONLY_SUBJECTS.map(s => `小${s}`),
+]
 
 const LEVEL_ORDER: Record<string, number> = { '小': 0, '中': 1, '高': 2 }
 
