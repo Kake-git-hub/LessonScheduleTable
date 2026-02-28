@@ -227,6 +227,7 @@ const HomePage = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const [unlocked, setUnlocked] = useState(false)
+  const [showNewSessionForm, setShowNewSessionForm] = useState(false)
   const [adminPassword, setAdminPassword] = useState(readSavedAdminPassword())
   const [sessions, setSessions] = useState<{ id: string; name: string; createdAt: number; updatedAt: number }[]>([])
   const [masterData, setMasterData] = useState<MasterData | null>(null)
@@ -560,13 +561,13 @@ const HomePage = () => {
       ['生徒', '青木 太郎', '生徒', '上田 陽介', '不可'],
     ]
     const sampleRegularLessons = [
-      ['田中講師', '青木 太郎', '', '数', '月', '1'],
+      ['田中講師', '青木 太郎', '', '数', '', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メールアドレス'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別(講師/生徒)', '人物A名', '人物B種別(講師/生徒)', '人物B名', '種別(不可)'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '生徒1科目', '生徒2科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -591,13 +592,15 @@ const HomePage = () => {
       md.teachers.find((t) => t.id === l.teacherId)?.name ?? l.teacherId,
       ...l.studentIds.map((id) => md.students.find((s) => s.id === id)?.name ?? id),
       ...(l.studentIds.length === 1 ? [''] : []),
-      l.subject, dayNames[l.dayOfWeek] ?? '', l.slotNumber,
+      l.studentSubjects?.[l.studentIds[0]] ?? l.subject,
+      l.studentIds.length > 1 ? (l.studentSubjects?.[l.studentIds[1]] ?? l.subject) : '',
+      dayNames[l.dayOfWeek] ?? '', l.slotNumber,
     ])
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '生徒1科目', '生徒2科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
 
@@ -682,25 +685,31 @@ const HomePage = () => {
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i]
         const tName = String(row?.[0] ?? '').trim(); const s1 = String(row?.[1] ?? '').trim(); const s2 = String(row?.[2] ?? '').trim()
-        const subject = String(row?.[3] ?? '').trim(); const dayStr = String(row?.[4] ?? '').trim(); const slotNum = Number(row?.[5])
+        const subj1 = String(row?.[3] ?? '').trim(); const subj2 = String(row?.[4] ?? '').trim()
+        const dayStr = String(row?.[5] ?? '').trim(); const slotNum = Number(row?.[6])
         const tid = findTeacherId(tName)
-        if (!tid || !subject) continue
-        const sids = [findStudentId(s1), findStudentId(s2)].filter(Boolean) as string[]
+        if (!tid || !subj1) continue
+        const sid1 = findStudentId(s1); const sid2 = findStudentId(s2)
+        const sids = [sid1, sid2].filter(Boolean) as string[]
         if (sids.length === 0) continue
         const dow = dayNameMap[dayStr]
         if (dow === undefined || Number.isNaN(slotNum) || slotNum < 1) continue
+        const studentSubjects: Record<string, string> = {}
+        if (sid1) studentSubjects[sid1] = subj1
+        if (sid2 && subj2) studentSubjects[sid2] = subj2
+        else if (sid2) studentSubjects[sid2] = subj1
+        const subject = subj1
         // Dedup: skip if same regular lesson already exists in master data
         const sortedSids = [...sids].sort()
         const isDup = md.regularLessons.some((existing) =>
           existing.teacherId === tid &&
-          existing.subject === subject &&
           existing.dayOfWeek === dow &&
           existing.slotNumber === slotNum &&
           existing.studentIds.length === sortedSids.length &&
           [...existing.studentIds].sort().every((id, j) => id === sortedSids[j]),
         )
         if (isDup) continue
-        importedRegularLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, dayOfWeek: dow, slotNumber: slotNum })
+        importedRegularLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, studentSubjects, dayOfWeek: dow, slotNumber: slotNum })
       }
     }
 
@@ -884,92 +893,95 @@ const HomePage = () => {
           <>
             {/* --- Session management --- */}
             <div className="panel">
-              <h3>新規特別講習を追加</h3>
-              {(!masterData || (
-                newTerm.includes('mendan')
-                  ? ((masterData.managers ?? []).length === 0 && masterData.students.length === 0)
-                  : (masterData.teachers.length === 0 && masterData.students.length === 0)
-              )) ? (
-                <p style={{ color: '#dc2626', fontWeight: 600 }}>⚠ 管理データ（{newTerm.includes('mendan') ? 'マネージャー・生徒' : '講師・生徒'}）が未登録のため、特別講習を追加できません。先に下部の管理データを登録してください。</p>
-              ) : (
-                <>
-                  <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
-                  <div className="row">
-                    <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 80 }} />
-                    <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
-                      <optgroup label="講習">
-                        <option value="spring">春期講習</option>
-                        <option value="summer">夏期講習</option>
-                        <option value="winter">冬期講習</option>
-                      </optgroup>
-                      <optgroup label="面談">
-                        <option value="spring-mendan">春期面談</option>
-                        <option value="summer-mendan">夏期面談</option>
-                        <option value="winter-mendan">冬期面談</option>
-                      </optgroup>
-                    </select>
-                    <input value={newSessionId} onChange={(e) => setNewSessionId(e.target.value)} placeholder="ID (例: 2026-summer)" style={{ width: 160 }} />
-                    <input value={newSessionName} onChange={(e) => setNewSessionName(e.target.value)} placeholder="表示名 (例: 2026 夏期講習)" />
-                  </div>
-                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      講習期間:
-                      <input type="date" value={newStartDate} onChange={(e) => setNewStartDate(e.target.value)} />
-                      〜
-                      <input type="date" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} />
-                    </label>
-                  </div>
-                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      提出期間:
-                      <input type="date" value={newSubmissionStart} onChange={(e) => setNewSubmissionStart(e.target.value)} />
-                      〜
-                      <input type="date" value={newSubmissionEnd} onChange={(e) => setNewSubmissionEnd(e.target.value)} />
-                    </label>
-                    <span className="muted" style={{ fontSize: '11px' }}>※この期間のみ希望URLが有効になります</span>
-                  </div>
-                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                    <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      机の数:
-                      <input type="number" min={0} value={newDeskCount} onChange={(e) => setNewDeskCount(Math.max(0, Number(e.target.value) || 0))} style={{ width: '60px' }} />
-                      <span style={{ fontSize: '11px' }}>0=無制限</span>
-                    </label>
-                  </div>
-                  {newTerm.includes('mendan') && (
-                    <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                      <span className="muted" style={{ fontSize: '12px' }}>※ 面談時間帯はマネージャーが希望入力時に日ごとに指定します</span>
-                    </div>
-                  )}
-                  <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                    <span className="muted">休日:</span>
-                    <input
-                      type="date"
-                      onChange={(e) => {
-                        const val = e.target.value
-                        if (val && !newHolidays.includes(val)) {
-                          setNewHolidays((prev) => [...prev, val].sort())
-                        }
-                        e.target.value = ''
-                      }}
-                    />
-                    {newHolidays.map((h) => (
-                      <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => setNewHolidays((prev) => prev.filter((d) => d !== h))}>
-                        {formatShortDate(h)} ×
-                      </span>
-                    ))}
-                  </div>
-                  <div className="row" style={{ marginTop: '12px' }}>
-                    <button className="btn" type="button" onClick={() => void onCreateSession()}>特別講習を作成</button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="panel">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3>特別講習一覧（新しい順）</h3>
-                <button className="btn secondary" type="button" onClick={() => setUnlocked(false)}>ロック</button>
+                <button className="btn" type="button" onClick={() => setShowNewSessionForm((v) => !v)}>
+                  {showNewSessionForm ? '閉じる' : '＋ 追加'}
+                </button>
               </div>
+
+              {showNewSessionForm && (
+                <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12, marginTop: 8, marginBottom: 12 }}>
+                  {(!masterData || (
+                    newTerm.includes('mendan')
+                      ? ((masterData.managers ?? []).length === 0 && masterData.students.length === 0)
+                      : (masterData.teachers.length === 0 && masterData.students.length === 0)
+                  )) ? (
+                    <p style={{ color: '#dc2626', fontWeight: 600 }}>⚠ 管理データ（{newTerm.includes('mendan') ? 'マネージャー・生徒' : '講師・生徒'}）が未登録のため、特別講習を追加できません。先に下部の管理データを登録してください。</p>
+                  ) : (
+                    <>
+                      <p className="muted">作成時にマスターデータ（講師・生徒・制約・通常授業）が自動コピーされます。</p>
+                      <div className="row">
+                        <input value={newYear} onChange={(e) => setNewYear(e.target.value)} placeholder="西暦" style={{ width: 80 }} />
+                        <select value={newTerm} onChange={(e) => setNewTerm(e.target.value as typeof newTerm)}>
+                          <optgroup label="講習">
+                            <option value="spring">春期講習</option>
+                            <option value="summer">夏期講習</option>
+                            <option value="winter">冬期講習</option>
+                          </optgroup>
+                          <optgroup label="面談">
+                            <option value="spring-mendan">春期面談</option>
+                            <option value="summer-mendan">夏期面談</option>
+                            <option value="winter-mendan">冬期面談</option>
+                          </optgroup>
+                        </select>
+                        <input value={newSessionId} onChange={(e) => setNewSessionId(e.target.value)} placeholder="ID (例: 2026-summer)" style={{ width: 160 }} />
+                        <input value={newSessionName} onChange={(e) => setNewSessionName(e.target.value)} placeholder="表示名 (例: 2026 夏期講習)" />
+                      </div>
+                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          講習期間:
+                          <input type="date" value={newStartDate} onChange={(e) => setNewStartDate(e.target.value)} />
+                          〜
+                          <input type="date" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} />
+                        </label>
+                      </div>
+                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          提出期間:
+                          <input type="date" value={newSubmissionStart} onChange={(e) => setNewSubmissionStart(e.target.value)} />
+                          〜
+                          <input type="date" value={newSubmissionEnd} onChange={(e) => setNewSubmissionEnd(e.target.value)} />
+                        </label>
+                        <span className="muted" style={{ fontSize: '11px' }}>※この期間のみ希望URLが有効になります</span>
+                      </div>
+                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          机の数:
+                          <input type="number" min={0} value={newDeskCount} onChange={(e) => setNewDeskCount(Math.max(0, Number(e.target.value) || 0))} style={{ width: '60px' }} />
+                          <span style={{ fontSize: '11px' }}>0=無制限</span>
+                        </label>
+                      </div>
+                      {newTerm.includes('mendan') && (
+                        <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="muted" style={{ fontSize: '12px' }}>※ 面談時間帯はマネージャーが希望入力時に日ごとに指定します</span>
+                        </div>
+                      )}
+                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                        <span className="muted">休日:</span>
+                        <input
+                          type="date"
+                          onChange={(e) => {
+                            const val = e.target.value
+                            if (val && !newHolidays.includes(val)) {
+                              setNewHolidays((prev) => [...prev, val].sort())
+                            }
+                            e.target.value = ''
+                          }}
+                        />
+                        {newHolidays.map((h) => (
+                          <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => setNewHolidays((prev) => prev.filter((d) => d !== h))}>
+                            {formatShortDate(h)} ×
+                          </span>
+                        ))}
+                      </div>
+                      <div className="row" style={{ marginTop: '12px' }}>
+                        <button className="btn" type="button" onClick={() => void onCreateSession()}>特別講習を作成</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               <table className="table">
                 <thead><tr><th>ID</th><th>名称</th><th>作成</th><th>更新</th><th /><th /></tr></thead>
