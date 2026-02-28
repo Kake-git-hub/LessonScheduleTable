@@ -21,6 +21,9 @@ import type {
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
+import { constraintFor, gradeConstraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
+import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
+import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 
 const APP_VERSION = '1.0.0'
 
@@ -201,1043 +204,12 @@ const useSessionData = (classroomId: string, sessionId: string) => {
   return { data, setData, loading, error }
 }
 
-/** Check if a pair constraint exists between two persons (order-independent). */
-const constraintFor = (
-  constraints: PairConstraint[],
-  idA: string,
-  idB: string,
-): ConstraintType | null => {
-  const hit = constraints.find((item) =>
-    (item.personAId === idA && item.personBId === idB) ||
-    (item.personAId === idB && item.personBId === idA),
-  )
-  return hit?.type ?? null
-}
-
-const gradeConstraintFor = (
-  gradeConstraints: GradeConstraint[],
-  teacherId: string,
-  grade: string,
-  subject?: string,
-): ConstraintType | null => {
-  if (!grade) return null
-  const hit = gradeConstraints.find((item) => {
-    if (item.teacherId !== teacherId || item.grade !== grade) return false
-    // If constraint has subjects specified, only match when subject matches
-    if (item.subjects && item.subjects.length > 0) {
-      if (!subject) return false // no subject provided → subject-specific constraint doesn't block
-      return item.subjects.includes(subject)
-    }
-    return true // no subjects specified → universal constraint
-  })
-  return hit?.type ?? null
-}
-
-const hasAvailability = (
-  availability: SessionData['availability'],
-  type: PersonType,
-  id: string,
-  slotKeyValue: string,
-): boolean => {
-  const key = personKey(type, id)
-  return (availability[key] ?? []).includes(slotKeyValue)
-}
-
-const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[] =>
-  Object.values(assignments).flat()
-
-/**
- * Build "effective" assignments: for each slot, use actual results if recorded,
- * otherwise use planned assignments. This way, deleted students (absences) in
- * actual results are properly counted as unassigned.
- */
-const buildEffectiveAssignments = (
-  assignments: Record<string, Assignment[]>,
-  actualResults?: Record<string, ActualResult[]>,
-): Record<string, Assignment[]> => {
-  const effective: Record<string, Assignment[]> = { ...assignments }
-  if (actualResults) {
-    for (const [slot, results] of Object.entries(actualResults)) {
-      // Always override with actual results (even empty = all absent)
-      effective[slot] = results.map((r) => ({
-        teacherId: r.teacherId,
-        studentIds: [...r.studentIds],
-        subject: r.subject,
-        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-      }))
-    }
-  }
-  return effective
-}
-
-/** Get the subject for a specific student in an assignment (supports per-student subjects). */
-const getStudentSubject = (a: Assignment, studentId: string): string =>
-  a.studentSubjects?.[studentId] ?? a.subject
-
-const countTeacherLoad = (assignments: Record<string, Assignment[]>, teacherId: string): number =>
-  allAssignments(assignments).filter((a) => a.teacherId === teacherId).length
-
-/** Collect unique dates a teacher is already assigned to */
-const getTeacherAssignedDates = (assignments: Record<string, Assignment[]>, teacherId: string): Set<string> => {
-  const dates = new Set<string>()
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slotAssignments.some((a) => a.teacherId === teacherId)) {
-      dates.add(slot.split('_')[0])
-    }
-  }
-  return dates
-}
-
-/** Get the slot numbers a teacher is assigned on a specific date */
-const getTeacherSlotNumbersOnDate = (assignments: Record<string, Assignment[]>, teacherId: string, date: string): number[] => {
-  const nums: number[] = []
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slot.startsWith(`${date}_`)) {
-      if (slotAssignments.some((a) => a.teacherId === teacherId)) {
-        nums.push(getSlotNumber(slot))
-      }
-    }
-  }
-  return nums.sort((a, b) => a - b)
-}
-
-/** Get student IDs that a teacher taught in the previous slot on the same date */
-const getTeacherPrevSlotStudentIds = (assignments: Record<string, Assignment[]>, teacherId: string, date: string, slotNum: number): string[] => {
-  const prevSlotKey = `${date}_${slotNum - 1}`
-  const prevAssignments = assignments[prevSlotKey] ?? []
-  for (const a of prevAssignments) {
-    if (a.teacherId === teacherId) return a.studentIds
-  }
-  return []
-}
-
-/** Count how many slots a student is assigned on a specific date (including regular) */
-const countStudentSlotsOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number => {
-  let count = 0
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slot.startsWith(`${date}_`)) {
-      if (slotAssignments.some((a) => a.studentIds.includes(studentId))) count++
-    }
-  }
-  return count
-}
-
-/** Get the slot numbers a student is assigned on a specific date */
-const getStudentSlotNumbersOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number[] => {
-  const nums: number[] = []
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slot.startsWith(`${date}_`)) {
-      if (slotAssignments.some((a) => a.studentIds.includes(studentId))) {
-        nums.push(getSlotNumber(slot))
-      }
-    }
-  }
-  return nums.sort((a, b) => a - b)
-}
-
-/** Count unique dates a student is assigned to */
-const countStudentAssignedDates = (assignments: Record<string, Assignment[]>, studentId: string): number => {
-  const dates = new Set<string>()
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slotAssignments.some((a) => a.studentIds.includes(studentId))) {
-      dates.add(slot.split('_')[0])
-    }
-  }
-  return dates.size
-}
-
-/** Count how many SPECIAL (non-regular) slots a student is assigned */
-const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
-  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular).length
-
-/** Count how many SPECIAL (non-regular) slots a student is assigned for a specific subject */
-const countStudentSubjectLoad = (
-  assignments: Record<string, Assignment[]>,
-  studentId: string,
-  subject: string,
-): number =>
-  allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular,
-  ).length
-
-const isStudentAvailable = (student: Student, slotKey: string): boolean => {
-  // Unsubmitted students (submittedAt === 0) are treated as unavailable for all dates
-  if (!student.submittedAt) return false
-  // Per-slot unavailability (new model)
-  if ((student.unavailableSlots ?? []).includes(slotKey)) return false
-  // Legacy: per-date unavailability (fallback for old data)
-  const [date] = slotKey.split('_')
-  return !student.unavailableDates.includes(date)
-}
-
-/** For mendan sessions: check if parent has positive availability for a slot */
-const isParentAvailableForMendan = (
-  availability: SessionData['availability'],
-  studentId: string,
-  slotKey: string,
-): boolean => {
-  const key = personKey('student', studentId)
-  return (availability[key] ?? []).includes(slotKey)
-}
-
-const getIsoDayOfWeek = (isoDate: string): number => {
-  const [year, month, day] = isoDate.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, day)).getUTCDay()
-}
-
-const getSlotDayOfWeek = (slotKey: string): number => {
-  const [date] = slotKey.split('_')
-  return getIsoDayOfWeek(date)
-}
-
-const getSlotNumber = (slotKey: string): number => {
-  const [, slot] = slotKey.split('_')
-  return Number.parseInt(slot, 10)
-}
-
-type TeacherShortageEntry = {
-  slot: string
-  detail: string
-}
-
-const collectTeacherShortages = (
-  data: SessionData,
-  assignments: Record<string, Assignment[]>,
-): TeacherShortageEntry[] => {
-  const shortages: TeacherShortageEntry[] = []
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    for (const assignment of slotAssignments) {
-      if (assignment.isRegular) continue
-
-      if (!assignment.teacherId) {
-        shortages.push({ slot, detail: '講師未設定' })
-        continue
-      }
-
-      const teacher = data.teachers.find((item) => item.id === assignment.teacherId)
-      if (!teacher) {
-        shortages.push({ slot, detail: `講師ID ${assignment.teacherId} が未登録` })
-        continue
-      }
-
-      if (!hasAvailability(data.availability, 'teacher', teacher.id, slot)) {
-        shortages.push({ slot, detail: `${teacher.name} が出席不可` })
-        continue
-      }
-
-      if (assignment.subject && !teacher.subjects.includes(assignment.subject)) {
-        shortages.push({ slot, detail: `${teacher.name} の担当外科目(${assignment.subject})` })
-      }
-      // Check per-student subjects
-      if (assignment.studentSubjects) {
-        for (const [sid, subj] of Object.entries(assignment.studentSubjects)) {
-          if (subj && !teacher.subjects.includes(subj)) {
-            const sName = data.students.find((s) => s.id === sid)?.name ?? sid
-            shortages.push({ slot, detail: `${teacher.name} の担当外科目(${subj}) — ${sName}` })
-          }
-        }
-      }
-    }
-  }
-  return shortages
-}
-
-const assignmentSignature = (assignment: Assignment): string => {
-  const sortedStudents = [...assignment.studentIds].sort()
-  const subjectPart = assignment.studentSubjects
-    ? sortedStudents.map((sid) => `${sid}:${assignment.studentSubjects![sid] ?? assignment.subject}`).join('+')
-    : `${assignment.subject}|${sortedStudents.join('+')}`
-  return `${assignment.teacherId}|${subjectPart}|${assignment.isRegular ? 'R' : 'N'}`
-}
-
-const hasMeaningfulManualAssignment = (assignment: Assignment): boolean =>
-  !assignment.isRegular && !!(assignment.teacherId || assignment.subject || assignment.studentIds.length > 0)
-
 const ADMIN_PASSWORD_STORAGE_KEY = 'lst_admin_password_v1'
 const readSavedAdminPassword = (): string => localStorage.getItem(ADMIN_PASSWORD_STORAGE_KEY) ?? 'admin1234'
 const saveAdminPassword = (password: string): void => {
   localStorage.setItem(ADMIN_PASSWORD_STORAGE_KEY, password)
 }
 
-/** Check if a teacher-student pair appears in regular lessons */
-const isRegularLessonPair = (regularLessons: RegularLesson[], teacherId: string, studentId: string): boolean =>
-  regularLessons.some((rl) => rl.teacherId === teacherId && rl.studentIds.includes(studentId))
-
-/** Get teacher-student pair assignments on a specific date (for consecutive slot grouping) */
-const getTeacherStudentSlotsOnDate = (
-  assignments: Record<string, Assignment[]>,
-  teacherId: string,
-  studentId: string,
-  date: string,
-): number[] => {
-  const nums: number[] = []
-  for (const [slot, slotAssignments] of Object.entries(assignments)) {
-    if (slot.startsWith(`${date}_`)) {
-      if (slotAssignments.some((a) => a.teacherId === teacherId && a.studentIds.includes(studentId))) {
-        nums.push(getSlotNumber(slot))
-      }
-    }
-  }
-  return nums.sort((a, b) => a - b)
-}
-
-/** Get subjects a student is assigned on adjacent (consecutive) slots on the same date */
-const getStudentSubjectsOnAdjacentSlots = (
-  assignments: Record<string, Assignment[]>,
-  studentId: string,
-  date: string,
-  slotNum: number,
-): string[] => {
-  const subjects: string[] = []
-  for (const delta of [-1, 1]) {
-    const adjacentSlot = `${date}_${slotNum + delta}`
-    const slotAssigns = assignments[adjacentSlot]
-    if (!slotAssigns) continue
-    for (const a of slotAssigns) {
-      if (a.studentIds.includes(studentId)) {
-        subjects.push(getStudentSubject(a, studentId))
-      }
-    }
-  }
-  return subjects
-}
-
-const findRegularLessonsForSlot = (
-  regularLessons: RegularLesson[],
-  slotKey: string,
-): RegularLesson[] => {
-  const dayOfWeek = getSlotDayOfWeek(slotKey)
-  const slotNumber = getSlotNumber(slotKey)
-  return regularLessons.filter((lesson) => lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber)
-}
-
-// --- Incremental auto-assign: cleans up deleted people, fills gaps, keeps existing ---
-interface ChangeLogEntry {
-  slot: string
-  action: string
-  detail: string
-}
-
-const buildIncrementalAutoAssignments = (
-  data: SessionData,
-  slots: string[],
-): { assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> } => {
-  const changeLog: ChangeLogEntry[] = []
-  const changedPairSigSetBySlot: Record<string, Set<string>> = {}
-  const addedPairSigSetBySlot: Record<string, Set<string>> = {}
-  const changeDetailsBySlot: Record<string, Record<string, string>> = {}
-
-  // --- Helpers for detailed submission-based reasons ---
-  const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
-
-  /** Describe what changed in a student's submission since last auto-assign */
-  const describeStudentSubmissionChange = (studentId: string): string => {
-    const student = data.students.find((s) => s.id === studentId)
-    if (!student) return ''
-    // Find the most recent submission log entry for this student after lastAutoAt
-    const recentEntries = (data.submissionLog ?? [])
-      .filter((e) => e.personId === studentId && e.personType === 'student' && e.submittedAt > lastAutoAt)
-      .sort((a, b) => b.submittedAt - a.submittedAt)
-    if (recentEntries.length === 0) return ''
-
-    const latest = recentEntries[0]
-    const timeStr = new Date(latest.submittedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    if (latest.type === 'initial') {
-      // First submission after last auto-assign
-      const slotsDetail = latest.subjectSlots
-        ? Object.entries(latest.subjectSlots).map(([s, c]) => `${s}${c}コマ`).join(', ')
-        : ''
-      return `${student.name}: 前回コマ割り後に希望を新規提出(${timeStr})${slotsDetail ? ` [${slotsDetail}]` : ''}`
-    }
-    // Update submission — find the previous entry to show diff
-    const prevEntries = (data.submissionLog ?? [])
-      .filter((e) => e.personId === studentId && e.personType === 'student' && e.submittedAt <= lastAutoAt)
-      .sort((a, b) => b.submittedAt - a.submittedAt)
-    const prev = prevEntries.length > 0 ? prevEntries[0] : null
-    const changes: string[] = []
-    if (latest.subjectSlots && prev?.subjectSlots) {
-      const allSubjs = new Set([...Object.keys(latest.subjectSlots), ...Object.keys(prev.subjectSlots)])
-      for (const subj of allSubjs) {
-        const oldVal = prev.subjectSlots[subj] ?? 0
-        const newVal = latest.subjectSlots[subj] ?? 0
-        if (oldVal !== newVal) changes.push(`${subj}: ${oldVal}→${newVal}コマ`)
-      }
-    }
-    if (latest.unavailableSlots && prev?.unavailableSlots) {
-      const oldCount = prev.unavailableSlots.length
-      const newCount = latest.unavailableSlots.length
-      if (oldCount !== newCount) changes.push(`不可コマ数: ${oldCount}→${newCount}`)
-    }
-    const diffStr = changes.length > 0 ? ` [${changes.join(', ')}]` : ''
-    return `${student.name}: 前回コマ割り後に希望を変更(${timeStr})${diffStr}`
-  }
-
-  /** Describe what changed in a teacher's submission since last auto-assign */
-  const describeTeacherSubmissionChange = (teacherId: string): string => {
-    const teacher = data.teachers.find((t) => t.id === teacherId)
-    if (!teacher) return ''
-    const recentEntries = (data.submissionLog ?? [])
-      .filter((e) => e.personId === teacherId && e.personType === 'teacher' && e.submittedAt > lastAutoAt)
-      .sort((a, b) => b.submittedAt - a.submittedAt)
-    if (recentEntries.length === 0) return ''
-    const latest = recentEntries[0]
-    const timeStr = new Date(latest.submittedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    if (latest.type === 'initial') {
-      return `${teacher.name}: 前回コマ割り後に出勤希望を新規提出(${timeStr})`
-    }
-    return `${teacher.name}: 前回コマ割り後に出勤希望を変更(${timeStr})`
-  }
-
-  const markChangedPair = (slot: string, assignment: Assignment, detail: string): void => {
-    if (assignment.isRegular) return
-    if (!hasMeaningfulManualAssignment(assignment)) return
-    if (!changedPairSigSetBySlot[slot]) changedPairSigSetBySlot[slot] = new Set<string>()
-    const sig = assignmentSignature(assignment)
-    changedPairSigSetBySlot[slot].add(sig)
-    if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
-    const prev = changeDetailsBySlot[slot][sig]
-    changeDetailsBySlot[slot][sig] = prev ? `${prev}\n${detail}` : detail
-  }
-  const markAddedPair = (slot: string, assignment: Assignment, detail?: string): void => {
-    if (assignment.isRegular) return
-    if (!hasMeaningfulManualAssignment(assignment)) return
-    if (!addedPairSigSetBySlot[slot]) addedPairSigSetBySlot[slot] = new Set<string>()
-    const sig = assignmentSignature(assignment)
-    addedPairSigSetBySlot[slot].add(sig)
-    if (detail) {
-      if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
-      changeDetailsBySlot[slot][sig] = detail
-    }
-  }
-  const teacherIds = new Set(data.teachers.map((t) => t.id))
-  const studentIds = new Set(data.students.map((s) => s.id))
-  const result: Record<string, Assignment[]> = {}
-
-  // Pre-populate result with actual results (recorded slots) so student load counting includes them
-  if (data.actualResults) {
-    for (const [slot, results] of Object.entries(data.actualResults)) {
-      // Always seed actual results (even empty = all absent) so countStudentLoad counts correctly
-      result[slot] = results.map((r) => ({
-        teacherId: r.teacherId,
-        studentIds: [...r.studentIds],
-        subject: r.subject,
-        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-      }))
-    }
-  }
-
-  // Build submission order map: earlier initial submission → higher priority (lower rank number)
-  const submissionOrderMap = new Map<string, number>()
-  if (data.submissionLog) {
-    let rank = 0
-    for (const entry of data.submissionLog) {
-      if (entry.type === 'initial' && entry.personType === 'student' && !submissionOrderMap.has(entry.personId)) {
-        submissionOrderMap.set(entry.personId, rank++)
-      }
-    }
-  }
-  // Students who haven't submitted get lowest priority
-  const maxRank = submissionOrderMap.size
-
-  // Phase 1: Clean up existing assignments — handle deleted teachers/students (skip regular lessons)
-  for (const slot of slots) {
-    const existing = data.assignments[slot]
-    if (!existing || existing.length === 0) continue
-
-    // Preserve regular lesson assignments as-is
-    if (existing.every((a) => a.isRegular)) {
-      result[slot] = [...existing]
-      continue
-    }
-
-    const cleaned: Assignment[] = []
-    for (const assignment of existing) {
-      // Keep regular assignments untouched
-      if (assignment.isRegular) {
-        cleaned.push(assignment)
-        continue
-      }
-
-      // Collect all subjects needed in this assignment (per-student)
-      const allNeededSubjects = assignment.studentSubjects
-        ? [...new Set(Object.values(assignment.studentSubjects))]
-        : assignment.subject ? [assignment.subject] : []
-
-      // Check teacher still exists
-      if (!teacherIds.has(assignment.teacherId)) {
-        const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
-        const replacement = data.teachers.find((t) => {
-          if (usedTeachers.has(t.id)) return false
-          if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
-        })
-        if (replacement) {
-          const changedAssignment = { ...assignment, teacherId: replacement.id }
-          cleaned.push(changedAssignment)
-          markChangedPair(slot, changedAssignment, `講師差替: ${replacement.name} に変更（元の講師が削除済）`)
-          changeLog.push({ slot, action: '講師差替', detail: `${replacement.name} に変更（元の講師が削除済）` })
-        } else {
-          changeLog.push({ slot, action: '講師削除', detail: `割当解除（講師が削除済・代替不可）` })
-        }
-        continue
-      }
-
-      // Check teacher still has availability for this slot
-      if (!hasAvailability(data.availability, 'teacher', assignment.teacherId, slot)) {
-        const teacherName = data.teachers.find((t) => t.id === assignment.teacherId)?.name ?? '?'
-        const teacherChangeInfo = describeTeacherSubmissionChange(assignment.teacherId)
-        const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
-        const replacement = data.teachers.find((t) => {
-          if (usedTeachers.has(t.id)) return false
-          if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
-        })
-        if (replacement) {
-          const changedAssignment = { ...assignment, teacherId: replacement.id }
-          cleaned.push(changedAssignment)
-          const reason = teacherChangeInfo || `${teacherName}がこのコマの希望を取り消したため`
-          markChangedPair(slot, changedAssignment, `講師差替: ${teacherName} → ${replacement.name}\n理由: ${reason}`)
-          changeLog.push({ slot, action: '講師差替', detail: `${teacherName} → ${replacement.name}（希望取消のため）` })
-        } else {
-          changeLog.push({ slot, action: '割当解除', detail: `${teacherName} の希望が取り消されたため解除` })
-        }
-        continue
-      }
-
-      // Check students still exist AND are available for this slot
-      const validStudentIds = assignment.studentIds.filter((sid) => {
-        if (!studentIds.has(sid)) return false
-        const student = data.students.find((s) => s.id === sid)
-        if (!student) return false
-        return isStudentAvailable(student, slot)
-      })
-      const removedStudentIds = assignment.studentIds.filter((sid) => !validStudentIds.includes(sid))
-      for (const sid of removedStudentIds) {
-        const student = data.students.find((s) => s.id === sid)
-        const studentName = student?.name ?? `ID:${sid}`
-        if (!studentIds.has(sid)) {
-          changeLog.push({ slot, action: '生徒削除', detail: `${studentName} を解除（削除済）` })
-        } else {
-          const changeInfo = describeStudentSubmissionChange(sid)
-          const reason = changeInfo || `${studentName}がこのコマを不可に変更したため`
-          changeLog.push({ slot, action: '生徒解除', detail: `${studentName} を解除\n理由: ${reason}` })
-        }
-      }
-
-      if (validStudentIds.length > 0) {
-        const changedAssignment = { ...assignment, studentIds: validStudentIds }
-        cleaned.push(changedAssignment)
-        if (assignment.studentIds.length !== validStudentIds.length) {
-          const removedNames = removedStudentIds.map((sid) => {
-            const name = data.students.find((s) => s.id === sid)?.name ?? sid
-            const changeInfo = describeStudentSubmissionChange(sid)
-            return changeInfo || `${name}: このコマを不可に変更`
-          }).join('\n')
-          markChangedPair(slot, changedAssignment, `生徒解除:\n${removedNames}`)
-        }
-      } else if (removedStudentIds.length > 0) {
-        const changedAssignment = { ...assignment, studentIds: [] }
-        cleaned.push(changedAssignment)
-        changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留（予定変更のため）` })
-      } else {
-        cleaned.push(assignment)
-      }
-    }
-
-    if (cleaned.length > 0) {
-      result[slot] = cleaned
-    }
-  }
-
-  // Phase 2: Fill empty student positions in existing non-regular assignments
-  // Phase 1.5: Remove excess assignments when requested slots were reduced
-  const specialLoadMap = new Map<string, number>()
-  for (const slot of slots) {
-    const slotAssignments = result[slot] ?? []
-    for (const assignment of slotAssignments) {
-      if (assignment.isRegular) continue
-      for (const studentId of assignment.studentIds) {
-        const subj = getStudentSubject(assignment, studentId)
-        const key = `${studentId}|${subj}`
-        specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
-      }
-    }
-  }
-
-  const reverseSlots = [...slots].reverse()
-  for (const slot of reverseSlots) {
-    const slotAssignments = result[slot]
-    if (!slotAssignments || slotAssignments.length === 0) continue
-
-    for (const assignment of slotAssignments) {
-      if (assignment.isRegular || assignment.studentIds.length === 0) continue
-
-      const remainingStudentIds: string[] = []
-      let removedAny = false
-      for (const studentId of assignment.studentIds) {
-        const student = data.students.find((s) => s.id === studentId)
-        const subj = getStudentSubject(assignment, studentId)
-        const requested = student?.subjectSlots[subj] ?? 0
-        const key = `${studentId}|${subj}`
-        const currentLoad = specialLoadMap.get(key) ?? 0
-
-        if (currentLoad > requested) {
-          specialLoadMap.set(key, currentLoad - 1)
-          removedAny = true
-          const changeInfo = describeStudentSubmissionChange(studentId)
-          const reason = changeInfo || `${student?.name ?? studentId}が${subj}の希望コマ数を${requested}コマに減らしたため`
-          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${subj}) を解除\n理由: ${reason}` })
-          continue
-        }
-        remainingStudentIds.push(studentId)
-      }
-
-      if (removedAny) {
-        assignment.studentIds = remainingStudentIds
-        if (remainingStudentIds.length > 0) {
-          markChangedPair(slot, assignment, `希望コマ数減少により一部生徒を解除`)
-        }
-      }
-    }
-  }
-
-  // Phase 2: Fill empty student positions in existing non-regular assignments
-  for (const slot of slots) {
-    if (!result[slot] || result[slot].length === 0) continue
-    const slotAssignments = result[slot]
-    for (let idx = 0; idx < slotAssignments.length; idx++) {
-      const assignment = slotAssignments[idx]
-      if (assignment.isRegular) continue
-      if (assignment.studentIds.length >= 2) continue
-      if (!assignment.teacherId) continue
-
-      const teacher = data.teachers.find((t) => t.id === assignment.teacherId)
-      if (!teacher) continue
-
-      const usedStudentIdsInSlot = new Set(slotAssignments.flatMap((a) => a.studentIds))
-
-      const candidates = data.students.filter((student) => {
-        if (usedStudentIdsInSlot.has(student.id)) return false
-        if (!isStudentAvailable(student, slot)) return false
-        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-        // Check student-student constraints with existing students in this assignment
-        if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
-        // Student must be able to learn at least one subject the teacher can teach, with remaining demand
-        return teacher.subjects.some((subj) => {
-          if (!student.subjects.includes(subj)) return false
-          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subj) === 'incompatible') return false
-          const requested = student.subjectSlots[subj] ?? 0
-          const allocated = countStudentSubjectLoad(result, student.id, subj)
-          return allocated < requested
-        })
-      })
-
-      if (candidates.length > 0 && assignment.studentIds.length < 2) {
-        const best = candidates.sort((a, b) => {
-          const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
-          const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
-          return bRem - aRem
-        })[0]
-        // Pick the best viable subject for this new student
-        const bestSubj = teacher.subjects.find((subj) => {
-          if (!best.subjects.includes(subj)) return false
-          const requested = best.subjectSlots[subj] ?? 0
-          const allocated = countStudentSubjectLoad(result, best.id, subj)
-          return allocated < requested
-        }) ?? assignment.subject
-        // Reconstruct studentSubjects
-        const studentSubjects: Record<string, string> = {}
-        for (const sid of assignment.studentIds) {
-          studentSubjects[sid] = getStudentSubject(assignment, sid)
-        }
-        studentSubjects[best.id] = bestSubj
-        assignment.studentIds = [...assignment.studentIds, best.id]
-        assignment.studentSubjects = studentSubjects
-        const addChangeInfo = describeStudentSubmissionChange(best.id)
-        const addReason = addChangeInfo || `${best.name}の${bestSubj}が未充足(残${(best.subjectSlots[bestSubj] ?? 0) - countStudentSubjectLoad(result, best.id, bestSubj)}コマ)のため空き枠に追加`
-        markChangedPair(slot, assignment, `生徒追加: ${best.name}(${bestSubj})\n理由: ${addReason}`)
-        changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
-      }
-    }
-  }
-
-  // Phase 3: Fill empty slots — minimize total teacher attendance dates, distribute students evenly
-  // Process slots date-by-date, within each date prefer using teachers already assigned that day
-
-  // Compute date ordering for first-half bias
-  const allDatesInOrder: string[] = []
-  for (const s of slots) {
-    const d = s.split('_')[0]
-    if (allDatesInOrder.length === 0 || allDatesInOrder[allDatesInOrder.length - 1] !== d) {
-      allDatesInOrder.push(d)
-    }
-  }
-  const totalDates = allDatesInOrder.length
-  const dateIndexMap = new Map<string, number>()
-  for (let i = 0; i < totalDates; i++) dateIndexMap.set(allDatesInOrder[i], i)
-
-  const deskCountLimit = data.settings.deskCount ?? 0
-
-  for (const slot of slots) {
-    const currentDate = slot.split('_')[0]
-    const currentSlotNum = getSlotNumber(slot)
-
-    // Initialize from existing assignments (allow adding more pairs to a slot)
-    const existingAssignments = result[slot] ?? []
-    const slotAssignments: Assignment[] = [...existingAssignments]
-    const usedTeacherIdsInSlot = new Set<string>(existingAssignments.map((a) => a.teacherId))
-    const usedStudentIdsInSlot = new Set<string>(existingAssignments.flatMap((a) => a.studentIds))
-    // Skip slots where all assignments are regular lessons (protected)
-    if (existingAssignments.length > 0 && existingAssignments.every((a) => a.isRegular)) {
-      continue
-    }
-    // Skip slots at desk count limit
-    if (deskCountLimit > 0 && slotAssignments.length >= deskCountLimit) {
-      continue
-    }
-
-    // First-half bias: earlier dates get a bonus (max +25 for first date, 0 for last)
-    const dateIdx = dateIndexMap.get(currentDate) ?? 0
-    const firstHalfBonus = totalDates > 1 ? Math.round(25 * (1 - dateIdx / (totalDates - 1))) : 0
-
-    const teachers = data.teachers.filter((teacher) =>
-      hasAvailability(data.availability, 'teacher', teacher.id, slot),
-    )
-
-    // Sort teachers: strongly prefer those already assigned on this date (minimize total attendance days)
-    const sortedTeachers = [...teachers].sort((a, b) => {
-      const aDates = getTeacherAssignedDates(result, a.id)
-      const bDates = getTeacherAssignedDates(result, b.id)
-      const aOnDate = aDates.has(currentDate) ? 0 : 1
-      const bOnDate = bDates.has(currentDate) ? 0 : 1
-      if (aOnDate !== bOnDate) return aOnDate - bOnDate
-      // Then prefer teachers with fewer total attendance dates
-      return aDates.size - bDates.size
-    })
-
-    for (const teacher of sortedTeachers) {
-      if (usedTeacherIdsInSlot.has(teacher.id)) continue
-      // Stop if desk count limit reached
-      if (deskCountLimit > 0 && slotAssignments.length >= deskCountLimit) break
-
-      const candidates = data.students.filter((student) => {
-        if (usedStudentIdsInSlot.has(student.id)) return false
-        if (!isStudentAvailable(student, slot)) return false
-        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-        return teacher.subjects.some((subject) => {
-          if (!student.subjects.includes(subject)) return false
-          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subject) === 'incompatible') return false
-          return true
-        })
-      })
-
-      if (candidates.length === 0) continue
-
-      const teacherDates = getTeacherAssignedDates(result, teacher.id)
-      const isExistingDate = teacherDates.has(currentDate)
-      const teacherLoad = countTeacherLoad(result, teacher.id)
-
-      // Teacher consecutive slot bonus
-      const teacherSlotsOnDate = getTeacherSlotNumbersOnDate(result, teacher.id, currentDate)
-      const teacherIsConsecutive = teacherSlotsOnDate.some((n) => Math.abs(n - currentSlotNum) === 1)
-      const teacherConsecutiveBonus = teacherIsConsecutive ? 20 : 0
-
-      // Students that the teacher taught in the immediately previous slot (avoid same student consecutive)
-      const prevSlotStudentIds = new Set(getTeacherPrevSlotStudentIds(result, teacher.id, currentDate, currentSlotNum))
-
-      let bestPlan: { score: number; assignment: Assignment } | null = null
-
-      for (const combo of [...candidates.map((s) => [s]), ...candidates.flatMap((l, i) => candidates.slice(i + 1).map((r) => [l, r]))]) {
-        // Avoid assigning the same student to this teacher's consecutive slot
-        const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
-        if (hasSameStudentConsecutive) continue
-
-        // Check student-student constraints within this combo
-        if (combo.length === 2 && constraintFor(data.constraints, combo[0].id, combo[1].id) === 'incompatible') continue
-
-        // --- Determine subject assignment (same or mixed) ---
-        // Try same-subject first (shared by all students) — preferred
-        const commonSubjects = teacher.subjects.filter((subject) =>
-          combo.every((student) => student.subjects.includes(subject)),
-        )
-        const viableCommonSubjects = commonSubjects.filter((subject) =>
-          combo.every((student) => {
-            const requested = student.subjectSlots[subject] ?? 0
-            const allocated = countStudentSubjectLoad(result, student.id, subject)
-            return allocated < requested
-          }),
-        )
-
-        // For 2-student combos: also try mixed-subject pairing (each student gets their own subject)
-        type SubjectPlan = { isMixed: false; subject: string } | { isMixed: true; studentSubjects: Record<string, string>; primarySubject: string }
-        const subjectPlans: SubjectPlan[] = []
-
-        // Add same-subject plans
-        for (const subj of viableCommonSubjects) {
-          subjectPlans.push({ isMixed: false, subject: subj })
-        }
-
-        // Add mixed-subject plans for 2-student combos
-        if (combo.length === 2) {
-          const [s1, s2] = combo
-          const s1Viable = teacher.subjects.filter((subj) => {
-            if (!s1.subjects.includes(subj)) return false
-            const req = s1.subjectSlots[subj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s1.id, subj)
-            return alloc < req
-          })
-          const s2Viable = teacher.subjects.filter((subj) => {
-            if (!s2.subjects.includes(subj)) return false
-            const req = s2.subjectSlots[subj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s2.id, subj)
-            return alloc < req
-          })
-          // Only add mixed plans where subjects actually differ
-          for (const subj1 of s1Viable) {
-            for (const subj2 of s2Viable) {
-              if (subj1 === subj2) continue // same-subject already covered above
-              subjectPlans.push({
-                isMixed: true,
-                studentSubjects: { [s1.id]: subj1, [s2.id]: subj2 },
-                primarySubject: subj1, // Use first student's subject as the display subject
-              })
-            }
-          }
-        }
-
-        if (subjectPlans.length === 0) continue
-
-        for (const plan of subjectPlans) {
-        // --- Student distribution scoring ---
-        let studentScore = 0
-        for (const st of combo) {
-          const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
-          const existingSlotNums = getStudentSlotNumbersOnDate(result, st.id, currentDate)
-
-          // Penalty for same-day multiple slots (avoid if possible)
-          if (slotsOnDate > 0) {
-            studentScore -= 60
-            // If forced, strongly reward consecutive slots / penalize non-consecutive
-            const isConsecutive = existingSlotNums.some(
-              (n) => Math.abs(n - currentSlotNum) === 1,
-            )
-            if (isConsecutive) {
-              studentScore += 50
-            } else {
-              studentScore -= 30
-            }
-          }
-
-          // Prefer students with more remaining slots (even distribution)
-          const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
-          const totalAssigned = countStudentLoad(result, st.id)
-          studentScore += (totalRequested - totalAssigned) * 10
-
-          // Prefer students with fewer assigned dates (spread across days)
-          const assignedDates = countStudentAssignedDates(result, st.id)
-          studentScore -= assignedDates * 5
-
-          // Submission order bonus: earlier submitters get priority (max +15)
-          const submissionRank = submissionOrderMap.get(st.id) ?? maxRank
-          studentScore += Math.max(0, 15 - submissionRank * 2)
-        }
-
-        // Regular lesson pair bonus: prefer assigning regular-lesson teacher-student combos
-        const regularPairBonus = combo.reduce((s, st) =>
-          s + (isRegularLessonPair(data.regularLessons, teacher.id, st.id) ? 30 : 0), 0)
-
-        // Same-day same-pair consecutive bonus: if this teacher+student pair already
-        // exists on this date, strongly prefer making it consecutive
-        let pairConsecutiveBonus = 0
-        for (const st of combo) {
-          const existingPairSlots = getTeacherStudentSlotsOnDate(result, teacher.id, st.id, currentDate)
-          if (existingPairSlots.length > 0) {
-            const isConsecutive = existingPairSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
-            pairConsecutiveBonus += isConsecutive ? 60 : -40
-          }
-        }
-
-        // Mixed-subject penalty: same subject pairs are slightly preferred
-        const mixedSubjectPenalty = plan.isMixed ? -15 : 0
-
-        // Consecutive same-subject penalty: avoid same student having the same subject in adjacent slots
-        let consecutiveSameSubjectPenalty = 0
-        for (const st of combo) {
-          const subj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
-          const adjacentSubjects = getStudentSubjectsOnAdjacentSlots(result, st.id, currentDate, currentSlotNum)
-          if (adjacentSubjects.includes(subj)) {
-            consecutiveSameSubjectPenalty -= 20
-          }
-        }
-
-        const score = 100 +
-          (isExistingDate ? 80 : -50) +  // Very strong preference for reusing existing dates
-          teacherConsecutiveBonus +  // Teacher consecutive slot bonus
-          firstHalfBonus +  // First-half bias (max +25)
-          regularPairBonus +  // Regular lesson pair preference
-          pairConsecutiveBonus +  // Same teacher+student consecutive on same day
-          (combo.length === 2 ? 30 : 0) +  // 2-person pair bonus
-          mixedSubjectPenalty +  // Slight penalty for mixed subjects
-          consecutiveSameSubjectPenalty +  // Avoid same student same subject in consecutive slots
-          studentScore -
-          teacherLoad * 2
-
-        if (!bestPlan || score > bestPlan.score) {
-          const assignment: Assignment = plan.isMixed
-            ? { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.primarySubject, studentSubjects: plan.studentSubjects }
-            : { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.subject }
-          bestPlan = { score, assignment }
-        }
-        } // end for plan
-      }
-
-      if (bestPlan) {
-        slotAssignments.push(bestPlan.assignment)
-        usedTeacherIdsInSlot.add(teacher.id)
-        for (const sid of bestPlan.assignment.studentIds) usedStudentIdsInSlot.add(sid)
-      }
-    }
-
-    if (slotAssignments.length > existingAssignments.length) {
-      result[slot] = slotAssignments
-      // Only log newly added assignments
-      for (const a of slotAssignments.slice(existingAssignments.length)) {
-        const tName = data.teachers.find((t) => t.id === a.teacherId)?.name ?? '?'
-        const tChange = describeTeacherSubmissionChange(a.teacherId)
-        const sNames = a.studentIds.map((sid) => {
-          const name = data.students.find((s) => s.id === sid)?.name ?? '?'
-          const subj = getStudentSubject(a, sid)
-          return `${name}(${subj})`
-        }).join(', ')
-        const sChanges = a.studentIds
-          .map((sid) => describeStudentSubmissionChange(sid))
-          .filter(Boolean)
-          .join(' / ')
-        const detailParts = [`新規割当: ${tName} × ${sNames}`]
-        if (tChange) detailParts.push(`[講師] ${tChange}`)
-        if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
-        const fullDetail = detailParts.join(' | ')
-        markAddedPair(slot, a, fullDetail)
-        changeLog.push({ slot, action: '新規割当', detail: fullDetail })
-      }
-    }
-  }
-
-  const changedPairSignatures: Record<string, string[]> = {}
-  for (const [slot, signatureSet] of Object.entries(changedPairSigSetBySlot)) {
-    // Exclude signatures that are in the added set (added takes priority)
-    const addedSet = addedPairSigSetBySlot[slot] ?? new Set<string>()
-    const filtered = [...signatureSet].filter((sig) => !addedSet.has(sig))
-    if (filtered.length > 0) changedPairSignatures[slot] = filtered
-  }
-
-  const addedPairSignatures: Record<string, string[]> = {}
-  for (const [slot, signatureSet] of Object.entries(addedPairSigSetBySlot)) {
-    if (signatureSet.size > 0) addedPairSignatures[slot] = [...signatureSet]
-  }
-
-  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, changeDetails: changeDetailsBySlot }
-}
-
-/** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */
-const buildMendanAutoAssignments = (
-  data: SessionData,
-  slots: string[],
-): { assignments: Record<string, Assignment[]>; unassignedParents: string[] } => {
-  // Get managers and their availability
-  const managerAvailability = new Map<string, Set<string>>()
-  for (const manager of (data.managers ?? [])) {
-    const key = personKey('manager', manager.id)
-    managerAvailability.set(manager.id, new Set(data.availability[key] ?? []))
-  }
-
-  // Get parents sorted by submittedAt (FCFS) — only submitted parents
-  const sortedParents = data.students
-    .filter((s) => s.submittedAt > 0)
-    .sort((a, b) => a.submittedAt - b.submittedAt)
-
-  const result: Record<string, Assignment[]> = {}
-  // Copy existing non-regular assignments only
-  for (const slot of slots) {
-    const existing = data.assignments[slot]
-    if (existing?.length) {
-      const nonRegular = existing.filter((a) => !a.isRegular)
-      if (nonRegular.length > 0) result[slot] = [...nonRegular]
-    }
-  }
-
-  // Track which parents are already assigned (ignore regular lesson assignments)
-  const assignedParents = new Set<string>()
-  for (const slot of slots) {
-    for (const a of (result[slot] ?? [])) {
-      if (a.isRegular) continue
-      for (const sid of a.studentIds) assignedParents.add(sid)
-    }
-  }
-  // Also count parents in recorded actual results as already assigned
-  if (data.actualResults) {
-    for (const results of Object.values(data.actualResults)) {
-      for (const r of results) {
-        for (const sid of r.studentIds) assignedParents.add(sid)
-      }
-    }
-  }
-
-  const unassignedParents: string[] = []
-
-  for (const parent of sortedParents) {
-    if (assignedParents.has(parent.id)) continue
-
-    const parentKey = personKey('student', parent.id)
-    const parentSlots = new Set(data.availability[parentKey] ?? [])
-    if (parentSlots.size === 0) {
-      unassignedParents.push(parent.name)
-      continue
-    }
-
-    let assigned = false
-    for (const slot of slots) {
-      if (!parentSlots.has(slot)) continue
-
-      const slotAssignments = result[slot] ?? []
-      const usedManagers = new Set(slotAssignments.map((a) => a.teacherId))
-      const usedStudents = new Set(slotAssignments.flatMap((a) => a.studentIds))
-
-      if (usedStudents.has(parent.id)) continue
-
-      // Check desk count
-      const deskCount = data.settings.deskCount ?? 0
-      if (deskCount > 0 && slotAssignments.length >= deskCount) continue
-
-      // Find available manager for this slot
-      for (const [managerId, mSlots] of managerAvailability) {
-        if (!mSlots.has(slot)) continue
-        if (usedManagers.has(managerId)) continue
-
-        // Assign!
-        const assignment: Assignment = {
-          teacherId: managerId,
-          studentIds: [parent.id],
-          subject: '面談',
-        }
-        result[slot] = [...(result[slot] ?? []), assignment]
-        assignedParents.add(parent.id)
-        assigned = true
-        break
-      }
-
-      if (assigned) break
-    }
-
-    if (!assigned) {
-      unassignedParents.push(parent.name)
-    }
-  }
-
-  return { assignments: result, unassignedParents }
-}
 
 const emptyMasterData = (): MasterData => ({
   managers: [],
@@ -4100,6 +3072,19 @@ service cloud.firestore {
                 </button>
               )}
             </div>
+            <div className="row" style={{ gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' }}>
+              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
+                提出期間:
+                <input type="date" value={data.settings.submissionStartDate ?? ''}
+                  onChange={(e) => void update((c) => ({ ...c, settings: { ...c.settings, submissionStartDate: e.target.value || undefined } }))}
+                  style={{ fontSize: '13px', padding: '2px 4px' }} />
+                〜
+                <input type="date" value={data.settings.submissionEndDate ?? ''}
+                  onChange={(e) => void update((c) => ({ ...c, settings: { ...c.settings, submissionEndDate: e.target.value || undefined } }))}
+                  style={{ fontSize: '13px', padding: '2px 4px' }} />
+              </label>
+              <span className="muted" style={{ fontSize: '11px' }}>※未設定＝制限なし。期間後もカレンダー表示あり</span>
+            </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
             {/* Salary calculation panel */}
@@ -4721,31 +3706,6 @@ service cloud.firestore {
   )
 }
 
-// Helper: Get dates in range excluding holidays
-const getDatesInRange = (settings: SessionData['settings']): string[] => {
-  if (!settings.startDate || !settings.endDate) {
-    return []
-  }
-
-  const start = new Date(`${settings.startDate}T00:00:00`)
-  const end = new Date(`${settings.endDate}T00:00:00`)
-  const holidaySet = new Set(settings.holidays)
-  const dates: string[] = []
-
-  for (let cursor = new Date(start); cursor <= end; ) {
-    const y = cursor.getFullYear()
-    const m = String(cursor.getMonth() + 1).padStart(2, '0')
-    const d = String(cursor.getDate()).padStart(2, '0')
-    const iso = `${y}-${m}-${d}`
-    if (!holidaySet.has(iso)) {
-      dates.push(iso)
-    }
-    cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)
-  }
-
-  return dates
-}
-
 // Teacher Input Component
 // Teacher/Manager Input Component
 const TeacherInputPage = ({
@@ -4968,6 +3928,10 @@ const TeacherInputPage = ({
     return (
       <div className="availability-container" ref={formRef}>
         <div className="availability-header">
+          {returnToAdminOnComplete && (
+            <button className="btn secondary" type="button" style={{ marginBottom: '8px', fontSize: '0.85em' }}
+              onClick={() => navigate(-1)}>← 戻る</button>
+          )}
           <h2>{data.settings.name} - マネージャー面談可能時間入力</h2>
           <p>対象: <strong>{teacher.name}</strong></p>
           <p className="muted">日ごとに面談可能な時間帯を設定してください。</p>
@@ -5124,6 +4088,10 @@ const TeacherInputPage = ({
   return (
     <div className="availability-container" ref={formRef}>
       <div className="availability-header">
+        {returnToAdminOnComplete && (
+          <button className="btn secondary" type="button" style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => navigate(-1)}>← 戻る</button>
+        )}
         <h2>{data.settings.name} - 講師希望入力</h2>
         <p>
           対象: <strong>{teacher.name}</strong>
@@ -5405,6 +4373,10 @@ const StudentInputPage = ({
 
   return (    <div className="availability-container" ref={formRef}>
       <div className="availability-header">
+        {returnToAdminOnComplete && (
+          <button className="btn secondary" type="button" style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => navigate(-1)}>← 戻る</button>
+        )}
         <h2>{data.settings.name} - 生徒希望入力</h2>
         <p>
           対象: <strong>{student.name}</strong>
@@ -5735,6 +4707,10 @@ const MendanParentInputPage = ({
   return (
     <div className="availability-container" ref={formRef}>
       <div className="availability-header">
+        {returnToAdminOnComplete && (
+          <button className="btn secondary" type="button" style={{ marginBottom: '8px', fontSize: '0.85em' }}
+            onClick={() => navigate(-1)}>← 戻る</button>
+        )}
         <h2>{data.settings.name} - 保護者面談希望入力</h2>
         <p>
           対象: <strong>{student.name}</strong> 保護者
@@ -6272,101 +5248,53 @@ service cloud.firestore {
     return <ConfirmedCalendarView data={data} personType={personType} personId={personId} />
   }
 
+  // Submission period check (proxy input from admin skips deadline)
+  const now = new Date()
+  const subStartDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
+  const subEndDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
+  const isBeforeStart = subStartDate ? now < subStartDate : false
+  const isAfterEnd = subEndDate ? now > subEndDate : false
+
+  // Before submission period: block (but not for proxy input)
+  if (isBeforeStart && !returnToAdminOnComplete) {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h3>提出期間前です</h3>
+          <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
+          <p className="muted">提出期間になるまでお待ちください。</p>
+          <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
+  // After submission period: show calendar view (read-only) instead of blocking
+  if (isAfterEnd && !returnToAdminOnComplete) {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h3>提出期間は終了しました</h3>
+          <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
+          <p className="muted">期間を過ぎているため入力はできません。以下のスケジュールをご確認ください。</p>
+        </div>
+        <ConfirmedCalendarView data={data} personType={personType} personId={personId} />
+      </div>
+    )
+  }
+
   if (personType === 'teacher') {
     if ('subjects' in currentPerson && Array.isArray(currentPerson.subjects)) {
-      // Check submission period for teachers too
-      const now = new Date()
-      const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
-      const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
-      if (startDate && now < startDate) {
-        return (
-          <div className="app-shell">
-            <div className="panel">
-              <h3>提出期間前です</h3>
-              <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
-              <p className="muted">提出期間になるまでお待ちください。</p>
-              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-            </div>
-          </div>
-        )
-      }
-      if (endDate && now > endDate) {
-        return (
-          <div className="app-shell">
-            <div className="panel">
-              <h3>提出期間は終了しました</h3>
-              <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
-              <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-            </div>
-          </div>
-        )
-      }
       return <TeacherInputPage classroomId={classroomId} sessionId={sessionId} data={data} teacher={currentPerson as Teacher} returnToAdminOnComplete={returnToAdminOnComplete} />
     }
   } else if (personType === 'manager') {
     // Manager availability input — same as teacher but uses 'manager' personKey
     const manager = currentPerson as Manager
-    const now = new Date()
-    const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
-    const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
-    if (startDate && now < startDate) {
-      return (
-        <div className="app-shell">
-          <div className="panel">
-            <h3>提出期間前です</h3>
-            <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
-            <p className="muted">提出期間になるまでお待ちください。</p>
-            <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-          </div>
-        </div>
-      )
-    }
-    if (endDate && now > endDate) {
-      return (
-        <div className="app-shell">
-          <div className="panel">
-            <h3>提出期間は終了しました</h3>
-            <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
-            <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-            <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-          </div>
-        </div>
-      )
-    }
     // Wrap manager as a Teacher-like object so TeacherInputPage can be reused
     const managerAsTeacher: Teacher = { id: manager.id, name: manager.name, email: manager.email, subjects: ['面談'], memo: '' }
     return <TeacherInputPage classroomId={classroomId} sessionId={sessionId} data={data} teacher={managerAsTeacher} returnToAdminOnComplete={returnToAdminOnComplete} personKeyPrefix="manager" />
   } else if (personType === 'student') {
     if ('grade' in currentPerson && 'subjectSlots' in currentPerson) {
-      // Check submission period for students
-      const now = new Date()
-      const startDate = data.settings.submissionStartDate ? new Date(data.settings.submissionStartDate) : null
-      const endDate = data.settings.submissionEndDate ? new Date(data.settings.submissionEndDate + 'T23:59:59') : null
-      if (startDate && now < startDate) {
-        return (
-          <div className="app-shell">
-            <div className="panel">
-              <h3>提出期間前です</h3>
-              <p>提出受付開始日: <strong>{data.settings.submissionStartDate}</strong></p>
-              <p className="muted">提出期間になるまでお待ちください。</p>
-              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-            </div>
-          </div>
-        )
-      }
-      if (endDate && now > endDate) {
-        return (
-          <div className="app-shell">
-            <div className="panel">
-              <h3>提出期間は終了しました</h3>
-              <p>提出締切日: <strong>{data.settings.submissionEndDate}</strong></p>
-              <p className="muted">期間を過ぎています。管理者にお問い合わせください。</p>
-              <Link to={`/c/${classroomId}`}>ホームに戻る</Link>
-            </div>
-          </div>
-        )
-      }
       return data.settings.sessionType === 'mendan'
         ? <MendanParentInputPage classroomId={classroomId} sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
         : <StudentInputPage classroomId={classroomId} sessionId={sessionId} data={data} student={currentPerson as Student} returnToAdminOnComplete={returnToAdminOnComplete} />
