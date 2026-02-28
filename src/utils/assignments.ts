@@ -1,5 +1,6 @@
 import type { ActualResult, Assignment, RegularLesson, SessionData } from '../types'
 import { hasAvailability } from './constraints'
+import { canTeachSubject } from './subjects'
 
 export const getSlotNumber = (slotKey: string): number => {
   const [, slot] = slotKey.split('_')
@@ -161,15 +162,13 @@ export const collectTeacherShortages = (
         continue
       }
 
-      if (assignment.subject && !teacher.subjects.includes(assignment.subject)) {
-        shortages.push({ slot, detail: `${teacher.name} の担当外科目(${assignment.subject})` })
-      }
-      if (assignment.studentSubjects) {
-        for (const [sid, subj] of Object.entries(assignment.studentSubjects)) {
-          if (subj && !teacher.subjects.includes(subj)) {
-            const sName = data.students.find((s) => s.id === sid)?.name ?? sid
-            shortages.push({ slot, detail: `${teacher.name} の担当外科目(${subj}) — ${sName}` })
-          }
+      // Check subject compatibility per student (grade-aware)
+      for (const sid of assignment.studentIds) {
+        const student = data.students.find((s) => s.id === sid)
+        if (!student) continue
+        const subj = assignment.studentSubjects?.[sid] ?? assignment.subject
+        if (subj && !canTeachSubject(teacher.subjects, student.grade, subj)) {
+          shortages.push({ slot, detail: `${teacher.name} の担当外科目(${subj}) — ${student.name}` })
         }
       }
     }

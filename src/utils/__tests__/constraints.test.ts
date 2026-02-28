@@ -1,5 +1,5 @@
-import { constraintFor, gradeConstraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan, isRegularLessonPair } from '../constraints'
-import type { PairConstraint, GradeConstraint, Student, RegularLesson } from '../../types'
+import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan, isRegularLessonPair } from '../constraints'
+import type { PairConstraint, Student, RegularLesson } from '../../types'
 
 describe('constraintFor', () => {
   const constraints: PairConstraint[] = [
@@ -25,37 +25,6 @@ describe('constraintFor', () => {
 
   it('handles empty constraints array', () => {
     expect(constraintFor([], 'a', 'b')).toBeNull()
-  })
-})
-
-describe('gradeConstraintFor', () => {
-  const gradeConstraints: GradeConstraint[] = [
-    { id: '1', teacherId: 't1', grade: '中1', type: 'incompatible' },
-    { id: '2', teacherId: 't2', grade: '高1', type: 'recommended', subjects: ['数', '英'] },
-  ]
-
-  it('returns null when grade is empty string', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't1', '')).toBeNull()
-  })
-
-  it('returns null when no matching constraint', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't1', '中2')).toBeNull()
-  })
-
-  it('returns incompatible for matching universal grade constraint', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't1', '中1')).toBe('incompatible')
-  })
-
-  it('returns null when constraint has subjects but no subject provided', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't2', '高1')).toBeNull()
-  })
-
-  it('returns recommended when subject matches constraint subjects', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't2', '高1', '数')).toBe('recommended')
-  })
-
-  it('returns null when subject does not match constraint subjects', () => {
-    expect(gradeConstraintFor(gradeConstraints, 't2', '高1', '理')).toBeNull()
   })
 })
 

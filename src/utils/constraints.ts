@@ -1,4 +1,4 @@
-import type { ConstraintType, GradeConstraint, PairConstraint, PersonType, RegularLesson, SessionData, Student } from '../types'
+import type { ConstraintType, PairConstraint, PersonType, RegularLesson, SessionData, Student } from '../types'
 import { personKey } from './schedule'
 
 /** Check if a pair constraint exists between two persons (order-independent). */
@@ -11,24 +11,6 @@ export const constraintFor = (
     (item.personAId === idA && item.personBId === idB) ||
     (item.personAId === idB && item.personBId === idA),
   )
-  return hit?.type ?? null
-}
-
-export const gradeConstraintFor = (
-  gradeConstraints: GradeConstraint[],
-  teacherId: string,
-  grade: string,
-  subject?: string,
-): ConstraintType | null => {
-  if (!grade) return null
-  const hit = gradeConstraints.find((item) => {
-    if (item.teacherId !== teacherId || item.grade !== grade) return false
-    if (item.subjects && item.subjects.length > 0) {
-      if (!subject) return false
-      return item.subjects.includes(subject)
-    }
-    return true
-  })
   return hit?.type ?? null
 }
 

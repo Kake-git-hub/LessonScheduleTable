@@ -7,7 +7,6 @@ import type {
   ActualResult,
   Assignment,
   ConstraintType,
-  GradeConstraint,
   Manager,
   MasterData,
   PairConstraint,
@@ -20,8 +19,9 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
+import { TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
-import { constraintFor, gradeConstraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
+import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 
@@ -29,7 +29,9 @@ const APP_VERSION = '1.0.0'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
-const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT']
+const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT'] as readonly string[]
+/** Leveled teacher subjects (小英, 中英, 高英, ...). */
+const ALL_TEACHER_SUBJECTS = TEACHER_SUBJECTS
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -50,7 +52,7 @@ const emptySession = (): SessionData => ({
     submissionStartDate: '',
     submissionEndDate: '',
   },
-  subjects: FIXED_SUBJECTS,
+  subjects: [...FIXED_SUBJECTS],
   managers: [],
   teachers: [],
   students: [],
@@ -76,7 +78,7 @@ const createTemplateSession = (): SessionData => {
     submissionEndDate: '',
   }
 
-  const subjects = FIXED_SUBJECTS
+  const subjects = [...FIXED_SUBJECTS]
 
   const teachers: Teacher[] = [
     { id: 't001', name: '田中講師', email: '', subjects: ['数', '英'], memo: '数学メイン' },
@@ -254,10 +256,6 @@ const HomePage = () => {
   const [constraintPersonBType, setConstraintPersonBType] = useState<PairConstraintPersonType>('student')
   const [constraintPersonBId, setConstraintPersonBId] = useState('')
   const [constraintType, setConstraintType] = useState<ConstraintType>('incompatible')
-  const [gradeConstraintTeacherId, setGradeConstraintTeacherId] = useState('')
-  const [gradeConstraintGrade, setGradeConstraintGrade] = useState('')
-  const [gradeConstraintType, setGradeConstraintType] = useState<ConstraintType>('incompatible')
-  const [gradeConstraintSubjects, setGradeConstraintSubjects] = useState<string[]>([])
   const [regularTeacherId, setRegularTeacherId] = useState('')
   const [regularStudent1Id, setRegularStudent1Id] = useState('')
   const [regularStudent2Id, setRegularStudent2Id] = useState('')
@@ -285,9 +283,6 @@ const HomePage = () => {
 
   // Editing state for pair constraints
   const [editingConstraintId, setEditingConstraintId] = useState<string | null>(null)
-
-  // Editing state for grade constraints
-  const [editingGradeConstraintId, setEditingGradeConstraintId] = useState<string | null>(null)
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -400,23 +395,6 @@ const HomePage = () => {
     changeLogRef.current.add('制約変更')
   }
 
-  const upsertGradeConstraint = async (): Promise<void> => {
-    if (!gradeConstraintTeacherId || !gradeConstraintGrade || !masterData) return
-    const nc: GradeConstraint = {
-      id: createId(),
-      teacherId: gradeConstraintTeacherId,
-      grade: gradeConstraintGrade,
-      type: gradeConstraintType,
-      ...(gradeConstraintSubjects.length > 0 ? { subjects: gradeConstraintSubjects } : {}),
-    }
-    await updateMaster((c) => {
-      const filtered = (c.gradeConstraints ?? []).filter((i) => !(i.teacherId === gradeConstraintTeacherId && i.grade === gradeConstraintGrade))
-      return { ...c, gradeConstraints: [...filtered, nc] }
-    })
-    changeLogRef.current.add('学年制約変更')
-    setGradeConstraintSubjects([])
-  }
-
   const addRegularLesson = async (): Promise<void> => {
     const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
     if (!regularTeacherId || studentIds.length === 0 || !regularSubject || !regularDayOfWeek || !regularSlotNumber) return
@@ -483,11 +461,6 @@ const HomePage = () => {
   const removeConstraint = async (constraintId: string): Promise<void> => {
     await updateMaster((c) => ({ ...c, constraints: c.constraints.filter((x) => x.id !== constraintId) }))
     changeLogRef.current.add('制約削除')
-  }
-
-  const removeGradeConstraint = async (constraintId: string): Promise<void> => {
-    await updateMaster((c) => ({ ...c, gradeConstraints: (c.gradeConstraints ?? []).filter((x) => x.id !== constraintId) }))
-    changeLogRef.current.add('学年制約削除')
   }
 
   const removeRegularLesson = async (lessonId: string): Promise<void> => {
@@ -560,43 +533,12 @@ const HomePage = () => {
     setConstraintPersonAId(''); setConstraintPersonBId('')
   }
 
-  // Edit grade constraint: populate form
-  const startEditGradeConstraint = (gc: GradeConstraint): void => {
-    setEditingGradeConstraintId(gc.id)
-    setGradeConstraintTeacherId(gc.teacherId)
-    setGradeConstraintGrade(gc.grade)
-    setGradeConstraintType(gc.type)
-    setGradeConstraintSubjects(gc.subjects ? [...gc.subjects] : [])
-  }
-
-  const saveEditGradeConstraint = async (): Promise<void> => {
-    if (!editingGradeConstraintId || !gradeConstraintTeacherId || !gradeConstraintGrade) return
-    await updateMaster((c) => ({
-      ...c,
-      gradeConstraints: (c.gradeConstraints ?? []).map((item) =>
-        item.id === editingGradeConstraintId
-          ? { ...item, teacherId: gradeConstraintTeacherId, grade: gradeConstraintGrade, type: gradeConstraintType, ...(gradeConstraintSubjects.length > 0 ? { subjects: gradeConstraintSubjects } : { subjects: undefined }) }
-          : item,
-      ),
-    }))
-    changeLogRef.current.add('学年制約編集')
-    setEditingGradeConstraintId(null)
-    setGradeConstraintTeacherId(''); setGradeConstraintGrade('')
-    setGradeConstraintSubjects([])
-  }
-
-  const cancelEditGradeConstraint = (): void => {
-    setEditingGradeConstraintId(null)
-    setGradeConstraintTeacherId(''); setGradeConstraintGrade('')
-    setGradeConstraintSubjects([])
-  }
-
   // --- Excel (operates on master data) ---
   const downloadTemplate = (): void => {
     // Include sample test data so users can see the expected format
     const sampleTeachers = [
-      ['田中講師', '数,英', '数学メイン', 'tanaka@example.com'],
-      ['佐藤講師', '英,数', '英語メイン', ''],
+      ['田中講師', '高数,高英', '数学メイン', 'tanaka@example.com'],
+      ['佐藤講師', '高英,中数', '英語メイン', ''],
     ]
     const sampleStudents = [
       ['青木 太郎', '中3', 'aoki@example.com'],
@@ -607,17 +549,13 @@ const HomePage = () => {
       ['講師', '田中講師', '生徒', '伊藤 花', '不可'],
       ['生徒', '青木 太郎', '生徒', '上田 陽介', '不可'],
     ]
-    const sampleGradeConstraints = [
-      ['佐藤講師', '高1', '不可'],
-    ]
     const sampleRegularLessons = [
       ['田中講師', '青木 太郎', '', '数', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + FIXED_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メールアドレス'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別(講師/生徒)', '人物A名', '人物B種別(講師/生徒)', '人物B名', '種別(不可)'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別(不可)'], ...sampleGradeConstraints]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
@@ -638,11 +576,6 @@ const HomePage = () => {
       findPersonName(c.personBId, c.personBType),
       c.type === 'incompatible' ? '不可' : '推奨',
     ])
-    const gradeConstraintRows = (md.gradeConstraints ?? []).map((gc) => [
-      md.teachers.find((t) => t.id === gc.teacherId)?.name ?? gc.teacherId,
-      gc.grade,
-      gc.type === 'incompatible' ? '不可' : '推奨',
-    ])
     const dayNames = ['日', '月', '火', '水', '木', '金', '土']
     const regularLessonRows = md.regularLessons.map((l) => [
       md.teachers.find((t) => t.id === l.teacherId)?.name ?? l.teacherId,
@@ -654,7 +587,6 @@ const HomePage = () => {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '学年', '種別'], ...gradeConstraintRows]), '学年制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
@@ -668,7 +600,6 @@ const HomePage = () => {
     const importedTeachers: Teacher[] = []
     const importedStudents: Student[] = []
     const importedConstraints: PairConstraint[] = []
-    const importedGradeConstraints: GradeConstraint[] = []
     const importedRegularLessons: RegularLesson[] = []
 
     const findTeacherId = (name: string): string | null => {
@@ -689,7 +620,7 @@ const HomePage = () => {
         const row = rows[i]
         const name = String(row?.[0] ?? '').trim()
         if (!name) continue
-        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => FIXED_SUBJECTS.includes(s))
+        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => ALL_TEACHER_SUBJECTS.includes(s) || FIXED_SUBJECTS.includes(s))
         const memo = String(row?.[2] ?? '').trim()
         const email = String(row?.[3] ?? '').trim()
         if (md.teachers.some((t) => t.name === name)) continue
@@ -734,20 +665,6 @@ const HomePage = () => {
       }
     }
 
-    const gradeConstraintWs = wb.Sheets['学年制約']
-    if (gradeConstraintWs) {
-      const rows = XLSX.utils.sheet_to_json(gradeConstraintWs, { header: 1 }) as unknown as unknown[][]
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i]
-        const tn = String(row?.[0] ?? '').trim(); const grade = String(row?.[1] ?? '').trim(); const ts = String(row?.[2] ?? '').trim()
-        const tid = findTeacherId(tn)
-        if (!tid || !grade) continue
-        const type: ConstraintType = ts === '推奨' ? 'recommended' : 'incompatible'
-        if ((md.gradeConstraints ?? []).some((c) => c.teacherId === tid && c.grade === grade)) continue
-        importedGradeConstraints.push({ id: createId(), teacherId: tid, grade, type })
-      }
-    }
-
     const dayNameMap: Record<string, number> = { '日': 0, '月': 1, '火': 2, '水': 3, '木': 4, '金': 5, '土': 6 }
     const regularWs = wb.Sheets['通常授業']
     if (regularWs) {
@@ -785,7 +702,7 @@ const HomePage = () => {
     // Check regular lessons
     for (const rl of importedRegularLessons) {
       const teacher = allTeachers.find((t) => t.id === rl.teacherId)
-      if (teacher && !teacher.subjects.includes(rl.subject)) {
+      if (teacher && !teacherHasSubject(teacher.subjects, rl.subject)) {
         const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
         validationErrors.push(`通常授業: ${teacher.name} の担当科目に「${rl.subject}」がありません（${dayNames2[rl.dayOfWeek]}曜${rl.slotNumber}限）`)
       }
@@ -807,13 +724,6 @@ const HomePage = () => {
         validationErrors.push(`制約: 人物B「${c.personBId}」が見つかりません`)
       }
     }
-    // Check grade constraints reference valid teachers
-    for (const gc of importedGradeConstraints) {
-      if (!allTeachers.some((t) => t.id === gc.teacherId)) {
-        validationErrors.push(`学年制約: 講師ID「${gc.teacherId}」が見つかりません`)
-      }
-    }
-
     if (validationErrors.length > 0) {
       alert(`⚠️ 取り込みエラー:\n\n${validationErrors.join('\n')}\n\nデータを修正してから再度取り込んでください。`)
       return
@@ -823,7 +733,6 @@ const HomePage = () => {
     if (importedTeachers.length) added.push(`講師${importedTeachers.length}名`)
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
     if (importedConstraints.length) added.push(`制約${importedConstraints.length}件`)
-    if (importedGradeConstraints.length) added.push(`学年制約${importedGradeConstraints.length}件`)
     if (importedRegularLessons.length) added.push(`通常授業${importedRegularLessons.length}件`)
     if (added.length === 0) { alert('新規データがありませんでした（同名は重複スキップ）。'); return }
     if (!window.confirm(`以下を取り込みます:\n${added.join(', ')}\n\nよろしいですか？`)) return
@@ -833,7 +742,6 @@ const HomePage = () => {
       teachers: [...c.teachers, ...importedTeachers],
       students: [...c.students, ...importedStudents],
       constraints: [...c.constraints, ...importedConstraints],
-      gradeConstraints: [...(c.gradeConstraints ?? []), ...importedGradeConstraints],
       regularLessons: [...c.regularLessons, ...importedRegularLessons],
     }))
     changeLogRef.current.add(`ファイル取り込み (${added.join(', ')})`)
@@ -902,7 +810,6 @@ const HomePage = () => {
       ...s, subjects: isMendanSession ? ['面談'] : [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0,
     }))
     seed.constraints = masterData.constraints
-    seed.gradeConstraints = isMendanSession ? [] : masterData.gradeConstraints
     seed.regularLessons = isMendanSession ? [] : masterData.regularLessons
     try {
       const verified = await saveAndVerify(classroomId, id, seed)
@@ -1120,7 +1027,7 @@ const HomePage = () => {
                     <input value={teacherEmail} onChange={(e) => setTeacherEmail(e.target.value)} placeholder="メールアドレス" type="email" />
                     <select onChange={(e) => { const v = e.target.value; if (v && !teacherSubjects.includes(v)) setTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
                       <option value="">担当科目を追加</option>
-                      {FIXED_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
+                      {ALL_TEACHER_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
                     </select>
                     <input value={teacherMemo} onChange={(e) => setTeacherMemo(e.target.value)} placeholder="メモ" />
                     <button className="btn" type="button" onClick={() => void addTeacher()}>追加</button>
@@ -1141,7 +1048,7 @@ const HomePage = () => {
                             <td>
                               <select onChange={(e) => { const v = e.target.value; if (v && !editTeacherSubjects.includes(v)) setEditTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
                                 <option value="">科目追加</option>
-                                {FIXED_SUBJECTS.filter((s) => !editTeacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
+                                {ALL_TEACHER_SUBJECTS.filter((s) => !editTeacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
                               </select>
                               <div>{editTeacherSubjects.map((s) => (
                                 <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setEditTeacherSubjects((p) => p.filter((x) => x !== s))}>{s} ×</span>
@@ -1326,62 +1233,6 @@ const HomePage = () => {
                           </tr>
                         )
                       })}
-                    </tbody>
-                  </table>
-
-                  <h4 style={{ marginTop: '16px' }}>講師×学年 制約</h4>
-                  <div className="row" style={{ flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                    <select value={gradeConstraintTeacherId} onChange={(e) => setGradeConstraintTeacherId(e.target.value)}>
-                      <option value="">講師を選択</option>
-                      {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
-                    </select>
-                    <select value={gradeConstraintGrade} onChange={(e) => setGradeConstraintGrade(e.target.value)}>
-                      <option value="">学年を選択</option>
-                      {GRADE_OPTIONS.map((g) => (<option key={g} value={g}>{g}</option>))}
-                    </select>
-                    <select value={gradeConstraintType} onChange={(e) => setGradeConstraintType(e.target.value as ConstraintType)}>
-                      <option value="incompatible">担当不可</option>
-                    </select>
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#64748b' }}>科目:</span>
-                      {FIXED_SUBJECTS.map((subj) => (
-                        <label key={subj} style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '13px', cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={gradeConstraintSubjects.includes(subj)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setGradeConstraintSubjects((prev) => [...prev, subj])
-                              } else {
-                                setGradeConstraintSubjects((prev) => prev.filter((s) => s !== subj))
-                              }
-                            }}
-                          />
-                          {subj}
-                        </label>
-                      ))}
-                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>未選択=全科目</span>
-                    </div>
-                    <button className="btn" type="button" onClick={() => void (editingGradeConstraintId ? saveEditGradeConstraint() : upsertGradeConstraint())}>{editingGradeConstraintId ? '更新' : '保存'}</button>
-                    {editingGradeConstraintId && (
-                      <button className="btn secondary" type="button" onClick={cancelEditGradeConstraint}>キャンセル</button>
-                    )}
-                  </div>
-                  <table className="table">
-                    <thead><tr><th>講師</th><th>学年</th><th>科目</th><th>種別</th><th>操作</th></tr></thead>
-                    <tbody>
-                      {(masterData.gradeConstraints ?? []).map((gc) => (
-                        <tr key={gc.id}>
-                          <td>{masterData.teachers.find((t) => t.id === gc.teacherId)?.name ?? '-'}</td>
-                          <td>{gc.grade}</td>
-                          <td>{gc.subjects && gc.subjects.length > 0 ? gc.subjects.join(', ') : '全科目'}</td>
-                          <td><span className="badge warn">不可</span></td>
-                          <td>
-                            <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditGradeConstraint(gc)}>編集</button>
-                            <button className="btn secondary" type="button" onClick={() => void removeGradeConstraint(gc.id)}>削除</button>
-                          </td>
-                        </tr>
-                      ))}
                     </tbody>
                   </table>
                 </div>
@@ -1833,13 +1684,11 @@ const AdminPage = () => {
       if (!master) return
       const needsUpdate =
         JSON.stringify(data.constraints) !== JSON.stringify(master.constraints) ||
-        JSON.stringify(data.gradeConstraints) !== JSON.stringify(isMendanSession ? [] : master.gradeConstraints) ||
         JSON.stringify(data.regularLessons) !== JSON.stringify(isMendanSession ? [] : master.regularLessons)
       if (!needsUpdate) return
       const next: SessionData = {
         ...data,
         constraints: master.constraints,
-        gradeConstraints: isMendanSession ? [] : (master.gradeConstraints ?? []),
         regularLessons: isMendanSession ? [] : master.regularLessons,
       }
       setData(next)
@@ -2122,7 +1971,6 @@ const AdminPage = () => {
         teachers: master.teachers,
         students: mergedStudents,
         constraints: master.constraints,
-        gradeConstraints: master.gradeConstraints,
         regularLessons: master.regularLessons,
       }
       // Only save if something actually changed
@@ -2132,7 +1980,6 @@ const AdminPage = () => {
         JSON.stringify(data.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) !==
           JSON.stringify(next.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) ||
         JSON.stringify(data.constraints) !== JSON.stringify(next.constraints) ||
-        JSON.stringify(data.gradeConstraints) !== JSON.stringify(next.gradeConstraints) ||
         JSON.stringify(data.regularLessons) !== JSON.stringify(next.regularLessons)
       if (changed) {
         setData(next)
@@ -2550,18 +2397,18 @@ const AdminPage = () => {
         if (sid === studentId && !prevStudentSubjects[sid]) {
           // New student: pick a viable subject from teacher's subjects
           const student = current.students.find((s) => s.id === sid)
-          const viable = (teacher?.subjects ?? []).filter((subj) => student?.subjects.includes(subj))
+          const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade).filter((subj) => student.subjects.includes(subj)) : []
           newStudentSubjects[sid] = viable[0] ?? assignment.subject
         } else {
           // Keep existing subject, validate it's still available
           const existingSubj = prevStudentSubjects[sid] ?? assignment.subject
           const student = current.students.find((s) => s.id === sid)
-          const teacherCanTeach = teacher?.subjects.includes(existingSubj) ?? false
+          const teacherCanTeach = student ? canTeachSubject(teacher?.subjects ?? [], student.grade, existingSubj) : false
           const studentCanLearn = student?.subjects.includes(existingSubj) ?? false
           if (teacherCanTeach && studentCanLearn) {
             newStudentSubjects[sid] = existingSubj
           } else {
-            const viable = (teacher?.subjects ?? []).filter((subj) => student?.subjects.includes(subj))
+            const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade).filter((subj) => student.subjects.includes(subj)) : []
             newStudentSubjects[sid] = viable[0] ?? existingSubj
           }
         }
@@ -3383,8 +3230,8 @@ service cloud.firestore {
                                     const currentStudent = data.students.find((s) => s.id === sid)
                                     const selectedTeacherForResult = instructors.find((t) => t.id === result.teacherId)
                                     const studentSubjectOptions = selectedTeacherForResult && currentStudent
-                                      ? selectedTeacherForResult.subjects.filter((subj) => currentStudent.subjects.includes(subj))
-                                      : (selectedTeacherForResult?.subjects ?? [])
+                                      ? teachableBaseSubjects(selectedTeacherForResult.subjects, currentStudent.grade).filter((subj) => currentStudent.subjects.includes(subj))
+                                      : (selectedTeacherForResult ? [...new Set(selectedTeacherForResult.subjects.map(s => getSubjectBase(s)))] : [])
                                     // Hide students already used in other pairs in this slot
                                     const ownStudentIds = new Set(result.studentIds)
                                     const availableStudents = data.students.filter((s) =>
@@ -3441,9 +3288,7 @@ service cloud.firestore {
 
                         const isIncompatiblePair = !isMendan && assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
-                          const subj = getStudentSubject(assignment, s.id)
-                          const gt = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, s.grade, subj)
-                          return pt === 'incompatible' || gt === 'incompatible'
+                          return pt === 'incompatible'
                         }) || (!isMendan && assignment.studentIds.length === 2 && constraintFor(data.constraints, assignment.studentIds[0], assignment.studentIds[1]) === 'incompatible')
                         const sig = assignmentSignature(assignment)
                         const hl = data.autoAssignHighlights ?? {}
@@ -3549,9 +3394,9 @@ service cloud.firestore {
                                     : ''
                                   // Subject options for THIS student: teacher can teach AND student can learn
                                   const studentSubjectOptions = selectedTeacher && currentStudent
-                                    ? selectedTeacher.subjects.filter((subj) => currentStudent.subjects.includes(subj))
-                                    : (selectedTeacher?.subjects ?? [])
-                                  // For student dropdown filter: any teacher subject the student can learn
+                                    ? teachableBaseSubjects(selectedTeacher.subjects, currentStudent.grade).filter((subj) => currentStudent.subjects.includes(subj))
+                                    : (selectedTeacher ? [...new Set(selectedTeacher.subjects.map(s => getSubjectBase(s)))] : [])
+                                  // For student dropdown filter: base subjects the teacher can teach
                                   const teacherSubjects = selectedTeacher?.subjects ?? []
                                   return (
                                     <div key={pos} className={`student-select-row${currentStudentId && !assignment.isRegular ? ' student-draggable' : ''}`}
@@ -3584,13 +3429,11 @@ service cloud.firestore {
                                           const student = data.students.find((s) => s.id === selectedId)
                                           if (student) {
                                             const pairTag = constraintFor(data.constraints, assignment.teacherId, student.id)
-                                            const gradeTag = gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
                                             const studentStudentTag = otherStudentId ? constraintFor(data.constraints, otherStudentId, student.id) : null
-                                            const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible' || studentStudentTag === 'incompatible'
+                                            const isIncompatible = pairTag === 'incompatible' || studentStudentTag === 'incompatible'
                                             if (isIncompatible) {
                                               const reasons: string[] = []
                                               if (pairTag === 'incompatible') reasons.push('講師×生徒ペア制約で不可')
-                                              if (gradeTag === 'incompatible') reasons.push(`学年制約(${student.grade})で不可`)
                                               if (studentStudentTag === 'incompatible') reasons.push('生徒×生徒ペア制約で不可')
                                               const ok = window.confirm(
                                                 `⚠️ ${student.name} は制約ルールにより割当不可です。\n理由: ${reasons.join(', ')}\n\nそれでも割り当てますか？`,
@@ -3620,12 +3463,12 @@ service cloud.firestore {
                                           // Filter out students unavailable for this specific slot
                                           if (!isStudentAvailable(student, slot)) return false
                                           // Subject compatibility: student must share at least one subject with the teacher
-                                          if (teacherSubjects.length > 0 && !teacherSubjects.some((subj) => student.subjects.includes(subj))) return false
+                                          if (teacherSubjects.length > 0 && !student.subjects.some((subj) => canTeachSubject(teacherSubjects, student.grade, subj))) return false
                                           // Remaining slots for at least one teacher-compatible subject must be > 0
-                                          const hasRemainingSlots = teacherSubjects.some((subj) => {
-                                            if (!student.subjects.includes(subj)) return false
-                                            const desired = student.subjectSlots[subj] ?? 0
-                                            const assigned = countStudentSubjectLoad(data.assignments, student.id, subj)
+                                          const hasRemainingSlots = student.subjects.some((baseSubj) => {
+                                            if (!canTeachSubject(teacherSubjects, student.grade, baseSubj)) return false
+                                            const desired = student.subjectSlots[baseSubj] ?? 0
+                                            const assigned = countStudentSubjectLoad(data.assignments, student.id, baseSubj)
                                             const currentlySelected = currentStudentId === student.id
                                             const adjustedAssigned = currentlySelected ? Math.max(0, assigned - 1) : assigned
                                             return desired - adjustedAssigned > 0
@@ -3634,9 +3477,8 @@ service cloud.firestore {
                                         })
                                         .map((student) => {
                                         const pairTag = isMendan ? null : constraintFor(data.constraints, assignment.teacherId, student.id)
-                                        const gradeTag = isMendan ? null : gradeConstraintFor(data.gradeConstraints ?? [], assignment.teacherId, student.grade, getStudentSubject(assignment, student.id))
                                         const ssTag = (!isMendan && otherStudentId) ? constraintFor(data.constraints, otherStudentId, student.id) : null
-                                        const isIncompatible = pairTag === 'incompatible' || gradeTag === 'incompatible' || ssTag === 'incompatible'
+                                        const isIncompatible = pairTag === 'incompatible' || ssTag === 'incompatible'
                                         const usedInOther = slotAssignments.some(
                                           (a, i) => i !== idx && a.studentIds.includes(student.id),
                                         )
@@ -5116,7 +4958,6 @@ const AvailabilityPage = () => {
               teachers: master.teachers,
               students: mergedStudents,
               constraints: master.constraints,
-              gradeConstraints: master.gradeConstraints ?? [],
               regularLessons: master.regularLessons,
             }
             setData(next)

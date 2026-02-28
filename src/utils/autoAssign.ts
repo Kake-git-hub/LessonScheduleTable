@@ -1,6 +1,7 @@
 import type { Assignment, SessionData } from '../types'
 import { personKey } from './schedule'
-import { constraintFor, gradeConstraintFor, hasAvailability, isStudentAvailable, isRegularLessonPair } from './constraints'
+import { constraintFor, hasAvailability, isStudentAvailable, isRegularLessonPair } from './constraints'
+import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
 import {
   getSlotNumber,
   getStudentSubject,
@@ -161,18 +162,19 @@ export const buildIncrementalAutoAssignments = (
         continue
       }
 
-      // Collect all subjects needed in this assignment (per-student)
-      const allNeededSubjects = assignment.studentSubjects
-        ? [...new Set(Object.values(assignment.studentSubjects))]
-        : assignment.subject ? [assignment.subject] : []
-
       // Check teacher still exists
       if (!teacherIds.has(assignment.teacherId)) {
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
+        // Build student-subject pairs for grade-aware replacement check
+        const studentSubjectPairs = assignment.studentIds.map(sid => {
+          const s = data.students.find(st => st.id === sid)
+          const subj = assignment.studentSubjects?.[sid] ?? assignment.subject
+          return { grade: s?.grade ?? '', subject: subj }
+        }).filter(p => p.grade && p.subject)
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
           if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
+          return studentSubjectPairs.every(({ grade, subject }) => canTeachSubject(t.subjects, grade, subject))
         })
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
@@ -190,10 +192,15 @@ export const buildIncrementalAutoAssignments = (
         const teacherName = data.teachers.find((t) => t.id === assignment.teacherId)?.name ?? '?'
         const teacherChangeInfo = describeTeacherSubmissionChange(assignment.teacherId)
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
+        const studentSubjectPairs2 = assignment.studentIds.map(sid => {
+          const s = data.students.find(st => st.id === sid)
+          const subj = assignment.studentSubjects?.[sid] ?? assignment.subject
+          return { grade: s?.grade ?? '', subject: subj }
+        }).filter(p => p.grade && p.subject)
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
           if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
-          return allNeededSubjects.every((subj) => t.subjects.includes(subj))
+          return studentSubjectPairs2.every(({ grade, subject }) => canTeachSubject(t.subjects, grade, subject))
         })
         if (replacement) {
           const changedAssignment = { ...assignment, teacherId: replacement.id }
@@ -322,15 +329,13 @@ export const buildIncrementalAutoAssignments = (
         if (usedStudentIdsInSlot.has(student.id)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
         // Check student-student constraints with existing students in this assignment
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
-        // Student must be able to learn at least one subject the teacher can teach, with remaining demand
-        return teacher.subjects.some((subj) => {
-          if (!student.subjects.includes(subj)) return false
-          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subj) === 'incompatible') return false
-          const requested = student.subjectSlots[subj] ?? 0
-          const allocated = countStudentSubjectLoad(result, student.id, subj)
+        // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand
+        return student.subjects.some((baseSubj) => {
+          if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
+          const requested = student.subjectSlots[baseSubj] ?? 0
+          const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
           return allocated < requested
         })
       })
@@ -342,10 +347,10 @@ export const buildIncrementalAutoAssignments = (
           return bRem - aRem
         })[0]
         // Pick the best viable subject for this new student
-        const bestSubj = teacher.subjects.find((subj) => {
-          if (!best.subjects.includes(subj)) return false
-          const requested = best.subjectSlots[subj] ?? 0
-          const allocated = countStudentSubjectLoad(result, best.id, subj)
+        const bestSubj = teachableBaseSubjects(teacher.subjects, best.grade).find((baseSubj) => {
+          if (!best.subjects.includes(baseSubj)) return false
+          const requested = best.subjectSlots[baseSubj] ?? 0
+          const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
           return allocated < requested
         }) ?? assignment.subject
         // Reconstruct studentSubjects
@@ -426,11 +431,8 @@ export const buildIncrementalAutoAssignments = (
         if (usedStudentIdsInSlot.has(student.id)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade) === 'incompatible') return false
-        return teacher.subjects.some((subject) => {
-          if (!student.subjects.includes(subject)) return false
-          if (gradeConstraintFor(data.gradeConstraints ?? [], teacher.id, student.grade, subject) === 'incompatible') return false
-          return true
+        return student.subjects.some((baseSubj) => {
+          return canTeachSubject(teacher.subjects, student.grade, baseSubj)
         })
       })
 
@@ -459,13 +461,14 @@ export const buildIncrementalAutoAssignments = (
         if (combo.length === 2 && constraintFor(data.constraints, combo[0].id, combo[1].id) === 'incompatible') continue
 
         // --- Determine subject assignment (same or mixed) ---
-        const commonSubjects = teacher.subjects.filter((subject) =>
-          combo.every((student) => student.subjects.includes(subject)),
+        // Find base subjects ALL students in combo can learn and teacher can teach to ALL of them
+        const commonBaseSubjects = (BASE_SUBJECTS as readonly string[]).filter((baseSubj) =>
+          combo.every((student) => student.subjects.includes(baseSubj) && canTeachSubject(teacher.subjects, student.grade, baseSubj)),
         )
-        const viableCommonSubjects = commonSubjects.filter((subject) =>
+        const viableCommonSubjects = commonBaseSubjects.filter((baseSubj) =>
           combo.every((student) => {
-            const requested = student.subjectSlots[subject] ?? 0
-            const allocated = countStudentSubjectLoad(result, student.id, subject)
+            const requested = student.subjectSlots[baseSubj] ?? 0
+            const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
             return allocated < requested
           }),
         )
@@ -482,16 +485,16 @@ export const buildIncrementalAutoAssignments = (
         // Add mixed-subject plans for 2-student combos
         if (combo.length === 2) {
           const [s1, s2] = combo
-          const s1Viable = teacher.subjects.filter((subj) => {
-            if (!s1.subjects.includes(subj)) return false
-            const req = s1.subjectSlots[subj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s1.id, subj)
+          const s1Viable = teachableBaseSubjects(teacher.subjects, s1.grade).filter((baseSubj) => {
+            if (!s1.subjects.includes(baseSubj)) return false
+            const req = s1.subjectSlots[baseSubj] ?? 0
+            const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
             return alloc < req
           })
-          const s2Viable = teacher.subjects.filter((subj) => {
-            if (!s2.subjects.includes(subj)) return false
-            const req = s2.subjectSlots[subj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s2.id, subj)
+          const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
+            if (!s2.subjects.includes(baseSubj)) return false
+            const req = s2.subjectSlots[baseSubj] ?? 0
+            const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
             return alloc < req
           })
           // Only add mixed plans where subjects actually differ
