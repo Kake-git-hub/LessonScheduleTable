@@ -29,7 +29,7 @@ const APP_VERSION = '1.0.0'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
-const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT'] as readonly string[]
+const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as readonly string[]
 /** Leveled teacher subjects (小英, 中英, 高英, ...). */
 const ALL_TEACHER_SUBJECTS = TEACHER_SUBJECTS
 
@@ -1180,8 +1180,8 @@ const HomePage = () => {
                           const student = masterData.students.find((s) => s.id === sid)
                           if (!student) return null
                           const availableSubjects = teacher
-                            ? BASE_SUBJECTS.filter((bs) => canTeachSubject(teacher.subjects, student.grade, bs))
-                            : BASE_SUBJECTS
+                            ? teachableBaseSubjects(teacher.subjects, student.grade)
+                            : [...BASE_SUBJECTS as readonly string[]]
                           return (
                             <label key={sid} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                               <span>{student.name}(生徒{idx + 1}):</span>

@@ -14,7 +14,10 @@
  */
 
 /** Base (non-leveled) subjects used by students. */
-export const BASE_SUBJECTS = ['英', '数', '国', '理', '社', 'IT'] as const
+export const BASE_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as const
+
+/** Combo subjects for elementary students (two subjects in one slot). */
+export const ELEMENTARY_COMBO_SUBJECTS = ['算英', '算国', '英国'] as const
 
 /** Level prefixes ordered from lowest to highest. */
 export const LEVEL_PREFIXES = ['小', '中', '高'] as const
@@ -55,15 +58,23 @@ export const gradeToLevel = (grade: string): string => {
 /**
  * Check if a teacher (given their subject list) can teach a base subject
  * to a student of the given grade.
+ * For combo subjects (算英, 算国, 英国), the teacher must be able to teach
+ * both component subjects at the student's grade level.
  *
  * Example: canTeachSubject(['高英', '中数'], '中2', '英') → true
  *          canTeachSubject(['中数'], '高1', '数') → false
+ *          canTeachSubject(['小算', '小英'], '小3', '算英') → true
  */
 export const canTeachSubject = (
   teacherSubjects: string[],
   studentGrade: string,
   baseSubject: string,
 ): boolean => {
+  // Handle combo subjects
+  if ((ELEMENTARY_COMBO_SUBJECTS as readonly string[]).includes(baseSubject)) {
+    const components = [...baseSubject] // e.g. '算英' → ['算', '英']
+    return components.every(comp => canTeachSubject(teacherSubjects, studentGrade, comp))
+  }
   const requiredLevel = LEVEL_ORDER[gradeToLevel(studentGrade)] ?? 0
   return teacherSubjects.some(ts => {
     const base = getSubjectBase(ts)
@@ -75,27 +86,42 @@ export const canTeachSubject = (
 
 /**
  * Get all base subjects a teacher can teach to a student of the given grade.
+ * For elementary students, also includes available combo subjects (算英, 算国, 英国).
  *
- * Returns an array of base subject names (e.g. ['英', '数']).
+ * Returns an array of subject names (e.g. ['英', '数', '算', '算英']).
  */
 export const teachableBaseSubjects = (
   teacherSubjects: string[],
   studentGrade: string,
 ): string[] => {
-  return (BASE_SUBJECTS as readonly string[]).filter(base =>
+  const singles = (BASE_SUBJECTS as readonly string[]).filter(base =>
     canTeachSubject(teacherSubjects, studentGrade, base),
   )
+  // Add combo subjects for elementary students
+  if (gradeToLevel(studentGrade) === '小') {
+    for (const combo of ELEMENTARY_COMBO_SUBJECTS) {
+      if (canTeachSubject(teacherSubjects, studentGrade, combo)) {
+        singles.push(combo)
+      }
+    }
+  }
+  return singles
 }
 
 /**
  * Check if a teacher has ANY variant of a base subject (regardless of level).
+ * For combo subjects, checks that the teacher has both component subjects.
  * Useful when grade context is not available.
  *
  * Example: teacherHasSubject(['高英', '中数'], '英') → true
+ *          teacherHasSubject(['小算', '小英'], '算英') → true
  */
 export const teacherHasSubject = (
   teacherSubjects: string[],
   baseSubject: string,
 ): boolean => {
+  if ((ELEMENTARY_COMBO_SUBJECTS as readonly string[]).includes(baseSubject)) {
+    return [...baseSubject].every(comp => teacherHasSubject(teacherSubjects, comp))
+  }
   return teacherSubjects.some(ts => getSubjectBase(ts) === baseSubject)
 }
