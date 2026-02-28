@@ -74,6 +74,8 @@ export type RegularLesson = {
   teacherId: string
   studentIds: string[]
   subject: string
+  /** Per-student subject overrides. Maps studentId → base subject. */
+  studentSubjects?: Record<string, string>
   dayOfWeek: number
   slotNumber: number
 }

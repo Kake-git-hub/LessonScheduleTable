@@ -19,7 +19,7 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
+import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
@@ -260,6 +260,7 @@ const HomePage = () => {
   const [regularStudent1Id, setRegularStudent1Id] = useState('')
   const [regularStudent2Id, setRegularStudent2Id] = useState('')
   const [regularSubject, setRegularSubject] = useState('')
+  const [regularStudentSubjects, setRegularStudentSubjects] = useState<Record<string, string>>({})
   const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -397,15 +398,20 @@ const HomePage = () => {
 
   const addRegularLesson = async (): Promise<void> => {
     const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
-    if (!regularTeacherId || studentIds.length === 0 || !regularSubject || !regularDayOfWeek || !regularSlotNumber) return
+    if (!regularTeacherId || studentIds.length === 0 || !regularDayOfWeek || !regularSlotNumber) return
+    // Require all students to have a subject set
+    const allHaveSubject = studentIds.every((sid) => regularStudentSubjects[sid])
+    if (!allHaveSubject) return
+    const defaultSubject = regularStudentSubjects[studentIds[0]] ?? regularSubject
     const nl: RegularLesson = {
-      id: createId(), teacherId: regularTeacherId, studentIds, subject: regularSubject,
+      id: createId(), teacherId: regularTeacherId, studentIds, subject: defaultSubject,
+      studentSubjects: { ...regularStudentSubjects },
       dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10),
     }
     await updateMaster((c) => ({ ...c, regularLessons: [...c.regularLessons, nl] }))
     changeLogRef.current.add('通常授業追加')
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
 
   const startEditManager = (m: Manager): void => {
@@ -475,6 +481,7 @@ const HomePage = () => {
     setRegularStudent1Id(l.studentIds[0] ?? '')
     setRegularStudent2Id(l.studentIds[1] ?? '')
     setRegularSubject(l.subject)
+    setRegularStudentSubjects(l.studentSubjects ?? {})
     setRegularDayOfWeek(String(l.dayOfWeek))
     setRegularSlotNumber(String(l.slotNumber))
   }
@@ -482,25 +489,28 @@ const HomePage = () => {
   const saveEditRegularLesson = async (): Promise<void> => {
     if (!editingRegularLessonId) return
     const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
-    if (!regularTeacherId || studentIds.length === 0 || !regularSubject || !regularDayOfWeek || !regularSlotNumber) return
+    if (!regularTeacherId || studentIds.length === 0 || !regularDayOfWeek || !regularSlotNumber) return
+    const allHaveSubject = studentIds.every((sid) => regularStudentSubjects[sid])
+    if (!allHaveSubject) return
+    const defaultSubject = regularStudentSubjects[studentIds[0]] ?? regularSubject
     await updateMaster((c) => ({
       ...c,
       regularLessons: c.regularLessons.map((l) =>
         l.id === editingRegularLessonId
-          ? { ...l, teacherId: regularTeacherId, studentIds, subject: regularSubject, dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10) }
+          ? { ...l, teacherId: regularTeacherId, studentIds, subject: defaultSubject, studentSubjects: { ...regularStudentSubjects }, dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10) }
           : l,
       ),
     }))
     changeLogRef.current.add('通常授業編集')
     setEditingRegularLessonId(null)
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
 
   const cancelEditRegularLesson = (): void => {
     setEditingRegularLessonId(null)
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
   }
 
   // Edit pair constraint: populate form
@@ -1118,22 +1128,18 @@ const HomePage = () => {
 
                 <div className="panel">
                   <h3>通常授業管理</h3>
-                  <div className="row">
+                  <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                     <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
                       <option value="">講師を選択</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
-                    <select value={regularStudent1Id} onChange={(e) => setRegularStudent1Id(e.target.value)}>
+                    <select value={regularStudent1Id} onChange={(e) => { setRegularStudent1Id(e.target.value); setRegularStudentSubjects((prev) => { const next = { ...prev }; delete next[regularStudent1Id]; return next }) }}>
                       <option value="">生徒1を選択</option>
                       {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent2Id}>{s.name}</option>))}
                     </select>
-                    <select value={regularStudent2Id} onChange={(e) => setRegularStudent2Id(e.target.value)}>
+                    <select value={regularStudent2Id} onChange={(e) => { setRegularStudent2Id(e.target.value); setRegularStudentSubjects((prev) => { const next = { ...prev }; delete next[regularStudent2Id]; return next }) }}>
                       <option value="">生徒2(任意)</option>
                       {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent1Id}>{s.name}</option>))}
-                    </select>
-                    <select value={regularSubject} onChange={(e) => setRegularSubject(e.target.value)}>
-                      <option value="">科目を選択</option>
-                      {FIXED_SUBJECTS.map((s) => (<option key={s} value={s}>{s}</option>))}
                     </select>
                     <select value={regularDayOfWeek} onChange={(e) => setRegularDayOfWeek(e.target.value)}>
                       <option value="">曜日を選択</option>
@@ -1150,6 +1156,35 @@ const HomePage = () => {
                       <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
                     )}
                   </div>
+                  {/* Per-student subject selects */}
+                  {(() => {
+                    const selectedStudentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
+                    const teacher = masterData.teachers.find((t) => t.id === regularTeacherId)
+                    if (selectedStudentIds.length === 0) return null
+                    return (
+                      <div style={{ marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        {selectedStudentIds.map((sid, idx) => {
+                          const student = masterData.students.find((s) => s.id === sid)
+                          if (!student) return null
+                          const availableSubjects = teacher
+                            ? BASE_SUBJECTS.filter((bs) => canTeachSubject(teacher.subjects, student.grade, bs))
+                            : BASE_SUBJECTS
+                          return (
+                            <label key={sid} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span>{student.name}(生徒{idx + 1}):</span>
+                              <select
+                                value={regularStudentSubjects[sid] ?? ''}
+                                onChange={(e) => setRegularStudentSubjects((prev) => ({ ...prev, [sid]: e.target.value }))}
+                              >
+                                <option value="">科目を選択</option>
+                                {availableSubjects.map((s) => (<option key={s} value={s}>{s}</option>))}
+                              </select>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    )
+                  })()}
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
                   <table className="table">
                     <thead><tr><th>講師</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
@@ -1160,7 +1195,11 @@ const HomePage = () => {
                           <tr key={l.id}>
                             <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
                             <td>{l.studentIds.map((id) => masterData.students.find((s) => s.id === id)?.name ?? '-').join(', ')}</td>
-                            <td>{l.subject}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                            <td>{l.studentIds.map((id) => {
+                              const subj = l.studentSubjects?.[id] ?? l.subject
+                              const sName = masterData.students.find((s) => s.id === id)?.name ?? '?'
+                              return l.studentIds.length > 1 ? `${sName}:${subj}` : subj
+                            }).join(', ')}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
                             <td>
                               <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
                               <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
@@ -1996,7 +2035,7 @@ const AdminPage = () => {
     const assignmentStateSig = slotKeys
       .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
       .join(',')
-    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${assignmentStateSig}`
+    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${assignmentStateSig}`
     if (sig === regularFillSigRef.current) return
     regularFillSigRef.current = sig
 
@@ -2021,7 +2060,8 @@ const AdminPage = () => {
       const expectedRegulars = slotRegularLessons.map((lesson) => ({
         teacherId: lesson.teacherId,
         studentIds: lesson.studentIds,
-        subject: lesson.subject,
+        subject: lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject,
+        studentSubjects: lesson.studentSubjects,
         isRegular: true,
       }))
 
