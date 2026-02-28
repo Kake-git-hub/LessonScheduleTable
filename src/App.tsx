@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
+import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, findClassroomForSession, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
   ActualResult,
   Assignment,
@@ -5311,6 +5311,48 @@ service cloud.firestore {
     </div>
   )
 }
+/** Legacy redirect: old URLs without classroomId (e.g. /availability/:sessionId/:personType/:personId) */
+const LegacyAvailabilityRedirect = () => {
+  const navigate = useNavigate()
+  const { sessionId = '', personType = '', personId = '' } = useParams()
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    initAuth().then(() => findClassroomForSession(sessionId)).then((classroomId) => {
+      if (cancelled) return
+      if (classroomId) {
+        navigate(`/c/${classroomId}/availability/${sessionId}/${personType}/${personId}`, { replace: true })
+      } else {
+        setError('該当する教室が見つかりません。URLが正しいかご確認ください。')
+      }
+    }).catch(() => {
+      if (!cancelled) setError('データの読み込みに失敗しました。')
+    })
+    return () => { cancelled = true }
+  }, [sessionId, personType, personId, navigate])
+
+  if (error) {
+    return (
+      <div className="app-shell">
+        <div className="panel">
+          <h3>エラー</h3>
+          <p>{error}</p>
+          <Link to="/">ホームに戻る</Link>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="app-shell">
+      <div className="panel">
+        <p>接続中…</p>
+      </div>
+    </div>
+  )
+}
+
 const ClassroomSelectPage = () => {
   const navigate = useNavigate()
   const [classrooms, setClassrooms] = useState<ClassroomInfo[]>([])
@@ -5556,6 +5598,8 @@ function App() {
         <Route path="/c/:classroomId/admin/:sessionId" element={<AdminPage />} />
         <Route path="/c/:classroomId/availability/:sessionId/:personType/:personId" element={<AvailabilityPage />} />
         <Route path="/c/:classroomId/complete/:sessionId" element={<CompletionPage />} />
+        {/* Legacy route: old URLs without classroomId */}
+        <Route path="/availability/:sessionId/:personType/:personId" element={<LegacyAvailabilityRedirect />} />
       </Routes>
     </>
   )

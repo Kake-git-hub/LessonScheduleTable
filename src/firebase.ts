@@ -346,6 +346,16 @@ export const cleanupOldBackups = async (classroomId: string, maxCount: number): 
   }
 }
 
+/** Search all classrooms to find which one contains the given session. */
+export const findClassroomForSession = async (sessionId: string): Promise<string | null> => {
+  const classroomsSnap = await getDocs(collection(db, 'classrooms'))
+  for (const cDoc of classroomsSnap.docs) {
+    const sessionSnap = await getDoc(doc(db, 'classrooms', cDoc.id, 'sessions', sessionId))
+    if (sessionSnap.exists()) return cDoc.id
+  }
+  return null
+}
+
 /** Restore a backup: overwrite master data and sessions. */
 export const restoreBackup = async (classroomId: string, backup: BackupData): Promise<void> => {
   if (backup.masterData) {
