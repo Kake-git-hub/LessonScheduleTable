@@ -1898,7 +1898,7 @@ const AdminPage = () => {
   }, [data])
   const buildInputUrl = (personType: PersonType, personId: string): string => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
-    return `${base}/#/availability/${sessionId}/${personType}/${personId}`
+    return `${base}/#/c/${classroomId}/availability/${sessionId}/${personType}/${personId}`
   }
 
   const copyInputUrl = async (personType: PersonType, personId: string): Promise<void> => {
