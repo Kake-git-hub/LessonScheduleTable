@@ -552,9 +552,9 @@ const HomePage = () => {
       ['佐藤講師', '高英,中数', '英語メイン', ''],
     ]
     const sampleStudents = [
-      ['青木 太郎', '中3', 'aoki@example.com'],
-      ['伊藤 花', '中2', ''],
-      ['上田 陽介', '高1', ''],
+      ['青木 太郎', '中3', '', 'aoki@example.com'],
+      ['伊藤 花', '中2', '', ''],
+      ['上田 陽介', '高1', '', ''],
     ]
     const sampleConstraints = [
       ['講師', '田中講師', '生徒', '伊藤 花', '不可'],
@@ -564,10 +564,10 @@ const HomePage = () => {
       ['田中講師', '青木 太郎', '', '数', '', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メールアドレス'], ...sampleTeachers]), '講師')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メールアドレス'], ...sampleStudents]), '生徒')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別(講師/生徒)', '人物A名', '人物B種別(講師/生徒)', '人物B名', '種別(不可)'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名(任意)', '生徒1科目', '生徒2科目', '曜日(月/火/水/木/金/土/日)', '時限番号'], ...sampleRegularLessons]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メール'], ...sampleTeachers]), '講師')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...sampleStudents]), '生徒')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...sampleConstraints]), '制約')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '生徒1科目', '生徒2科目', '曜日', '時限'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -649,9 +649,10 @@ const HomePage = () => {
         const name = String(row?.[0] ?? '').trim()
         if (!name) continue
         const grade = String(row?.[1] ?? '').trim()
-        const email = String(row?.[2] ?? '').trim()
+        const memo = String(row?.[2] ?? '').trim()
+        const email = String(row?.[3] ?? '').trim()
         if (md.students.some((s) => s.name === name)) continue
-        importedStudents.push({ id: createId(), name, email, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0 })
+        importedStudents.push({ id: createId(), name, email, grade, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo, submittedAt: 0 })
       }
     }
 
