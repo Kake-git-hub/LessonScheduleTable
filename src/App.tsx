@@ -2172,6 +2172,103 @@ const AdminPage = () => {
     await persist(updater(data))
   }
 
+  // ── Bulk random fill (DEV) ──
+  const bulkRandomInstructors = async () => {
+    if (!data) return
+    const dates = getDatesInRange(data.settings)
+    if (dates.length === 0) { alert('講習期間が未設定です'); return }
+    const nextAvailability = { ...data.availability }
+    const nextSubmittedAt = { ...(data.teacherSubmittedAt ?? {}) }
+    for (const inst of instructors) {
+      const prefix = isMendan ? 'manager' : 'teacher'
+      const key = personKey(prefix as 'teacher' | 'manager', inst.id)
+      // Compute regular lesson slots for this teacher
+      const regularKeys = new Set<string>()
+      if (!isMendan) {
+        const teacherLessons = data.regularLessons.filter((l) => l.teacherId === inst.id)
+        for (const date of dates) {
+          const dow = getIsoDayOfWeek(date)
+          for (const lesson of teacherLessons) {
+            if (lesson.dayOfWeek === dow) regularKeys.add(`${date}_${lesson.slotNumber}`)
+          }
+        }
+      }
+      const avail: string[] = [...regularKeys]
+      for (const date of dates) {
+        for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+          const sk = `${date}_${s}`
+          if (!regularKeys.has(sk) && Math.random() < 0.6) avail.push(sk)
+        }
+      }
+      nextAvailability[key] = avail
+      nextSubmittedAt[inst.id] = Date.now()
+    }
+    await persist({ ...data, availability: nextAvailability, teacherSubmittedAt: nextSubmittedAt })
+  }
+
+  const bulkRandomStudents = async () => {
+    if (!data) return
+    const dates = getDatesInRange(data.settings)
+    if (dates.length === 0) { alert('講習期間が未設定です'); return }
+    if (isMendan) {
+      // Mendan: random parent availability from manager-available slots
+      const nextAvailability = { ...data.availability }
+      const updatedStudents = data.students.map((student) => {
+        const key = personKey('student', student.id)
+        // Pick ~50% of available slots
+        const avail: string[] = []
+        for (const date of dates) {
+          for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+            if (Math.random() < 0.5) avail.push(`${date}_${s}`)
+          }
+        }
+        nextAvailability[key] = avail
+        return { ...student, submittedAt: Date.now() }
+      })
+      await persist({ ...data, students: updatedStudents, availability: nextAvailability })
+    } else {
+      // Normal: random subjects + unavailable slots
+      const SUBJ = ['英', '数', '国', '理', '社', 'IT', '算']
+      const updatedStudents = data.students.map((student) => {
+        const shuffled = [...SUBJ].sort(() => Math.random() - 0.5)
+        const count = 1 + Math.floor(Math.random() * 3)
+        const subjectSlots: Record<string, number> = {}
+        const subjects: string[] = []
+        for (let i = 0; i < count && i < shuffled.length; i++) {
+          const slots = 1 + Math.floor(Math.random() * 4)
+          subjectSlots[shuffled[i]] = slots
+          subjects.push(shuffled[i])
+        }
+        // Random ~20% unavailable slots
+        const unavailable: string[] = []
+        for (const date of dates) {
+          for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+            if (Math.random() < 0.2) unavailable.push(`${date}_${s}`)
+          }
+        }
+        // Derive unavailable dates
+        const dateSlotCounts = new Map<string, number>()
+        for (const sk of unavailable) {
+          const d = sk.split('_')[0]
+          dateSlotCounts.set(d, (dateSlotCounts.get(d) ?? 0) + 1)
+        }
+        const unavailDates = [...dateSlotCounts.entries()]
+          .filter(([, c]) => c >= data.settings.slotsPerDay)
+          .map(([d]) => d)
+        return {
+          ...student,
+          subjects,
+          subjectSlots,
+          unavailableDates: unavailDates,
+          preferredSlots: [],
+          unavailableSlots: unavailable,
+          submittedAt: Date.now(),
+        }
+      })
+      await persist({ ...data, students: updatedStudents })
+    }
+  }
+
   // --- Undo / Redo for assignments ---
   const undoStackRef = useRef<Record<string, Assignment[]>[]>([])
   const redoStackRef = useRef<Record<string, Assignment[]>[]>([])
@@ -3023,6 +3120,10 @@ service cloud.firestore {
                 })}
               </tbody>
             </table>
+            <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em' }}
+              onClick={() => { if (confirm(`全${instructorLabel}（${instructors.length}名）のデータをランダム生成しますか？`)) void bulkRandomInstructors() }}>
+              🎲 全{instructorLabel}一括ランダム入力 (DEV)
+            </button>
           </div>
 
           <div className="panel">
@@ -3068,6 +3169,10 @@ service cloud.firestore {
                 ))}
               </tbody>
             </table>
+            <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em' }}
+              onClick={() => { if (confirm(`全${isMendan ? '保護者' : '生徒'}（${data.students.length}名）のデータをランダム生成しますか？`)) void bulkRandomStudents() }}>
+              🎲 全{isMendan ? '保護者' : '生徒'}一括ランダム入力 (DEV)
+            </button>
           </div>
 
           <div className="panel">
