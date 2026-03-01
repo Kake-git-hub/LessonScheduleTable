@@ -297,6 +297,122 @@ const HolidayCalendar = ({ selected, onChange }: { selected: string[]; onChange:
   )
 }
 
+/** Inline two-month calendar for picking a date range (start–end). */
+const DateRangePicker = ({
+  startDate, endDate, onStartChange, onEndChange, label,
+}: {
+  startDate: string; endDate: string;
+  onStartChange: (d: string) => void; onEndChange: (d: string) => void;
+  label?: string;
+}) => {
+  const today = new Date()
+  const [year, setYear] = useState(() => {
+    if (startDate) { const [y] = startDate.split('-'); return Number(y) }
+    return today.getFullYear()
+  })
+  const [month, setMonth] = useState(() => {
+    if (startDate) { const parts = startDate.split('-'); return Number(parts[1]) - 1 }
+    return today.getMonth()
+  })
+
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const ds = (y: number, m: number, d: number) => `${y}-${pad2(m + 1)}-${pad2(d)}`
+  const todayStr = ds(today.getFullYear(), today.getMonth(), today.getDate())
+
+  const handleClick = (dateStr: string) => {
+    if (!startDate || (startDate && endDate)) {
+      onStartChange(dateStr)
+      onEndChange('')
+    } else {
+      if (dateStr < startDate) {
+        onEndChange(startDate)
+        onStartChange(dateStr)
+      } else if (dateStr === startDate) {
+        onStartChange('')
+      } else {
+        onEndChange(dateStr)
+      }
+    }
+  }
+
+  const prevMonth = () => {
+    if (month === 0) { setYear((y) => y - 1); setMonth(11) } else setMonth((m) => m - 1)
+  }
+  const nextMonth = () => {
+    if (month === 11) { setYear((y) => y + 1); setMonth(0) } else setMonth((m) => m + 1)
+  }
+
+  const DOW = ['日', '月', '火', '水', '木', '金', '土']
+  const m2 = month === 11 ? 0 : month + 1
+  const y2 = month === 11 ? year + 1 : year
+
+  const renderMonth = (yr: number, mo: number) => {
+    const dim = new Date(yr, mo + 1, 0).getDate()
+    const fdow = new Date(yr, mo, 1).getDay()
+    return (
+      <div className="range-cal-month">
+        <div className="range-cal-month-label">{yr}年 {mo + 1}月</div>
+        <div className="range-cal-grid">
+          {DOW.map((d, i) => (
+            <div key={d} className={`range-cal-dow${i === 0 ? ' sun' : i === 6 ? ' sat' : ''}`}>{d}</div>
+          ))}
+          {Array.from({ length: fdow }, (_, i) => (
+            <div key={`e${i}`} className="range-cal-day empty" />
+          ))}
+          {Array.from({ length: dim }, (_, i) => {
+            const d = i + 1
+            const dateStr = ds(yr, mo, d)
+            const dow = (fdow + i) % 7
+            const inRange = startDate && endDate && dateStr >= startDate && dateStr <= endDate
+            const cls = [
+              'range-cal-day',
+              dow === 0 ? 'sun' : dow === 6 ? 'sat' : '',
+              inRange ? 'in-range' : '',
+              dateStr === startDate ? 'range-start' : '',
+              dateStr === endDate ? 'range-end' : '',
+              dateStr === todayStr ? 'today' : '',
+            ].filter(Boolean).join(' ')
+            return (
+              <div key={d} className={cls} onClick={() => handleClick(dateStr)}>{d}</div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="range-cal">
+      {label && <div className="range-cal-label">{label}</div>}
+      <div className="range-cal-nav">
+        <button type="button" onClick={prevMonth}>‹</button>
+        <span style={{ flex: 1 }} />
+        <button type="button" onClick={nextMonth}>›</button>
+      </div>
+      <div className="range-cal-months">
+        {renderMonth(year, month)}
+        {renderMonth(y2, m2)}
+      </div>
+      <div className="range-cal-footer">
+        {startDate ? (
+          <span className="badge ok" style={{ cursor: 'pointer', fontSize: '12px' }} onClick={() => { onStartChange(''); onEndChange('') }}>
+            開始: {startDate} ×
+          </span>
+        ) : (
+          <span className="muted" style={{ fontSize: '12px' }}>クリックで開始日を選択</span>
+        )}
+        {endDate ? (
+          <span className="badge ok" style={{ cursor: 'pointer', fontSize: '12px' }} onClick={() => onEndChange('')}>
+            終了: {endDate} ×
+          </span>
+        ) : startDate ? (
+          <span className="muted" style={{ fontSize: '12px' }}>クリックで終了日を選択</span>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 const HomePage = () => {
   const { classroomId = '' } = useParams()
   const navigate = useNavigate()
@@ -1059,23 +1175,6 @@ const HomePage = () => {
                       </div>
                       <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
                         <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          講習期間:
-                          <input type="date" value={newStartDate} onChange={(e) => setNewStartDate(e.target.value)} />
-                          〜
-                          <input type="date" value={newEndDate} onChange={(e) => setNewEndDate(e.target.value)} />
-                        </label>
-                      </div>
-                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          提出期間:
-                          <input type="date" value={newSubmissionStart} onChange={(e) => setNewSubmissionStart(e.target.value)} />
-                          〜
-                          <input type="date" value={newSubmissionEnd} onChange={(e) => setNewSubmissionEnd(e.target.value)} />
-                        </label>
-                        <span className="muted" style={{ fontSize: '11px' }}>※この期間のみ希望URLが有効になります</span>
-                      </div>
-                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                        <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                           机の数:
                           <input type="number" min={0} value={newDeskCount} onChange={(e) => setNewDeskCount(Math.max(0, Number(e.target.value) || 0))} style={{ width: '60px' }} />
                           <span style={{ fontSize: '11px' }}>0=無制限</span>
@@ -1086,8 +1185,20 @@ const HomePage = () => {
                           <span className="muted" style={{ fontSize: '12px' }}>※ 面談時間帯はマネージャーが希望入力時に日ごとに指定します</span>
                         </div>
                       )}
-                      <div style={{ marginTop: '8px' }}>
-                        <span className="muted" style={{ marginBottom: '4px', display: 'block' }}>休日: (日付をクリックで選択/解除)</span>
+                      <div className="session-create-calendars">
+                        <DateRangePicker
+                          label="📅 講習期間"
+                          startDate={newStartDate} endDate={newEndDate}
+                          onStartChange={setNewStartDate} onEndChange={setNewEndDate}
+                        />
+                        <DateRangePicker
+                          label="📝 提出期間 ※この期間のみ希望URLが有効"
+                          startDate={newSubmissionStart} endDate={newSubmissionEnd}
+                          onStartChange={setNewSubmissionStart} onEndChange={setNewSubmissionEnd}
+                        />
+                      </div>
+                      <div style={{ marginTop: '12px' }}>
+                        <span className="muted" style={{ marginBottom: '4px', display: 'block' }}>🚫 休日: (日付をクリックで選択/解除)</span>
                         <HolidayCalendar selected={newHolidays} onChange={setNewHolidays} />
                       </div>
                       <div className="row" style={{ marginTop: '12px' }}>
@@ -1840,6 +1951,7 @@ const AdminPage = () => {
   const [editingResults, setEditingResults] = useState<(ActualResult & { _uid?: number })[]>([])
   // --- Salary calculation ---
   const [showSalary, setShowSalary] = useState(false)
+  const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
@@ -2824,11 +2936,36 @@ service cloud.firestore {
   return (
     <div className="app-shell">
       <div className="panel">
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="admin-header-row">
           <h2 style={{ margin: 0 }}>管理画面: {data.settings.name} ({sessionId})</h2>
           <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
         </div>
-        <p className="muted">管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
+        <div className="admin-submission-row">
+          <span className="muted" style={{ fontWeight: 600 }}>提出期間:</span>
+          {data.settings.submissionStartDate && data.settings.submissionEndDate ? (
+            <span className="badge ok">{data.settings.submissionStartDate} 〜 {data.settings.submissionEndDate}</span>
+          ) : data.settings.submissionStartDate ? (
+            <span className="badge warn">{data.settings.submissionStartDate} 〜 未設定</span>
+          ) : (
+            <span className="badge" style={{ background: '#f1f5f9', color: '#64748b' }}>未設定（制限なし）</span>
+          )}
+          <button className="btn secondary" type="button" style={{ padding: '2px 10px', fontSize: '12px' }}
+            onClick={() => setShowSubmissionPicker((v) => !v)}>
+            {showSubmissionPicker ? '閉じる' : '📅 変更'}
+          </button>
+          <span className="muted" style={{ fontSize: '11px' }}>※未設定＝制限なし。期間後もカレンダー表示あり</span>
+        </div>
+        {showSubmissionPicker && (
+          <div style={{ marginTop: 8 }}>
+            <DateRangePicker
+              startDate={data.settings.submissionStartDate ?? ''}
+              endDate={data.settings.submissionEndDate ?? ''}
+              onStartChange={(d) => void update((c) => ({ ...c, settings: { ...c.settings, submissionStartDate: d || undefined } }))}
+              onEndChange={(d) => void update((c) => ({ ...c, settings: { ...c.settings, submissionEndDate: d || undefined } }))}
+            />
+          </div>
+        )}
+        <p className="muted" style={{ marginTop: 6 }}>管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
       </div>
 
       {!authorized ? (
@@ -3087,19 +3224,6 @@ service cloud.firestore {
                   💰 給与計算
                 </button>
               )}
-            </div>
-            <div className="row" style={{ gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' }}>
-              <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '13px' }}>
-                提出期間:
-                <input type="date" value={data.settings.submissionStartDate ?? ''}
-                  onChange={(e) => void update((c) => ({ ...c, settings: { ...c.settings, submissionStartDate: e.target.value || undefined } }))}
-                  style={{ fontSize: '13px', padding: '2px 4px' }} />
-                〜
-                <input type="date" value={data.settings.submissionEndDate ?? ''}
-                  onChange={(e) => void update((c) => ({ ...c, settings: { ...c.settings, submissionEndDate: e.target.value || undefined } }))}
-                  style={{ fontSize: '13px', padding: '2px 4px' }} />
-              </label>
-              <span className="muted" style={{ fontSize: '11px' }}>※未設定＝制限なし。期間後もカレンダー表示あり</span>
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
             <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>

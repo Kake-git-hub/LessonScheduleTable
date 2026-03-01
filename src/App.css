@@ -1006,3 +1006,152 @@
   gap: 4px;
   margin-top: 8px;
 }
+
+/* ── DateRangePicker ── */
+.range-cal {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+  user-select: none;
+  display: inline-block;
+}
+.range-cal-label {
+  font-weight: 600;
+  font-size: 14px;
+  color: #334155;
+  margin-bottom: 6px;
+}
+.range-cal-nav {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.range-cal-nav button {
+  background: none;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  font-size: 16px;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.range-cal-nav button:hover {
+  background: #f1f5f9;
+}
+.range-cal-months {
+  display: flex;
+  gap: 16px;
+}
+.range-cal-month {
+  width: 240px;
+}
+.range-cal-month-label {
+  text-align: center;
+  font-weight: 600;
+  font-size: 14px;
+  color: #1e293b;
+  margin-bottom: 4px;
+}
+.range-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  text-align: center;
+}
+.range-cal-dow {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  padding: 3px 0;
+}
+.range-cal-dow.sun { color: #ef4444; }
+.range-cal-dow.sat { color: #3b82f6; }
+.range-cal-day {
+  font-size: 13px;
+  padding: 5px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.range-cal-day:hover {
+  background: #f1f5f9;
+}
+.range-cal-day.empty { cursor: default; }
+.range-cal-day.empty:hover { background: none; }
+.range-cal-day.sun { color: #ef4444; }
+.range-cal-day.sat { color: #3b82f6; }
+.range-cal-day.in-range {
+  background: #dbeafe;
+  border-radius: 0;
+}
+.range-cal-day.in-range:hover {
+  background: #bfdbfe;
+}
+.range-cal-day.range-start {
+  background: #2563eb;
+  color: #fff !important;
+  border-radius: 6px 0 0 6px;
+  font-weight: 700;
+}
+.range-cal-day.range-start:hover {
+  background: #1d4ed8;
+}
+.range-cal-day.range-end {
+  background: #2563eb;
+  color: #fff !important;
+  border-radius: 0 6px 6px 0;
+  font-weight: 700;
+}
+.range-cal-day.range-end:hover {
+  background: #1d4ed8;
+}
+.range-cal-day.range-start.range-end {
+  border-radius: 6px;
+}
+.range-cal-day.today {
+  box-shadow: inset 0 0 0 1.5px #3b82f6;
+}
+.range-cal-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── Session creation PC layout ── */
+.session-create-calendars {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.session-create-calendars > .range-cal {
+  flex: 1;
+  min-width: 520px;
+}
+
+/* ── Admin header layout ── */
+.admin-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.admin-submission-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.admin-submission-row .badge {
+  font-size: 13px;
+}
