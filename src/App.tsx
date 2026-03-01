@@ -547,9 +547,9 @@ const HomePage = () => {
   // --- Bulk delete ---
   const handleBulkDelete = async (): Promise<void> => {
     if (!masterData) return
-    const pw = window.prompt('管理データを一括削除します。\nパスワードを入力してください:')
+    const pw = window.prompt('管理データを一括削除します。\nパスワードを入力してください:', 'admin1234')
     if (pw === null) return
-    if (pw !== classroomId) {
+    if (pw !== adminPassword) {
       alert('パスワードが違います。')
       return
     }
