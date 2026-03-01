@@ -727,6 +727,11 @@
   background: #eff6ff !important;
 }
 
+.assignment-block-drop-invalid {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .student-select-row {
   display: flex;
   flex-direction: row;

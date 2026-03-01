@@ -2608,7 +2608,7 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = buildIncrementalAutoAssignments(data, availableSlotKeys)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -2890,7 +2890,27 @@ const AdminPage = () => {
         nextAssignments[sourceSlot] = srcAssignments
       }
       nextAssignments[targetSlot] = targetAssignments
-      return { ...current, assignments: nextAssignments }
+
+      // Highlight moved pair as UPDATE
+      const hl = current.autoAssignHighlights ?? {}
+      const changedSigs = { ...(hl.changed ?? {}) }
+      const sig = assignmentSignature(moved)
+      changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
+      // Remove old highlight from source slot
+      if (changedSigs[sourceSlot]) {
+        changedSigs[sourceSlot] = changedSigs[sourceSlot].filter((s) => s !== sig)
+        if (changedSigs[sourceSlot].length === 0) delete changedSigs[sourceSlot]
+      }
+      const addedSigs = { ...(hl.added ?? {}) }
+      if (addedSigs[sourceSlot]) {
+        addedSigs[sourceSlot] = addedSigs[sourceSlot].filter((s) => s !== sig)
+        if (addedSigs[sourceSlot].length === 0) delete addedSigs[sourceSlot]
+      }
+      const details = { ...(hl.changeDetails ?? {}) }
+      if (!details[targetSlot]) details[targetSlot] = {}
+      details[targetSlot][sig] = `手動移動: ${sourceSlot} → ${targetSlot}`
+
+      return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, added: addedSigs, changeDetails: details } }
     })
   }
 
@@ -2988,6 +3008,22 @@ const AdminPage = () => {
         nextAssignments[sourceSlot] = srcAssignments
       }
       nextAssignments[targetSlot] = targetAssignments
+
+      // Highlight moved student's target assignment as UPDATE
+      // Find the target assignment that contains the student
+      const movedTargetAssignment = targetAssignments.find((a) => a.studentIds.includes(studentId))
+      if (movedTargetAssignment) {
+        const hl = current.autoAssignHighlights ?? {}
+        const changedSigs = { ...(hl.changed ?? {}) }
+        const sig = assignmentSignature(movedTargetAssignment)
+        changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
+        const details = { ...(hl.changeDetails ?? {}) }
+        if (!details[targetSlot]) details[targetSlot] = {}
+        const studentName = student?.name ?? studentId
+        details[targetSlot][sig] = `生徒移動: ${studentName} (${sourceSlot} → ${targetSlot})`
+        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, changeDetails: details } }
+      }
+
       return { ...current, assignments: nextAssignments }
     })
   }
@@ -3199,17 +3235,7 @@ service cloud.firestore {
             </button>
           </div>
 
-          <div className="panel" style={{ position: 'relative' }}>
-            {autoAssignLoading && (
-              <div style={{
-                position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.85)', zIndex: 50,
-                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                borderRadius: '12px',
-              }}>
-                <div className="spinner" />
-                <p style={{ marginTop: 12, fontWeight: 600, color: '#334155' }}>自動提案を実行中...</p>
-              </div>
-            )}
+          <div className="panel">
             <div className="row">
               <h3>コマ割り</h3>
               {(() => {
@@ -3306,9 +3332,15 @@ service cloud.firestore {
                   </>
                 )
               })()}
-              <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()}>
+              <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
                 {isMendan ? '自動割当（先着順）' : '自動提案'}
               </button>
+              {autoAssignLoading && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85em', color: '#334155', fontWeight: 600 }}>
+                  <span className="spinner" style={{ width: 18, height: 18, borderWidth: 3 }} />
+                  実行中...
+                </span>
+              )}
               <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
                 ↩ 戻す
               </button>
@@ -3446,92 +3478,38 @@ service cloud.firestore {
             {showRules && (
               <div className="rules-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px 20px', marginBottom: '12px', fontSize: '14px', lineHeight: '1.8' }}>
                 <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>📖 コマ割りルール</h3>
-                <div style={{ display: 'grid', gap: '12px' }}>
-                  {isMendan ? (
-                    <>
-                      <section>
-                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🏫 基本構成</h4>
-                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                          <li>1コマ = <b>マネージャー1人</b> ＋ <b>保護者1人</b></li>
-                          <li>同じコマに複数の面談を配置可能（机数上限あり）</li>
-                          <li>各保護者は1回の面談を割当されます</li>
-                        </ul>
-                      </section>
-                      <section>
-                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🤖 自動割当（先着順）</h4>
-                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                          <li>保護者の提出順（先着）で優先的に割当します</li>
-                          <li>マネージャーの空き時間帯と保護者の希望時間帯が一致するコマに割当</li>
-                          <li>自動割当後、手動で調整可能です</li>
-                        </ul>
-                      </section>
-                      <section>
-                        <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🔄 操作方法</h4>
-                        <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                          <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
-                          <li>「＋」ボタンでコマ内にペアを追加</li>
-                          <li>「×」ボタンでペアを削除</li>
-                          <li>PDF出力でスケジュール表を出力（A3用紙対応）</li>
-                        </ul>
-                      </section>
-                    </>
-                  ) : (
-                    <>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🏫 基本構成</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li>1コマ = <b>講師1人</b> ＋ <b>生徒1〜2人</b></li>
-                      <li>同じコマに複数のペアを配置可能（机数上限あり）</li>
-                      <li>同じ生徒が同じコマに重複して入ることはできません</li>
-                    </ul>
-                  </section>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>📅 通常授業（★マーク）</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li>マスタデータで登録した曜日・コマ番号に毎週自動配置されます</li>
-                      <li>日付が確定すると自動的にスケジュールに反映</li>
-                      <li>通常授業のペアは編集・移動できません（変更はマスタデータから）</li>
-                    </ul>
-                  </section>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🤖 自動提案</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li>生徒の希望コマ数を元に、空きコマへ自動的に割り当てます</li>
-                      <li>講師・生徒の出勤可能日、制約ルール、科目の共通性を考慮</li>
-                      <li>同じ科目の生徒同士を優先的にペアにします</li>
-                      <li>講師の出勤日数が少なくなるよう連続コマ配置を優先</li>
-                      <li>自動提案後、手動で調整可能です</li>
-                    </ul>
-                  </section>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>⚠️ 制約ルール</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li><b>講師×生徒 制約</b>：特定の講師と生徒の組み合わせを不可に設定</li>
-                      <li><b>講師×学年 制約</b>：特定の講師が特定学年を担当不可に設定（科目指定も可能）</li>
-                      <li>制約に違反する割当は ⚠ マークで警告表示されます</li>
-                      <li>手動で制約違反の割当を強制することも可能です（確認あり）</li>
-                    </ul>
-                  </section>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>📝 科目について</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li>講師と生徒それぞれに担当/受講科目を設定</li>
-                      <li>共通の科目がある講師・生徒のみがペアになれます</li>
-                      <li>2人ペアで異なる科目の組み合わせも可能です</li>
-                    </ul>
-                  </section>
-                  <section>
-                    <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>🔄 操作方法</h4>
-                    <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569' }}>
-                      <li>ペアをドラッグ＆ドロップで別のコマへ移動可能</li>
-                      <li>「＋」ボタンでコマ内にペアを追加</li>
-                      <li>「×」ボタンでペアを削除</li>
-                      <li>PDF出力でスケジュール表を出力（A3用紙対応）</li>
-                    </ul>
-                  </section>
-                    </>
-                  )}
-                </div>
+                {isMendan ? (
+                  <div style={{ display: 'grid', gap: '8px' }}>
+                    <p style={{ margin: 0, color: '#475569' }}>1コマ = マネージャー1人 ＋ 保護者1人。提出順（先着）で優先割当。</p>
+                    <p style={{ margin: 0, color: '#475569' }}>マネージャーの空き ∩ 保護者の希望が一致するコマに配置。机数上限あり。</p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gap: '10px' }}>
+                    <section>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒1〜2人。★=通常授業（マスタから自動配置・編集不可）。机数上限あり。</p>
+                    </section>
+                    <section>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>自動提案 スコアリング（優先順）</h4>
+                      <ol style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
+                        <li><b>既出勤日に追加 +80</b> / 新規出勤日 −50 → 講師の出勤日数を最小化</li>
+                        <li><b>同日同ペア連続コマ +60</b> / 非連続 −40 → ペアの連続配置を優先</li>
+                        <li><b>通常授業ペアボーナス +30</b> → 普段のペアを優先</li>
+                        <li><b>2人ペアボーナス +30</b> → 1人より2人ペアを優先</li>
+                        <li><b>前半日程ボーナス 最大+25</b> → 前半の日付を優先的に埋める</li>
+                        <li><b>講師連続コマ +20</b> → 同日の連続コマに配置</li>
+                        <li><b>生徒配分スコア</b> → 残コマ数が多い生徒を優先、同日複数回を抑制</li>
+                        <li><b>混合科目 −15</b> → 同科目ペアを優先</li>
+                        <li><b>隣接同科目 −20</b> → 同じ生徒の連続コマで科目を変える</li>
+                        <li><b>講師負荷 −2/コマ</b> → 講師の負荷を均等化</li>
+                      </ol>
+                    </section>
+                    <section>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>制約</h4>
+                      <p style={{ margin: 0, color: '#475569' }}>講師×生徒 / 講師×学年の不可制約（⚠マーク）。科目の共通性が必要。</p>
+                    </section>
+                  </div>
+                )}
               </div>
             )}
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
@@ -3751,10 +3729,22 @@ service cloud.firestore {
                           )
                         }
 
+                        // Compute student-drag drop validity for this specific assignment block
+                        const isStudentDropCandidate = isDragActive && isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2
+                        const isSameAssignment = isStudentDrag && dragInfo.sourceSlot === slot && dragInfo.sourceIdx === idx
+                        const draggedStudentId = isStudentDrag ? dragInfo.studentDragId! : ''
+                        const isStudentAlreadyInSlot = isStudentDrag && slotAssignments.some((a, aIdx) => {
+                          if (isSameAssignment && aIdx === idx) return false // don't count source
+                          if (dragInfo.sourceSlot === slot && dragInfo.sourceIdx === aIdx) return false // source being removed
+                          return a.studentIds.includes(draggedStudentId)
+                        })
+                        const isStudentDropValid = isStudentDropCandidate && !isSameAssignment && !isStudentAlreadyInSlot && !hasUnavailableStudent
+                        const isStudentDropInvalid = isDragActive && isStudentDrag && !isStudentDropValid && !isSameAssignment
+
                         return (
                           <div
                             key={idx}
-                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isDragActive && isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2 ? ' assignment-block-drop-target' : ''}`}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
                             draggable={!assignment.isRegular}
                             onDragStart={(e) => {
                               // Student row drag is handled separately with stopPropagation
@@ -3767,8 +3757,8 @@ service cloud.firestore {
                               setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
                             }}
                             onDragOver={(e) => {
-                              // Accept student drops onto this assignment block
-                              if (isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2) {
+                              // Accept student drops onto this assignment block only if valid
+                              if (isStudentDropValid) {
                                 e.preventDefault()
                                 e.stopPropagation()
                                 e.dataTransfer.dropEffect = 'move'
