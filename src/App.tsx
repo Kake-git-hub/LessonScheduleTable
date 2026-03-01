@@ -3543,6 +3543,39 @@ service cloud.firestore {
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
                 const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
+                const isPairDrag = isDragActive && !isStudentDrag
+                const isSourceSlot = isDragActive && dragInfo.sourceSlot === slot
+
+                // Pair drag on non-source slot: show only slot label (minimal drop target)
+                if (isPairDrag && !isSourceSlot) {
+                  return (
+                    <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
+                      style={{ padding: '6px 10px', minHeight: 0 }}
+                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = isDropValid ? 'move' : 'none' }}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        if (!isDropValid) { setDragInfo(null); return }
+                        try {
+                          const raw = e.dataTransfer.getData('text/plain')
+                          if (!raw) { setDragInfo(null); return }
+                          const payload = JSON.parse(raw) as { sourceSlot: string; sourceIdx: number }
+                          if (payload.sourceSlot === slot) { setDragInfo(null); return }
+                          void moveAssignment(payload.sourceSlot, payload.sourceIdx, slot)
+                        } catch { /* ignore */ }
+                        setDragInfo(null)
+                      }}
+                    >
+                      <div className="slot-title" style={{ marginBottom: 0 }}>
+                        <span>{slotLabel(slot, isMendan, mendanStart)}</span>
+                        {(data.settings.deskCount ?? 0) > 0 && (
+                          <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280' }}>
+                            {slotAssignments.length}/{data.settings.deskCount}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                }
 
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
@@ -3584,6 +3617,7 @@ service cloud.firestore {
                         )}
                         {isRecorded && <span style={{ fontSize: '0.7em', color: '#16a34a', fontWeight: 'bold' }}>✅ 実績済</span>}
                       </div>
+                      {!isDragActive && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         {data.settings.confirmed && !isRecorded && (
                           <button
@@ -3616,9 +3650,10 @@ service cloud.firestore {
                           </button>
                         )}
                       </div>
+                      )}
                     </div>
                     {/* Actual result recording panel */}
-                    {recordingSlot === slot && (() => {
+                    {!isDragActive && recordingSlot === slot && (() => {
                       // Collect all student IDs used in this slot's editing results
                       const allUsedStudentIds = new Set(editingResults.flatMap((r) => r.studentIds.filter(Boolean)))
                       return (
@@ -3694,6 +3729,11 @@ service cloud.firestore {
                     {recordingSlot !== slot && (
                     <div className="list">
                       {displayAssignments.map((assignment, idx) => {
+                        // Student drag: hide assignment blocks that can't accept the student
+                        if (isStudentDrag && !isSourceSlot) {
+                          const canAccept = !assignment.isRegular && assignment.studentIds.length < 2
+                          if (!canAccept) return null
+                        }
                         const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
 
                         const isIncompatiblePair = !isMendan && assignment.teacherId && data.students.filter((s) => assignment.studentIds.includes(s.id)).some((s) => {
@@ -3961,7 +4001,7 @@ service cloud.firestore {
                           </div>
                         )
                       })}
-                      {(() => {
+                      {!isDragActive && (() => {
                         const idleTeachers = instructors.filter(
                           (t) =>
                             hasAvailability(data.availability, instructorPersonType, t.id, slot) &&
