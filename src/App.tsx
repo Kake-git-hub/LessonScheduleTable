@@ -561,13 +561,13 @@ const HomePage = () => {
       ['生徒', '青木 太郎', '生徒', '上田 陽介', '不可'],
     ]
     const sampleRegularLessons = [
-      ['田中講師', '青木 太郎', '', '数', '', '月', '1'],
+      ['田中講師', '青木 太郎', '数', '', '', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メール'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...sampleConstraints]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '生徒1科目', '生徒2科目', '曜日', '時限'], ...sampleRegularLessons]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...sampleRegularLessons]), '通常授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -588,19 +588,22 @@ const HomePage = () => {
       c.type === 'incompatible' ? '不可' : '推奨',
     ])
     const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-    const regularLessonRows = md.regularLessons.map((l) => [
-      md.teachers.find((t) => t.id === l.teacherId)?.name ?? l.teacherId,
-      ...l.studentIds.map((id) => md.students.find((s) => s.id === id)?.name ?? id),
-      ...(l.studentIds.length === 1 ? [''] : []),
-      l.studentSubjects?.[l.studentIds[0]] ?? l.subject,
-      l.studentIds.length > 1 ? (l.studentSubjects?.[l.studentIds[1]] ?? l.subject) : '',
-      dayNames[l.dayOfWeek] ?? '', l.slotNumber,
-    ])
+    const regularLessonRows = md.regularLessons.map((l) => {
+      const s1Name = l.studentIds[0] ? (md.students.find((s) => s.id === l.studentIds[0])?.name ?? l.studentIds[0]) : ''
+      const s1Subj = l.studentIds[0] ? (l.studentSubjects?.[l.studentIds[0]] ?? l.subject) : ''
+      const s2Name = l.studentIds[1] ? (md.students.find((s) => s.id === l.studentIds[1])?.name ?? l.studentIds[1]) : ''
+      const s2Subj = l.studentIds[1] ? (l.studentSubjects?.[l.studentIds[1]] ?? l.subject) : ''
+      return [
+        md.teachers.find((t) => t.id === l.teacherId)?.name ?? l.teacherId,
+        s1Name, s1Subj, s2Name, s2Subj,
+        dayNames[l.dayOfWeek] ?? '', l.slotNumber,
+      ]
+    })
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒2名', '生徒1科目', '生徒2科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
 
@@ -685,8 +688,8 @@ const HomePage = () => {
       const rows = XLSX.utils.sheet_to_json(regularWs, { header: 1 }) as unknown as unknown[][]
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i]
-        const tName = String(row?.[0] ?? '').trim(); const s1 = String(row?.[1] ?? '').trim(); const s2 = String(row?.[2] ?? '').trim()
-        const subj1 = String(row?.[3] ?? '').trim(); const subj2 = String(row?.[4] ?? '').trim()
+        const tName = String(row?.[0] ?? '').trim(); const s1 = String(row?.[1] ?? '').trim(); const subj1 = String(row?.[2] ?? '').trim()
+        const s2 = String(row?.[3] ?? '').trim(); const subj2 = String(row?.[4] ?? '').trim()
         const dayStr = String(row?.[5] ?? '').trim(); const slotNum = Number(row?.[6])
         const tid = findTeacherId(tName)
         if (!tid || !subj1) continue

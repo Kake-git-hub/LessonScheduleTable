@@ -25,11 +25,16 @@ export const LEVEL_PREFIXES = ['小', '中', '高'] as const
 /** Subjects that only exist at the elementary (小) level — no 中/高 variants. */
 const ELEMENTARY_ONLY_SUBJECTS = ['算'] as const
 
+/** Subjects that do NOT exist at the elementary (小) level.
+ *  Elementary math uses 算 (算数) instead of 数 (数学). */
+const NO_ELEMENTARY_SUBJECTS = ['数'] as const
+
 /** All leveled teacher subject options (小英, 中英, 高英, ... + 小算). */
 export const TEACHER_SUBJECTS: string[] = [
   ...LEVEL_PREFIXES.flatMap(lv =>
     (BASE_SUBJECTS as readonly string[])
       .filter(s => !(ELEMENTARY_ONLY_SUBJECTS as readonly string[]).includes(s))
+      .filter(s => lv !== '小' || !(NO_ELEMENTARY_SUBJECTS as readonly string[]).includes(s))
       .map(s => `${lv}${s}`),
   ),
   ...ELEMENTARY_ONLY_SUBJECTS.map(s => `小${s}`),
