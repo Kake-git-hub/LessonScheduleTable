@@ -544,6 +544,21 @@ const HomePage = () => {
     setConstraintPersonAId(''); setConstraintPersonBId('')
   }
 
+  // --- Bulk delete ---
+  const handleBulkDelete = async (): Promise<void> => {
+    if (!masterData) return
+    const pw = window.prompt('管理データを一括削除します。\nパスワードを入力してください:')
+    if (pw === null) return
+    if (pw !== classroomId) {
+      alert('パスワードが違います。')
+      return
+    }
+    if (!window.confirm('本当にすべての管理データ（マネージャー・講師・生徒・制約・通常授業）を削除しますか？\nこの操作は取り消せません。')) return
+    await updateMaster(() => emptyMasterData())
+    changeLogRef.current.add('管理データ一括削除')
+    alert('管理データを一括削除しました。')
+  }
+
   // --- Excel (operates on master data) ---
   const downloadTemplate = (): void => {
     // Include sample test data so users can see the expected format
@@ -556,6 +571,9 @@ const HomePage = () => {
       ['伊藤 花', '中2', '', ''],
       ['上田 陽介', '高1', '', ''],
     ]
+    const sampleManagers = [
+      ['山田マネージャー', 'yamada@example.com'],
+    ]
     const sampleConstraints = [
       ['講師', '田中講師', '生徒', '伊藤 花', '不可'],
       ['生徒', '青木 太郎', '生徒', '上田 陽介', '不可'],
@@ -564,6 +582,7 @@ const HomePage = () => {
       ['田中講師', '青木 太郎', '数', '', '', '月', '1'],
     ]
     const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', 'メール'], ...sampleManagers]), 'マネージャー')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メール'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...sampleConstraints]), '制約')
@@ -599,7 +618,9 @@ const HomePage = () => {
         dayNames[l.dayOfWeek] ?? '', l.slotNumber,
       ]
     })
+    const managerRows = (md.managers ?? []).map((m) => [m.name, m.email ?? ''])
     const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', 'メール'], ...managerRows]), 'マネージャー')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
@@ -613,6 +634,7 @@ const HomePage = () => {
     const buf = await file.arrayBuffer()
     const wb = XLSX.read(buf, { type: 'array' })
 
+    const importedManagers: Manager[] = []
     const importedTeachers: Teacher[] = []
     const importedStudents: Student[] = []
     const importedConstraints: PairConstraint[] = []
@@ -627,6 +649,19 @@ const HomePage = () => {
       const existing = md.students.find((s) => s.name === name)
       if (existing) return existing.id
       return importedStudents.find((s) => s.name === name)?.id ?? null
+    }
+
+    const managerWs = wb.Sheets['マネージャー']
+    if (managerWs) {
+      const rows = XLSX.utils.sheet_to_json(managerWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const name = String(row?.[0] ?? '').trim()
+        if (!name) continue
+        const email = String(row?.[1] ?? '').trim()
+        if ((md.managers ?? []).some((m) => m.name === name)) continue
+        importedManagers.push({ id: createId(), name, email })
+      }
     }
 
     const teacherWs = wb.Sheets['講師']
@@ -762,6 +797,7 @@ const HomePage = () => {
     })
 
     const added: string[] = []
+    if (importedManagers.length) added.push(`マネージャー${importedManagers.length}名`)
     if (importedTeachers.length) added.push(`講師${importedTeachers.length}名`)
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
     if (validConstraints.length) added.push(`制約${validConstraints.length}件`)
@@ -775,6 +811,7 @@ const HomePage = () => {
 
     await updateMaster((c) => ({
       ...c,
+      managers: [...(c.managers ?? []), ...importedManagers],
       teachers: [...c.teachers, ...importedTeachers],
       students: [...c.students, ...importedStudents],
       constraints: [...c.constraints, ...validConstraints],
@@ -1023,6 +1060,7 @@ const HomePage = () => {
                     <button className="btn secondary" type="button" onClick={() => fileInputRef.current?.click()}>Excel取り込み</button>
                     <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
                       onChange={(e) => { const file = e.target.files?.[0]; if (file) void handleFileImport(file); e.target.value = '' }} />
+                    <button className="btn secondary" type="button" style={{ color: '#dc2626', marginLeft: 'auto' }} onClick={() => void handleBulkDelete()}>管理データ一括削除</button>
                   </div>
                 </div>
 
