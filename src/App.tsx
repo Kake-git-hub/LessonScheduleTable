@@ -1952,6 +1952,7 @@ const AdminPage = () => {
   // --- Salary calculation ---
   const [showSalary, setShowSalary] = useState(false)
   const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
+  const [autoAssignLoading, setAutoAssignLoading] = useState(false)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
@@ -2563,6 +2564,9 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
+    setAutoAssignLoading(true)
+    // Yield to let React render the spinner
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
     // Filter out slots with actual results
     const recordedSlots = new Set(Object.keys(data.actualResults ?? {}))
@@ -2599,6 +2603,7 @@ const AdminPage = () => {
         ? `自動割当完了: ${assignedCount}/${submittedCount}名を割当しました。\n\n未割当の保護者:\n${unassignedParents.join('\n')}`
         : `自動割当完了: 提出済み${assignedCount}名全員を割当しました。`
       alert(msg)
+      setAutoAssignLoading(false)
       return
     }
 
@@ -2685,6 +2690,7 @@ const AdminPage = () => {
     } else {
       alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
     }
+    setAutoAssignLoading(false)
   }
 
   const resetAssignments = async (): Promise<void> => {
@@ -2938,8 +2944,26 @@ const AdminPage = () => {
         // Create new assignment in target slot with just this student
         const deskCount = current.settings.deskCount ?? 0
         if (deskCount > 0 && targetAssignments.length >= deskCount) return current
+
+        // Auto-assign a compatible teacher who is available and not already used in this slot
+        const usedTeacherIdsInTarget = new Set(targetAssignments.map((a) => a.teacherId).filter(Boolean))
+        const instructorsList = isMendan ? current.managers : current.teachers
+        const pType: PersonType = isMendan ? 'manager' : 'teacher'
+        let autoTeacherId = ''
+        for (const inst of instructorsList) {
+          if (usedTeacherIdsInTarget.has(inst.id)) continue
+          if (!hasAvailability(current.availability, pType, inst.id, targetSlot)) continue
+          // Check subject compatibility (skip for mendan)
+          if (!isMendan && student) {
+            const compatible = canTeachSubject((inst as Teacher).subjects ?? [], student.grade, studentSubject)
+            if (!compatible) continue
+          }
+          autoTeacherId = inst.id
+          break
+        }
+
         targetAssignments.push({
-          teacherId: '',
+          teacherId: autoTeacherId,
           studentIds: [studentId],
           subject: studentSubject,
           studentSubjects: { [studentId]: studentSubject },
@@ -3175,7 +3199,17 @@ service cloud.firestore {
             </button>
           </div>
 
-          <div className="panel">
+          <div className="panel" style={{ position: 'relative' }}>
+            {autoAssignLoading && (
+              <div style={{
+                position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.85)', zIndex: 50,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                borderRadius: '12px',
+              }}>
+                <div className="spinner" />
+                <p style={{ marginTop: 12, fontWeight: 600, color: '#334155' }}>自動提案を実行中...</p>
+              </div>
+            )}
             <div className="row">
               <h3>コマ割り</h3>
               {(() => {
@@ -3694,6 +3728,28 @@ service cloud.firestore {
                         const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
                         const isAutoDiff = isAutoAdded || isAutoChanged
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
+
+                        // Compact display when pair-dragging (not student-dragging)
+                        const isPairDragActive = isDragActive && !isStudentDrag
+                        const isBeingDragged = isPairDragActive && dragInfo.sourceSlot === slot && dragInfo.sourceIdx === idx
+
+                        if (isPairDragActive && !isBeingDragged) {
+                          // Show compact text-only summary
+                          const tName = selectedTeacher?.name ?? (assignment.teacherId ? '?' : '未定')
+                          const sNames = assignment.studentIds
+                            .map((sid) => data.students.find((s) => s.id === sid)?.name ?? '')
+                            .filter(Boolean)
+                            .join('・') || '未定'
+                          return (
+                            <div key={idx} className={`assignment-block assignment-block-compact${assignment.isRegular ? ' assignment-block-regular' : ''}`}
+                              style={{ position: 'relative', padding: '3px 6px', fontSize: '0.82em', lineHeight: 1.3, opacity: 0.7 }}>
+                              {assignment.isRegular && <span className="badge regular-badge" style={{ fontSize: '0.7em', marginRight: 3 }}>★</span>}
+                              <span style={{ fontWeight: 600 }}>{tName}</span>
+                              <span style={{ margin: '0 4px', color: '#94a3b8' }}>|</span>
+                              <span>{sNames}</span>
+                            </div>
+                          )
+                        }
 
                         return (
                           <div

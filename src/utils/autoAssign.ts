@@ -394,10 +394,7 @@ export const buildIncrementalAutoAssignments = (
     const slotAssignments: Assignment[] = [...existingAssignments]
     const usedTeacherIdsInSlot = new Set<string>(existingAssignments.map((a) => a.teacherId))
     const usedStudentIdsInSlot = new Set<string>(existingAssignments.flatMap((a) => a.studentIds))
-    // Skip slots where all assignments are regular lessons (protected)
-    if (existingAssignments.length > 0 && existingAssignments.every((a) => a.isRegular)) {
-      continue
-    }
+    // Regular-only slots are allowed — new pairs can be added alongside regular lessons
     // Skip slots at desk count limit
     if (deskCountLimit > 0 && slotAssignments.length >= deskCountLimit) {
       continue
