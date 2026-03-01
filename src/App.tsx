@@ -1216,19 +1216,20 @@ const HomePage = () => {
                   })()}
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
                   <table className="table">
-                    <thead><tr><th>講師</th><th>生徒</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <thead><tr><th>講師</th><th>生徒1</th><th>科目</th><th>生徒2</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
                     <tbody>
                       {masterData.regularLessons.map((l) => {
                         const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                        const s1Id = l.studentIds[0]
+                        const s2Id = l.studentIds[1]
                         return (
                           <tr key={l.id}>
                             <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
-                            <td>{l.studentIds.map((id) => masterData.students.find((s) => s.id === id)?.name ?? '-').join(', ')}</td>
-                            <td>{l.studentIds.map((id) => {
-                              const subj = l.studentSubjects?.[id] ?? l.subject
-                              const sName = masterData.students.find((s) => s.id === id)?.name ?? '?'
-                              return l.studentIds.length > 1 ? `${sName}:${subj}` : subj
-                            }).join(', ')}</td><td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                            <td>{s1Id ? (masterData.students.find((s) => s.id === s1Id)?.name ?? '-') : ''}</td>
+                            <td>{s1Id ? (l.studentSubjects?.[s1Id] ?? l.subject) : ''}</td>
+                            <td>{s2Id ? (masterData.students.find((s) => s.id === s2Id)?.name ?? '-') : ''}</td>
+                            <td>{s2Id ? (l.studentSubjects?.[s2Id] ?? l.subject) : ''}</td>
+                            <td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
                             <td>
                               <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
                               <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
