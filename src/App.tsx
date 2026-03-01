@@ -222,6 +222,81 @@ const emptyMasterData = (): MasterData => ({
   regularLessons: [],
 })
 
+/** Inline calendar for picking multiple holiday dates. */
+const HolidayCalendar = ({ selected, onChange }: { selected: string[]; onChange: (dates: string[]) => void }) => {
+  const today = new Date()
+  const [year, setYear] = useState(today.getFullYear())
+  const [month, setMonth] = useState(today.getMonth()) // 0-based
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const firstDow = new Date(year, month, 1).getDay() // 0=Sun
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const dateStr = (d: number) => `${year}-${pad2(month + 1)}-${pad2(d)}`
+
+  const toggle = (d: number) => {
+    const ds = dateStr(d)
+    if (selected.includes(ds)) {
+      onChange(selected.filter((x) => x !== ds))
+    } else {
+      onChange([...selected, ds].sort())
+    }
+  }
+
+  const prevMonth = () => {
+    if (month === 0) { setYear((y) => y - 1); setMonth(11) }
+    else setMonth((m) => m - 1)
+  }
+  const nextMonth = () => {
+    if (month === 11) { setYear((y) => y + 1); setMonth(0) }
+    else setMonth((m) => m + 1)
+  }
+
+  const DOW = ['日', '月', '火', '水', '木', '金', '土']
+
+  return (
+    <div className="holiday-cal">
+      <div className="holiday-cal-header">
+        <button type="button" onClick={prevMonth}>‹</button>
+        <span>{year}年 {month + 1}月</span>
+        <button type="button" onClick={nextMonth}>›</button>
+      </div>
+      <div className="holiday-cal-grid">
+        {DOW.map((d, i) => (
+          <div key={d} className={`holiday-cal-dow${i === 0 ? ' sun' : i === 6 ? ' sat' : ''}`}>{d}</div>
+        ))}
+        {Array.from({ length: firstDow }, (_, i) => (
+          <div key={`e${i}`} className="holiday-cal-day empty" />
+        ))}
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          const d = i + 1
+          const ds = dateStr(d)
+          const dow = (firstDow + i) % 7
+          const cls = [
+            'holiday-cal-day',
+            dow === 0 ? 'sun' : dow === 6 ? 'sat' : '',
+            selected.includes(ds) ? 'selected' : '',
+            ds === todayStr ? 'today' : '',
+          ].filter(Boolean).join(' ')
+          return (
+            <div key={d} className={cls} onClick={() => toggle(d)}>{d}</div>
+          )
+        })}
+      </div>
+      {selected.length > 0 && (
+        <div className="holiday-cal-badges">
+          {selected.map((h) => (
+            <span key={h} className="badge warn" style={{ cursor: 'pointer', fontSize: '12px' }} onClick={() => onChange(selected.filter((x) => x !== h))}>
+              {h.replace(/^\d{4}-/, '').replace('-', '/')} ×
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const HomePage = () => {
   const { classroomId = '' } = useParams()
   const navigate = useNavigate()
@@ -1011,23 +1086,9 @@ const HomePage = () => {
                           <span className="muted" style={{ fontSize: '12px' }}>※ 面談時間帯はマネージャーが希望入力時に日ごとに指定します</span>
                         </div>
                       )}
-                      <div className="row" style={{ marginTop: '8px', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                        <span className="muted">休日:</span>
-                        <input
-                          type="date"
-                          onChange={(e) => {
-                            const val = e.target.value
-                            if (val && !newHolidays.includes(val)) {
-                              setNewHolidays((prev) => [...prev, val].sort())
-                            }
-                            e.target.value = ''
-                          }}
-                        />
-                        {newHolidays.map((h) => (
-                          <span key={h} className="badge warn" style={{ cursor: 'pointer' }} onClick={() => setNewHolidays((prev) => prev.filter((d) => d !== h))}>
-                            {formatShortDate(h)} ×
-                          </span>
-                        ))}
+                      <div style={{ marginTop: '8px' }}>
+                        <span className="muted" style={{ marginBottom: '4px', display: 'block' }}>休日: (日付をクリックで選択/解除)</span>
+                        <HolidayCalendar selected={newHolidays} onChange={setNewHolidays} />
                       </div>
                       <div className="row" style={{ marginTop: '12px' }}>
                         <button className="btn" type="button" onClick={() => void onCreateSession()}>特別講習を作成</button>
