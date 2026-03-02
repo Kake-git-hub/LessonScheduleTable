@@ -26,7 +26,7 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { SLOT_CONSTRAINT_LABELS, defaultConstraintParams, summarizeConstraints } from './utils/slotConstraints'
+import { SLOT_CONSTRAINT_LABELS, defaultConstraintParams, summarizeConstraints, validateConstraints } from './utils/slotConstraints'
 
 const APP_VERSION = '1.0.0'
 
@@ -3291,6 +3291,14 @@ service cloud.firestore {
                                   }}>✕</button>
                               </div>
                             ))}
+                            {(() => {
+                              const warnings = validateConstraints(constraints)
+                              return warnings.length > 0 ? (
+                                <div style={{ color: '#dc2626', fontSize: '0.8em', margin: '4px 0', padding: '4px 8px', background: '#fef2f2', borderRadius: 4 }}>
+                                  {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+                                </div>
+                              ) : null
+                            })()}
                             <div style={{ display: 'flex', gap: 4 }}>
                               <button type="button" className="btn secondary" style={{ fontSize: '0.75em' }}
                                 onClick={() => {

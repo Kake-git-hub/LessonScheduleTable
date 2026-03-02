@@ -274,3 +274,39 @@ export const summarizeConstraints = (constraints: SlotConstraint[]): string => {
     }
   }).join(', ')
 }
+
+/**
+ * Validate that a set of constraints don't conflict with each other.
+ * Returns an array of warning messages (empty = no conflicts).
+ */
+export const validateConstraints = (constraints: SlotConstraint[]): string[] => {
+  const warnings: string[] = []
+  if (constraints.length <= 1) return warnings
+
+  const types = constraints.map((c) => c.type)
+  const hasConsecutive = types.includes('consecutive')
+  const hasGapConsecutive = types.includes('gap-then-consecutive')
+
+  // consecutive + gap-then-consecutive conflict: both dictate placement pattern
+  if (hasConsecutive && hasGapConsecutive) {
+    warnings.push('「連続コマ」と「空けて連続」は同時に設定できません。どちらか一方にしてください。')
+  }
+
+  // Multiple of the same type
+  const consecutiveCards = constraints.filter((c) => c.type === 'consecutive')
+  if (consecutiveCards.length > 1) {
+    const counts = consecutiveCards.map((c) => c.params.count ?? 2)
+    if (new Set(counts).size > 1) {
+      warnings.push('複数の「連続コマ」制約のコマ数が異なります。1つにまとめてください。')
+    } else {
+      warnings.push('「連続コマ」制約が重複しています。1つにまとめてください。')
+    }
+  }
+
+  const gapCards = constraints.filter((c) => c.type === 'gap-then-consecutive')
+  if (gapCards.length > 1) {
+    warnings.push('「空けて連続」制約が重複しています。1つにまとめてください。')
+  }
+
+  return warnings
+}

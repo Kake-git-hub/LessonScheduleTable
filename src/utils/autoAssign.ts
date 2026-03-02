@@ -523,9 +523,11 @@ export const buildIncrementalAutoAssignments = async (
         for (const st of combo) {
           const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
           const existingSlotNums = getStudentSlotNumbersOnDate(result, st.id, currentDate)
+          const hasSlotConstraints = (st.slotConstraints ?? []).length > 0
 
           // Penalty for same-day multiple slots (avoid if possible)
-          if (slotsOnDate > 0) {
+          // → Suppressed when student has slot constraints (constraints control same-day placement)
+          if (slotsOnDate > 0 && !hasSlotConstraints) {
             studentScore -= 60
             const isConsecutive = existingSlotNums.some(
               (n) => Math.abs(n - currentSlotNum) === 1,
@@ -543,8 +545,11 @@ export const buildIncrementalAutoAssignments = async (
           studentScore += (totalRequested - totalAssigned) * 10
 
           // Prefer students with fewer assigned dates (spread across days)
-          const assignedDates = countStudentAssignedDates(result, st.id)
-          studentScore -= assignedDates * 5
+          // → Suppressed when student has slot constraints (consecutive constraints prefer same-day concentration)
+          if (!hasSlotConstraints) {
+            const assignedDates = countStudentAssignedDates(result, st.id)
+            studentScore -= assignedDates * 5
+          }
 
           // Submission order bonus: earlier submitters get priority (max +15)
           const submissionRank = submissionOrderMap.get(st.id) ?? maxRank
@@ -556,8 +561,10 @@ export const buildIncrementalAutoAssignments = async (
           s + (isRegularLessonPair(data.regularLessons, teacher.id, st.id) ? 30 : 0), 0)
 
         // Same-day same-pair consecutive bonus
+        // → Suppressed for students with slot constraints (constraint card controls placement pattern)
         let pairConsecutiveBonus = 0
         for (const st of combo) {
+          if ((st.slotConstraints ?? []).length > 0) continue // constraint card takes priority
           const existingPairSlots = getTeacherStudentSlotsOnDate(result, teacher.id, st.id, currentDate)
           if (existingPairSlots.length > 0) {
             const isConsecutive = existingPairSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
@@ -569,12 +576,18 @@ export const buildIncrementalAutoAssignments = async (
         const mixedSubjectPenalty = plan.isMixed ? -15 : 0
 
         // Consecutive same-subject penalty: avoid same student having the same subject in adjacent slots
+        // → Suppressed for students with slot constraints that have diffSubject: false
         let consecutiveSameSubjectPenalty = 0
         for (const st of combo) {
           const subj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
           const adjacentSubjects = getStudentSubjectsOnAdjacentSlots(result, st.id, currentDate, currentSlotNum)
           if (adjacentSubjects.includes(subj)) {
-            consecutiveSameSubjectPenalty -= 20
+            // Check if student has a constraint with diffSubject: false — if so, same-subject consecutive is OK
+            const stConstraints = st.slotConstraints ?? []
+            const wantsSameSubject = stConstraints.some((c) => !c.params.diffSubject)
+            if (!wantsSameSubject) {
+              consecutiveSameSubjectPenalty -= 20
+            }
           }
         }
 
