@@ -2,6 +2,7 @@ import type { Assignment, SessionData } from '../types'
 import { personKey } from './schedule'
 import { constraintFor, hasAvailability, isStudentAvailable, isRegularLessonPair } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
+import { evaluateSlotConstraints } from './slotConstraints'
 import {
   getSlotNumber,
   getStudentSubject,
@@ -577,6 +578,19 @@ export const buildIncrementalAutoAssignments = async (
           }
         }
 
+        // Slot constraint card evaluation
+        let constraintCardScore = 0
+        let hasMustViolation = false
+        for (const st of combo) {
+          const evalResult = evaluateSlotConstraints(st, slot, result, data.settings.slotsPerDay)
+          constraintCardScore += evalResult.score
+          if (evalResult.mustViolations.length > 0) {
+            hasMustViolation = true
+            break
+          }
+        }
+        if (hasMustViolation) continue // Skip combos that violate must-constraints
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +
           teacherConsecutiveBonus +
@@ -586,6 +600,7 @@ export const buildIncrementalAutoAssignments = async (
           (combo.length === 2 ? 30 : 0) +
           mixedSubjectPenalty +
           consecutiveSameSubjectPenalty +
+          constraintCardScore +
           studentScore -
           teacherLoad * 2
 

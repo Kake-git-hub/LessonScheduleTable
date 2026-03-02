@@ -4,6 +4,28 @@ export type ConstraintType = 'incompatible' | 'recommended'
 
 export type SubjectSlotRequest = Record<string, number>
 
+// ── Slot constraint cards ─────────────────────────────────
+export type SlotConstraintType =
+  | 'consecutive'           // N コマ連続
+  | 'gap-then-consecutive'  // M コマ空けて N コマ連続
+
+export type SlotConstraintPriority = 'must' | 'prefer'
+
+export type SlotConstraint = {
+  id: string
+  type: SlotConstraintType
+  /** Priority: 'must' = hard constraint (block), 'prefer' = soft (scoring bonus) */
+  priority: SlotConstraintPriority
+  params: {
+    /** Number of consecutive slots (for 'consecutive' and 'gap-then-consecutive') */
+    count?: number
+    /** Whether consecutive slots should use different subjects */
+    diffSubject?: boolean
+    /** Number of gap slots before the consecutive block (for 'gap-then-consecutive') */
+    gapSlots?: number
+  }
+}
+
 export type Manager = {
   id: string
   name: string
@@ -30,6 +52,8 @@ export type Student = {
   unavailableSlots: string[]
   memo: string
   submittedAt: number
+  /** Per-student slot scheduling constraints (e.g. "2コマ連続", "1コマ空けて連続") */
+  slotConstraints?: SlotConstraint[]
 }
 
 export type PairConstraintPersonType = 'teacher' | 'student'

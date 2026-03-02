@@ -14,6 +14,8 @@ import type {
   PersonType,
   RegularLesson,
   SessionData,
+  SlotConstraint,
+  SlotConstraintType,
   Student,
   SubmissionLogEntry,
   Teacher,
@@ -24,6 +26,7 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
+import { SLOT_CONSTRAINT_LABELS, defaultConstraintParams, summarizeConstraints } from './utils/slotConstraints'
 
 const APP_VERSION = '1.0.0'
 
@@ -1953,6 +1956,8 @@ const AdminPage = () => {
   const [showSalary, setShowSalary] = useState(false)
   const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
+  // --- Slot constraint editing ---
+  const [constraintEditStudentId, setConstraintEditStudentId] = useState<string | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
@@ -2908,7 +2913,7 @@ const AdminPage = () => {
       }
       const details = { ...(hl.changeDetails ?? {}) }
       if (!details[targetSlot]) details[targetSlot] = {}
-      details[targetSlot][sig] = `手動移動: ${sourceSlot} → ${targetSlot}`
+      details[targetSlot][sig] = `ペア移動: ${sourceSlot} → ${targetSlot}`
 
       return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, added: addedSigs, changeDetails: details } }
     })
@@ -3190,9 +3195,12 @@ service cloud.firestore {
             <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
             <p className="muted">{isMendan ? '面談可能時間帯は保護者が希望URLから入力します。' : '希望コマ数・不可日は生徒本人が希望URLから入力します。'}</p>
             <table className="table">
-              <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
+              <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}{!isMendan && <th>コマ制約</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
-                {data.students.map((student) => (
+                {data.students.map((student) => {
+                  const constraints = student.slotConstraints ?? []
+                  const isEditing = constraintEditStudentId === student.id
+                  return (
                   <tr key={student.id}>
                     <td>
                       {student.name}{isMendan ? ' 保護者' : ''}
@@ -3201,6 +3209,116 @@ service cloud.firestore {
                       )}
                     </td>
                     {!isMendan && <td>{student.grade}</td>}
+                    {!isMendan && (
+                      <td>
+                        {constraints.length > 0 && !isEditing && (
+                          <span style={{ fontSize: '0.8em', color: '#475569', marginRight: 6 }}>
+                            {summarizeConstraints(constraints)}
+                          </span>
+                        )}
+                        {isEditing ? (
+                          <div style={{ minWidth: 320 }}>
+                            {constraints.map((c, ci) => (
+                              <div key={c.id} style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
+                                <select value={c.type} style={{ fontSize: '0.85em' }}
+                                  onChange={(e) => {
+                                    const newType = e.target.value as SlotConstraintType
+                                    const updated = [...constraints]
+                                    updated[ci] = { ...c, type: newType, params: defaultConstraintParams(newType) }
+                                    void update((cur) => ({
+                                      ...cur,
+                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                    }))
+                                  }}>
+                                  {Object.entries(SLOT_CONSTRAINT_LABELS).map(([k, v]) => (
+                                    <option key={k} value={k}>{v}</option>
+                                  ))}
+                                </select>
+                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
+                                  <input type="number" min={2} max={6} value={c.params.count ?? 2} style={{ width: 40, fontSize: '0.85em' }}
+                                    onChange={(e) => {
+                                      const updated = [...constraints]
+                                      updated[ci] = { ...c, params: { ...c.params, count: Number(e.target.value) || 2 } }
+                                      void update((cur) => ({
+                                        ...cur,
+                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                      }))
+                                    }} />コマ
+                                </label>
+                                {c.type === 'gap-then-consecutive' && (
+                                  <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
+                                    <input type="number" min={1} max={4} value={c.params.gapSlots ?? 1} style={{ width: 40, fontSize: '0.85em' }}
+                                      onChange={(e) => {
+                                        const updated = [...constraints]
+                                        updated[ci] = { ...c, params: { ...c.params, gapSlots: Number(e.target.value) || 1 } }
+                                        void update((cur) => ({
+                                          ...cur,
+                                          students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                        }))
+                                      }} />コマ空け
+                                  </label>
+                                )}
+                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
+                                  <input type="checkbox" checked={!!c.params.diffSubject}
+                                    onChange={(e) => {
+                                      const updated = [...constraints]
+                                      updated[ci] = { ...c, params: { ...c.params, diffSubject: e.target.checked } }
+                                      void update((cur) => ({
+                                        ...cur,
+                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                      }))
+                                    }} />別教科
+                                </label>
+                                <select value={c.priority} style={{ fontSize: '0.8em' }}
+                                  onChange={(e) => {
+                                    const updated = [...constraints]
+                                    updated[ci] = { ...c, priority: e.target.value as 'must' | 'prefer' }
+                                    void update((cur) => ({
+                                      ...cur,
+                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                    }))
+                                  }}>
+                                  <option value="prefer">希望</option>
+                                  <option value="must">必須</option>
+                                </select>
+                                <button type="button" className="btn secondary" style={{ fontSize: '0.75em', padding: '2px 6px' }}
+                                  onClick={() => {
+                                    const updated = constraints.filter((_, i) => i !== ci)
+                                    void update((cur) => ({
+                                      ...cur,
+                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated.length > 0 ? updated : undefined } : s),
+                                    }))
+                                  }}>✕</button>
+                              </div>
+                            ))}
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button type="button" className="btn secondary" style={{ fontSize: '0.75em' }}
+                                onClick={() => {
+                                  const newConstraint: SlotConstraint = {
+                                    id: `sc_${Date.now()}`,
+                                    type: 'consecutive',
+                                    priority: 'prefer',
+                                    params: defaultConstraintParams('consecutive'),
+                                  }
+                                  void update((cur) => ({
+                                    ...cur,
+                                    students: cur.students.map((s) => s.id === student.id
+                                      ? { ...s, slotConstraints: [...(s.slotConstraints ?? []), newConstraint] }
+                                      : s),
+                                  }))
+                                }}>+ 制約追加</button>
+                              <button type="button" className="btn secondary" style={{ fontSize: '0.75em' }}
+                                onClick={() => setConstraintEditStudentId(null)}>閉じる</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button type="button" className="btn secondary" style={{ fontSize: '0.75em', padding: '2px 8px' }}
+                            onClick={() => setConstraintEditStudentId(student.id)}>
+                            {constraints.length > 0 ? '編集' : '+ 設定'}
+                          </button>
+                        )}
+                      </td>
+                    )}
                     <td>
                       {student.submittedAt ? (
                         <span style={{ fontSize: '0.85em', color: '#16a34a' }}>
@@ -3226,7 +3344,8 @@ service cloud.firestore {
                       }
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
             <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em' }}
@@ -3502,6 +3621,7 @@ service cloud.firestore {
                         <li><b>混合科目 −15</b> → 同科目ペアを優先</li>
                         <li><b>隣接同科目 −20</b> → 同じ生徒の連続コマで科目を変える</li>
                         <li><b>講師負荷 −2/コマ</b> → 講師の負荷を均等化</li>
+                        <li><b>コマ制約カード</b> → 生徒ごとの連続コマ・空けて連続等の制約（必須=±150 / 希望=±40）</li>
                       </ol>
                     </section>
                     <section>
@@ -3539,15 +3659,33 @@ service cloud.firestore {
                   return slotAssignments.some((a) => a.studentIds.includes(sid))
                 })
                 const hasTeacherUnavailable = isDragActive && !isStudentDrag && dragInfo.teacherId ? !hasAvailability(data.availability, instructorPersonType, dragInfo.teacherId, slot) : false
+                // For student drag to a different slot: check if student can be placed (existing block accepts OR a compatible teacher is available for new pair)
+                const studentDragNoTarget = (() => {
+                  if (!isStudentDrag || isSameSlot) return false
+                  const hasAcceptableBlock = slotAssignments.some((a) => !a.isRegular && a.studentIds.length < 2)
+                  if (hasAcceptableBlock) return false
+                  // No existing block accepts — check if a compatible teacher exists for new pair
+                  const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
+                  const dragSubject = dragInfo.studentDragSubject ?? ''
+                  for (const inst of instructors) {
+                    if (usedTeacherIds.has(inst.id)) continue
+                    if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
+                    if (!isMendan && draggedStudent) {
+                      if (!canTeachSubject(inst.subjects ?? [], draggedStudent.grade, dragSubject)) continue
+                    }
+                    return false // found at least one compatible teacher
+                  }
+                  return true // no compatible teacher found
+                })()
                 // For student drag to same slot: valid if dropping onto a different assignment within the same slot
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
-                const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable
+                const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable && !studentDragNoTarget
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
                 const isPairDrag = isDragActive && !isStudentDrag
                 const isSourceSlot = isDragActive && dragInfo.sourceSlot === slot
 
-                // Pair drag on non-source slot: show only slot label (minimal drop target)
-                if (isPairDrag && !isSourceSlot) {
+                // Pair drag: show only slot label (minimal drop target)
+                if (isPairDrag) {
                   return (
                     <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
                       style={{ padding: '6px 10px', minHeight: 0 }}
