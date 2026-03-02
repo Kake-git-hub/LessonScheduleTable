@@ -196,6 +196,18 @@ export const loadSession = async (classroomId: string, sessionId: string): Promi
   return snapshot.exists() ? (snapshot.data() as SessionData) : null
 }
 
+/** One-shot fetch of session list items (non-realtime). */
+export const listSessionItems = async (classroomId: string): Promise<SessionListItem[]> => {
+  const q = query(classroomSessionsCol(classroomId), orderBy('settings.createdAt', 'desc'))
+  const snapshot = await getDocs(q)
+  return snapshot.docs.map((docSnap) => {
+    const data = docSnap.data() as SessionData
+    const createdAt = data.settings.createdAt ?? 0
+    const updatedAt = data.settings.updatedAt ?? createdAt
+    return { id: docSnap.id, name: data.settings.name, createdAt, updatedAt }
+  })
+}
+
 export const saveSession = async (classroomId: string, sessionId: string, data: SessionData): Promise<void> => {
   const now = Date.now()
   const createdAt = data.settings.createdAt ?? now

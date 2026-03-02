@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, findClassroomForSession, initAuth, listBackups, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
+import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, findClassroomForSession, initAuth, listBackups, listSessionItems, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
   ActualResult,
   Assignment,
@@ -3348,10 +3348,52 @@ service cloud.firestore {
                 })}
               </tbody>
             </table>
-            <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em' }}
-              onClick={() => { if (confirm(`全${isMendan ? '保護者' : '生徒'}（${data.students.length}名）のデータをランダム生成しますか？`)) void bulkRandomStudents() }}>
-              🎲 全{isMendan ? '保護者' : '生徒'}一括ランダム入力 (DEV)
-            </button>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button className="btn secondary" type="button" style={{ fontSize: '0.85em' }}
+                onClick={() => { if (confirm(`全${isMendan ? '保護者' : '生徒'}（${data.students.length}名）のデータをランダム生成しますか？`)) void bulkRandomStudents() }}>
+                🎲 全{isMendan ? '保護者' : '生徒'}一括ランダム入力 (DEV)
+              </button>
+              {!isMendan && (
+                <button className="btn secondary" type="button" style={{ fontSize: '0.85em' }}
+                  onClick={async () => {
+                    try {
+                      const items = await listSessionItems(classroomId)
+                      const otherSessions = items.filter((s) => s.id !== sessionId)
+                      if (otherSessions.length === 0) { alert('他の講習セッションがありません'); return }
+                      const picked = prompt(`制約を引き継ぐ講習を番号で選択:\n${otherSessions.map((s, i) => `${i + 1}. ${s.name}`).join('\n')}`, '1')
+                      if (!picked) return
+                      const idx = parseInt(picked, 10) - 1
+                      if (idx < 0 || idx >= otherSessions.length) { alert('無効な番号です'); return }
+                      const sourceSession = await loadSession(classroomId, otherSessions[idx].id)
+                      if (!sourceSession) { alert('セッションデータの読み込みに失敗しました'); return }
+                      // Build a map of student id → slotConstraints from the source session
+                      const constraintMap = new Map<string, typeof sourceSession.students[0]['slotConstraints']>()
+                      for (const s of sourceSession.students) {
+                        if (s.slotConstraints && s.slotConstraints.length > 0) {
+                          constraintMap.set(s.id, s.slotConstraints)
+                        }
+                      }
+                      if (constraintMap.size === 0) { alert(`「${otherSessions[idx].name}」にはコマ制約が設定されていません`); return }
+                      const matchCount = data.students.filter((s) => constraintMap.has(s.id)).length
+                      if (matchCount === 0) { alert('一致する生徒がいませんでした'); return }
+                      if (!confirm(`「${otherSessions[idx].name}」から${matchCount}名分のコマ制約を引き継ぎますか？\n（既存の制約は上書きされます）`)) return
+                      void update((cur) => ({
+                        ...cur,
+                        students: cur.students.map((s) => {
+                          const inherited = constraintMap.get(s.id)
+                          if (!inherited) return s
+                          return { ...s, slotConstraints: inherited.map((c) => ({ ...c, id: `sc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` })) }
+                        }),
+                      }))
+                      alert(`${matchCount}名のコマ制約を引き継ぎました`)
+                    } catch (e) {
+                      alert(`エラー: ${e instanceof Error ? e.message : String(e)}`)
+                    }
+                  }}>
+                  📋 前回の講習から制約を引き継ぐ
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="panel">
