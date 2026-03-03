@@ -4028,7 +4028,7 @@ service cloud.firestore {
                         )}
                         {isRecorded && <span style={{ fontSize: '0.7em', color: '#16a34a', fontWeight: 'bold' }}>✅ 実績済</span>}
                       </div>
-                      {!isDragActive && getSlotNumber(slot) !== 0 && (
+                      {!isDragActive && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         {data.settings.confirmed && !isRecorded && (
                           <button
