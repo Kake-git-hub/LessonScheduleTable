@@ -88,6 +88,7 @@ export type Assignment = {
    *  When set, each student may learn a different subject in the same pair. */
   studentSubjects?: Record<string, string>
   isRegular?: boolean
+  isGroupLesson?: boolean
 }
 
 /** Actual result for a single pair in a slot (recorded after the lesson). */

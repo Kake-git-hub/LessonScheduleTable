@@ -2570,7 +2570,7 @@ const AdminPage = () => {
       const slotRegularLessons = findRegularLessonsForSlot(data.regularLessons, slot)
 
       if (slotRegularLessons.length === 0) {
-        if (existing && existing.length > 0 && existing.every((a) => a.isRegular)) {
+        if (existing && existing.length > 0 && existing.every((a) => a.isRegular && !a.isGroupLesson)) {
           delete nextAssignments[slot]
           changed = true
         }
@@ -2592,7 +2592,7 @@ const AdminPage = () => {
         .map((a) => assignmentSignature(a))
         .sort()
       const existingSig = (existing ?? [])
-        .filter((a) => a.isRegular)
+        .filter((a) => a.isRegular && !a.isGroupLesson)
         .map((a) => assignmentSignature(a))
         .sort()
 
@@ -2614,14 +2614,15 @@ const AdminPage = () => {
       const existing = nextAssignments[slot] ?? []
       for (const gl of matchingGroupLessons) {
         // Check if this group lesson is already present
-        const alreadyPresent = existing.some((a) => a.isRegular && a.teacherId === gl.teacherId && a.studentIds.length === gl.studentIds.length && gl.studentIds.every((sid) => a.studentIds.includes(sid)))
+        const alreadyPresent = existing.some((a) => a.isGroupLesson && a.teacherId === gl.teacherId && a.studentIds.length === gl.studentIds.length && gl.studentIds.every((sid) => a.studentIds.includes(sid)))
         if (alreadyPresent) continue
 
         existing.push({
           teacherId: gl.teacherId,
           studentIds: [...gl.studentIds],
           subject: gl.subject,
-          isRegular: true, // Treated like regular (auto-placed, not editable)
+          isRegular: true,
+          isGroupLesson: true,
         })
         changed = true
       }
@@ -4020,14 +4021,14 @@ service cloud.firestore {
                     <div className="slot-title">
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                         {slotLabel(slot, isMendan, mendanStart)}
-                        {(data.settings.deskCount ?? 0) > 0 && (
+                        {getSlotNumber(slot) !== 0 && (data.settings.deskCount ?? 0) > 0 && (
                           <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280' }}>
                             {slotAssignments.length}/{data.settings.deskCount}
                           </span>
                         )}
                         {isRecorded && <span style={{ fontSize: '0.7em', color: '#16a34a', fontWeight: 'bold' }}>✅ 実績済</span>}
                       </div>
-                      {!isDragActive && (
+                      {!isDragActive && getSlotNumber(slot) !== 0 && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         {data.settings.confirmed && !isRecorded && (
                           <button
@@ -4171,7 +4172,9 @@ service cloud.firestore {
                           return (
                             <div key={idx} className={`assignment-block assignment-block-compact${assignment.isRegular ? ' assignment-block-regular' : ''}`}
                               style={{ position: 'relative', padding: '3px 6px', fontSize: '0.82em', lineHeight: 1.3, opacity: 0.7 }}>
-                              {assignment.isRegular && <span className="badge regular-badge" style={{ fontSize: '0.7em', marginRight: 3 }}>★</span>}
+                              {assignment.isGroupLesson
+                                ? <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.7em', marginRight: 3 }}>■</span>
+                                : assignment.isRegular && <span className="badge regular-badge" style={{ fontSize: '0.7em', marginRight: 3 }}>★</span>}
                               <span style={{ fontWeight: 600 }}>{tName}</span>
                               <span style={{ margin: '0 4px', color: '#94a3b8' }}>|</span>
                               <span>{sNames}</span>
@@ -4190,6 +4193,26 @@ service cloud.firestore {
                         })
                         const isStudentDropValid = isStudentDropCandidate && !isSameAssignment && !isStudentAlreadyInSlot && !hasUnavailableStudent
                         const isStudentDropInvalid = isDragActive && isStudentDrag && !isStudentDropValid && !isSameAssignment
+
+                        // Group lesson: show compact non-editable block with ■ marker
+                        if (assignment.isGroupLesson) {
+                          const tName = selectedTeacher?.name ?? '?'
+                          const sNames = assignment.studentIds
+                            .map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?')
+                          return (
+                            <div key={idx} className="assignment-block assignment-block-regular"
+                              style={{ position: 'relative', background: '#e0e7ff', borderColor: '#818cf8' }}>
+                              <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.72em', padding: '2px 7px', marginBottom: '4px' }} title="集団授業">■</span>
+                              <div style={{ fontWeight: 600, fontSize: '0.9em' }}>{tName}</div>
+                              <div style={{ fontSize: '0.8em', color: '#4338ca' }}>{assignment.subject}</div>
+                              <div style={{ fontSize: '0.78em', color: '#475569', marginTop: '2px' }}>
+                                {sNames.map((name, i) => (
+                                  <div key={i}>・{name}</div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        }
 
                         return (
                           <div
