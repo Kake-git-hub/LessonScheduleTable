@@ -17,12 +17,17 @@ export const buildSlotKeys = (settings: SessionData['settings']): string[] => {
   const holidaySet = new Set(settings.holidays)
   const result: string[] = []
 
+  const isMendan = settings.sessionType === 'mendan' || (settings.name ?? '').includes('mendan')
   for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
     const iso = toIso(cursor)
     if (holidaySet.has(iso)) {
       continue
     }
 
+    // Slot 0 (午前) for group lessons in non-mendan sessions
+    if (!isMendan) {
+      result.push(`${iso}_0`)
+    }
     for (let slot = 1; slot <= settings.slotsPerDay; slot += 1) {
       result.push(`${iso}_${slot}`)
     }
@@ -45,6 +50,7 @@ export const slotLabel = (slotKey: string, isMendan = false, startHour = 10): st
     const hour = startHour - 1 + Number(slot)
     return `${formatShortDate(date)} ${hour}:00`
   }
+  if (slot === '0') return `${formatShortDate(date)} 午前`
   return `${formatShortDate(date)} ${slot}限`
 }
 

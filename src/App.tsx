@@ -466,7 +466,7 @@ const HomePage = () => {
   const [groupTeacherId, setGroupTeacherId] = useState('')
   const [groupSubject, setGroupSubject] = useState('')
   const [groupDayOfWeek, setGroupDayOfWeek] = useState('')
-  const [groupSlotNumber, setGroupSlotNumber] = useState('')
+  const [, setGroupSlotNumber] = useState('')  // kept setter for reset calls
   const [groupStudentIds, setGroupStudentIds] = useState<string[]>([])
   const [editingGroupLessonId, setEditingGroupLessonId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -721,10 +721,10 @@ const HomePage = () => {
 
   // Group lesson CRUD
   const addGroupLesson = async (): Promise<void> => {
-    if (!groupTeacherId || !groupSubject || !groupDayOfWeek || !groupSlotNumber || groupStudentIds.length === 0) return
+    if (!groupTeacherId || !groupSubject || !groupDayOfWeek || groupStudentIds.length === 0) return
     const nl: GroupLesson = {
       id: createId(), teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject,
-      dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: Number.parseInt(groupSlotNumber, 10),
+      dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: 0,
     }
     await updateMaster((c) => ({ ...c, groupLessons: [...(c.groupLessons ?? []), nl] }))
     changeLogRef.current.add('集団授業追加')
@@ -741,17 +741,16 @@ const HomePage = () => {
     setGroupTeacherId(l.teacherId)
     setGroupSubject(l.subject)
     setGroupDayOfWeek(String(l.dayOfWeek))
-    setGroupSlotNumber(String(l.slotNumber))
     setGroupStudentIds([...l.studentIds])
   }
 
   const saveEditGroupLesson = async (): Promise<void> => {
-    if (!editingGroupLessonId || !groupTeacherId || !groupSubject || !groupDayOfWeek || !groupSlotNumber || groupStudentIds.length === 0) return
+    if (!editingGroupLessonId || !groupTeacherId || !groupSubject || !groupDayOfWeek || groupStudentIds.length === 0) return
     await updateMaster((c) => ({
       ...c,
       groupLessons: (c.groupLessons ?? []).map((l) =>
         l.id === editingGroupLessonId
-          ? { ...l, teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject, dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: Number.parseInt(groupSlotNumber, 10) }
+          ? { ...l, teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject, dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: 0 }
           : l,
       ),
     }))
@@ -833,7 +832,7 @@ const HomePage = () => {
       ['田中講師', '青木 太郎', '数', '', '', '月', '1'],
     ]
     const sampleGroupLessons = [
-      ['田中講師', '数', '青木 太郎, 伊藤 花, 上田 陽介', '月', '2'],
+      ['田中講師', '数', '青木 太郎, 伊藤 花, 上田 陽介', '月'],
     ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', 'メール'], ...sampleManagers]), 'マネージャー')
@@ -841,7 +840,7 @@ const HomePage = () => {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...sampleConstraints]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...sampleRegularLessons]), '通常授業')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日', '時限'], ...sampleGroupLessons]), '集団授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日'], ...sampleGroupLessons]), '集団授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -883,10 +882,10 @@ const HomePage = () => {
       md.teachers.find((t) => t.id === gl.teacherId)?.name ?? gl.teacherId,
       gl.subject,
       gl.studentIds.map((sid) => md.students.find((s) => s.id === sid)?.name ?? sid).join(', '),
-      dayNames[gl.dayOfWeek] ?? '', gl.slotNumber,
+      dayNames[gl.dayOfWeek] ?? '',
     ])
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日', '時限'], ...groupLessonRows]), '集団授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日'], ...groupLessonRows]), '集団授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
 
@@ -1024,11 +1023,10 @@ const HomePage = () => {
         const subject = String(row?.[1] ?? '').trim()
         const studentsStr = String(row?.[2] ?? '').trim()
         const dayStr = String(row?.[3] ?? '').trim()
-        const slotNum = Number(row?.[4])
         const tid = findTeacherId(tName)
         if (!tid || !subject) continue
         const dow = dayNameMap[dayStr]
-        if (dow === undefined || Number.isNaN(slotNum) || slotNum < 1) continue
+        if (dow === undefined) continue
         const studentNames = studentsStr.split(/[、,]/).map((s) => s.trim()).filter(Boolean)
         const sids = studentNames.map((n) => findStudentId(n)).filter(Boolean) as string[]
         if (sids.length === 0) continue
@@ -1037,12 +1035,11 @@ const HomePage = () => {
         const isDup = (md.groupLessons ?? []).some((existing) =>
           existing.teacherId === tid &&
           existing.dayOfWeek === dow &&
-          existing.slotNumber === slotNum &&
           existing.studentIds.length === sortedSids.length &&
           [...existing.studentIds].sort().every((id, j) => id === sortedSids[j]),
         )
         if (isDup) continue
-        importedGroupLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, dayOfWeek: dow, slotNumber: slotNum })
+        importedGroupLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, dayOfWeek: dow, slotNumber: 0 })
       }
     }
 
@@ -1589,7 +1586,6 @@ const HomePage = () => {
                       <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
                       <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
                     </select>
-                    <input type="number" value={groupSlotNumber} onChange={(e) => setGroupSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
                     {editingGroupLessonId ? (
                       <>
                         <button className="btn" type="button" onClick={() => void saveEditGroupLesson()}>更新</button>
@@ -1611,7 +1607,7 @@ const HomePage = () => {
                       ))}
                     </div>
                   </div>
-                  <p className="muted">集団授業は一科目・講師1人・生徒複数で毎週指定曜日/時限に実施されます。</p>
+                  <p className="muted">集団授業は一科目・講師1人・生徒複数で毎週指定曜日の午前枠で実施されます。</p>
                   <table className="table">
                     <thead><tr><th>講師</th><th>科目</th><th>生徒</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
                     <tbody>
@@ -1623,7 +1619,7 @@ const HomePage = () => {
                             <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
                             <td>{l.subject}</td>
                             <td style={{ fontSize: '0.85em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{studentNames}</td>
-                            <td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                            <td>{dayNames[l.dayOfWeek]}曜</td><td>午前</td>
                             <td>
                               <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditGroupLesson(l)}>編集</button>
                               <button className="btn secondary" type="button" onClick={() => void removeGroupLesson(l.id)}>削除</button>
@@ -3890,7 +3886,8 @@ service cloud.firestore {
                         <li><b>同日同ペア連続コマ +60</b> / 非連続 −40 → ペアの連続配置を優先</li>
                         <li><b>通常授業ペアボーナス +30</b> → 普段のペアを優先</li>
                         <li><b>2人ペアボーナス +30</b> → 1人より2人ペアを優先</li>
-                        <li><b>後半コマ優先 最大+25</b> → 高3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
+                        <li><b>後半コマ優先 最大+25</b> → 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
+                        <li><b>中3特別講習</b> → 集団授業がある日の中3は、午前の後に1限か2限から2コマ連続で配置</li>
                         <li><b>講師連続コマ +20</b> → 同日の連続コマに配置</li>
                         <li><b>生徒配分スコア</b> → 残コマ数が多い生徒を優先、同日複数回を抑制</li>
                         <li><b>混合科目 −15</b> → 同科目ペアを優先</li>
@@ -5593,7 +5590,8 @@ const ConfirmedCalendarView = ({
     const result: Record<string, Record<number, CalendarCell[]>> = {}
     for (const date of dates) {
       result[date] = {}
-      for (let s = 1; s <= slotsPerDay; s++) {
+      const startSlot = isMendan ? 1 : 0  // Include slot 0 (午前) for non-mendan
+      for (let s = startSlot; s <= slotsPerDay; s++) {
         const slotKey = `${date}_${s}`
         const slotAssignments = data.assignments[slotKey] ?? []
         const cells: CalendarCell[] = []
@@ -5612,10 +5610,11 @@ const ConfirmedCalendarView = ({
                   color: '#dbeafe',
                 })
               } else {
+                const isGroupSlot = s === 0
                 cells.push({
                   label: student?.name ?? '?',
-                  detail: subj,
-                  color: a.isRegular ? '#dcfce7' : '#fef3c7',
+                  detail: isGroupSlot ? `${subj} (集団)` : subj,
+                  color: isGroupSlot ? '#e0e7ff' : a.isRegular ? '#dcfce7' : '#fef3c7',
                 })
               }
             }
@@ -5635,10 +5634,11 @@ const ConfirmedCalendarView = ({
             } else {
               const teacher = data.teachers.find((t) => t.id === a.teacherId)
               const subj = getStudentSubject(a, personId)
+              const isGroupSlot = s === 0
               cells.push({
-                label: a.isRegular ? `★ ${subj}` : subj,
-                detail: `${teacher?.name ?? '?'}${a.isRegular ? ' (通常)' : ' (特別講習)'}`,
-                color: a.isRegular ? '#dcfce7' : '#fef3c7',
+                label: isGroupSlot ? `■ ${subj}` : a.isRegular ? `★ ${subj}` : subj,
+                detail: `${teacher?.name ?? '?'}${isGroupSlot ? ' (集団授業)' : a.isRegular ? ' (通常)' : ' (特別講習)'}`,
+                color: isGroupSlot ? '#e0e7ff' : a.isRegular ? '#dcfce7' : '#fef3c7',
               })
             }
           }
@@ -5652,7 +5652,7 @@ const ConfirmedCalendarView = ({
 
   // For mendan mode: only show slots that have any assignment across all dates
   const activeSlotNums = useMemo(() => {
-    if (!isMendan) return Array.from({ length: slotsPerDay }, (_, i) => i + 1)
+    if (!isMendan) return Array.from({ length: slotsPerDay + 1 }, (_, i) => i)  // 0 (午前), 1..slotsPerDay
     const nums = new Set<number>()
     for (const date of dates) {
       for (let s = 1; s <= slotsPerDay; s++) {
@@ -5673,6 +5673,7 @@ const ConfirmedCalendarView = ({
 
   const slotHeader = (slotNum: number): string => {
     if (isMendan) return mendanTimeLabel(slotNum, mendanStart)
+    if (slotNum === 0) return '午前'
     return `${slotNum}限`
   }
 
@@ -5682,7 +5683,8 @@ const ConfirmedCalendarView = ({
   const totalSlots = useMemo(() => {
     let count = 0
     for (const date of dates) {
-      for (let s = 1; s <= slotsPerDay; s++) {
+      const startSlot = isMendan ? 1 : 0
+      for (let s = startSlot; s <= slotsPerDay; s++) {
         if ((calendar[date]?.[s]?.length ?? 0) > 0) count++
       }
     }

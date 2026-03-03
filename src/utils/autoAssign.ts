@@ -5,6 +5,7 @@ import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subject
 import { evaluateSlotConstraints } from './slotConstraints'
 import {
   getSlotNumber,
+  getIsoDayOfWeek,
   getStudentSubject,
   countTeacherLoad,
   getTeacherAssignedDates,
@@ -385,6 +386,9 @@ export const buildIncrementalAutoAssignments = async (
     const currentDate = slot.split('_')[0]
     const currentSlotNum = getSlotNumber(slot)
 
+    // Skip slot 0 (午前) — only group lessons go there (auto-filled separately)
+    if (currentSlotNum === 0) continue
+
     // Initialize from existing assignments (allow adding more pairs to a slot)
     const existingAssignments = result[slot] ?? []
     const slotAssignments: Assignment[] = [...existingAssignments]
@@ -396,9 +400,13 @@ export const buildIncrementalAutoAssignments = async (
       continue
     }
 
-    // Late-slot bias: non-高3 students prefer slot 3+ to encourage 2-student pairing
+    // Late-slot bias: non-高3/中3 students prefer slot 3+ to encourage 2-student pairing
     // Slots 3,4,5 get a bonus; slots 1,2 get no bonus or slight penalty
     const lateSlotBonusForSlot = currentSlotNum >= 3 ? 25 : (currentSlotNum === 2 ? 5 : 0)
+
+    // Determine which students have a group lesson on this date (for 中3 special rule)
+    const currentDayOfWeek = getIsoDayOfWeek(currentDate)
+    const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === currentDayOfWeek)
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
@@ -595,13 +603,41 @@ export const buildIncrementalAutoAssignments = async (
         }
         if (hasMustViolation) continue // Skip combos that violate must-constraints
 
-        // Late-slot bonus: non-高3 students get a bonus for slots 3+ to fill later slots first for better pairing
-        const comboLateSlotBonus = combo.some((st) => st.grade === '高3') ? 0 : lateSlotBonusForSlot
+        // Late-slot bonus: non-高3/中3 students get a bonus for slots 3+ to fill later slots first for better pairing
+        const comboLateSlotBonus = combo.some((st) => st.grade === '高3' || st.grade === '中3') ? 0 : lateSlotBonusForSlot
+
+        // 中3 group-lesson special rule: 中3 students with a group lesson on this date
+        // should be placed in 2 consecutive slots starting from slot 1 or 2 (特別講習)
+        let ju3GroupBonus = 0
+        for (const st of combo) {
+          if (st.grade !== '中3') continue
+          const hasGroupOnDate = groupLessonsOnDate.some((gl) => gl.studentIds.includes(st.id))
+          if (!hasGroupOnDate) continue
+          const existingSlots = getStudentSlotNumbersOnDate(result, st.id, currentDate).filter((n) => n >= 1)
+          // Strong preference for slots 1 and 2 (adjacent to 午前 group lesson)
+          if (currentSlotNum === 1 || currentSlotNum === 2) {
+            ju3GroupBonus += 80
+          } else if (currentSlotNum === 3) {
+            ju3GroupBonus += 20 // still OK if starting from slot 2
+          } else {
+            ju3GroupBonus -= 50 // discourage later slots
+          }
+          // Consecutive bonus: if already has a slot on this date, prefer consecutive
+          if (existingSlots.length > 0 && existingSlots.length < 2) {
+            const isConsecutive = existingSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
+            ju3GroupBonus += isConsecutive ? 100 : -60
+          }
+          // Already has 2+ individual slots — don't add more (fulfilled)
+          if (existingSlots.length >= 2) {
+            ju3GroupBonus -= 200
+          }
+        }
 
         const score = 100 +
           (isExistingDate ? 80 : -50) +
           teacherConsecutiveBonus +
           comboLateSlotBonus +
+          ju3GroupBonus +
           regularPairBonus +
           pairConsecutiveBonus +
           (combo.length === 2 ? 30 : 0) +
