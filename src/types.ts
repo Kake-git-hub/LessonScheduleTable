@@ -8,6 +8,9 @@ export type SubjectSlotRequest = Record<string, number>
 export type SlotConstraintType =
   | 'consecutive'           // N コマ連続
   | 'gap-then-consecutive'  // M コマ空けて N コマ連続
+  | 'with-regular'          // 通常授業に連結して配置
+  | 'single-only'           // 単独授業のみ（ペア不可）
+  | 'same-day-limit'        // 同日最大コマ数制限
 
 export type SlotConstraintPriority = 'must' | 'prefer'
 
@@ -23,6 +26,8 @@ export type SlotConstraint = {
     diffSubject?: boolean
     /** Number of gap slots before the consecutive block (for 'gap-then-consecutive') */
     gapSlots?: number
+    /** Maximum slots per day (for 'same-day-limit') */
+    sameDayMax?: number
   }
 }
 
@@ -104,6 +109,16 @@ export type RegularLesson = {
   slotNumber: number
 }
 
+/** Group lesson: one subject, one teacher, multiple students, weekly at a fixed time */
+export type GroupLesson = {
+  id: string
+  teacherId: string
+  studentIds: string[]
+  subject: string
+  dayOfWeek: number
+  slotNumber: number
+}
+
 export type SessionSettings = {
   name: string
   adminPassword: string
@@ -148,6 +163,7 @@ export type SessionData = {
   availability: Record<string, string[]>
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
+  groupLessons: GroupLesson[]
   autoAssignHighlights?: { added?: Record<string, string[]>; changed?: Record<string, string[]>; changeDetails?: Record<string, Record<string, string>> }
   teacherSubmittedAt?: Record<string, number>
   shareTokens?: Record<string, string>
@@ -165,4 +181,5 @@ export type MasterData = {
   constraints: PairConstraint[]
   gradeConstraints: GradeConstraint[]
   regularLessons: RegularLesson[]
+  groupLessons: GroupLesson[]
 }

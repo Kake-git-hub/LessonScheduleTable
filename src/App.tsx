@@ -7,6 +7,7 @@ import type {
   ActualResult,
   Assignment,
   ConstraintType,
+  GroupLesson,
   Manager,
   MasterData,
   PairConstraint,
@@ -64,6 +65,7 @@ const emptySession = (): SessionData => ({
   availability: {},
   assignments: {},
   regularLessons: [],
+  groupLessons: [],
   shareTokens: {},
   submissionLog: [],
 })
@@ -179,6 +181,7 @@ const createTemplateSession = (): SessionData => {
     availability,
     assignments: {},
     regularLessons,
+    groupLessons: [],
   }
 }
 
@@ -223,6 +226,7 @@ const emptyMasterData = (): MasterData => ({
   constraints: [],
   gradeConstraints: [],
   regularLessons: [],
+  groupLessons: [],
 })
 
 /** Inline calendar for picking multiple holiday dates. */
@@ -458,6 +462,13 @@ const HomePage = () => {
   const [regularStudentSubjects, setRegularStudentSubjects] = useState<Record<string, string>>({})
   const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
   const [regularSlotNumber, setRegularSlotNumber] = useState('')
+  // Group lesson form state
+  const [groupTeacherId, setGroupTeacherId] = useState('')
+  const [groupSubject, setGroupSubject] = useState('')
+  const [groupDayOfWeek, setGroupDayOfWeek] = useState('')
+  const [groupSlotNumber, setGroupSlotNumber] = useState('')
+  const [groupStudentIds, setGroupStudentIds] = useState<string[]>([])
+  const [editingGroupLessonId, setEditingGroupLessonId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Editing state for master data
@@ -706,6 +717,52 @@ const HomePage = () => {
     setEditingRegularLessonId(null)
     setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
     setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
+  }
+
+  // Group lesson CRUD
+  const addGroupLesson = async (): Promise<void> => {
+    if (!groupTeacherId || !groupSubject || !groupDayOfWeek || !groupSlotNumber || groupStudentIds.length === 0) return
+    const nl: GroupLesson = {
+      id: createId(), teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject,
+      dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: Number.parseInt(groupSlotNumber, 10),
+    }
+    await updateMaster((c) => ({ ...c, groupLessons: [...(c.groupLessons ?? []), nl] }))
+    changeLogRef.current.add('集団授業追加')
+    setGroupTeacherId(''); setGroupSubject(''); setGroupDayOfWeek(''); setGroupSlotNumber(''); setGroupStudentIds([])
+  }
+
+  const removeGroupLesson = async (lessonId: string): Promise<void> => {
+    await updateMaster((c) => ({ ...c, groupLessons: (c.groupLessons ?? []).filter((l) => l.id !== lessonId) }))
+    changeLogRef.current.add('集団授業削除')
+  }
+
+  const startEditGroupLesson = (l: GroupLesson): void => {
+    setEditingGroupLessonId(l.id)
+    setGroupTeacherId(l.teacherId)
+    setGroupSubject(l.subject)
+    setGroupDayOfWeek(String(l.dayOfWeek))
+    setGroupSlotNumber(String(l.slotNumber))
+    setGroupStudentIds([...l.studentIds])
+  }
+
+  const saveEditGroupLesson = async (): Promise<void> => {
+    if (!editingGroupLessonId || !groupTeacherId || !groupSubject || !groupDayOfWeek || !groupSlotNumber || groupStudentIds.length === 0) return
+    await updateMaster((c) => ({
+      ...c,
+      groupLessons: (c.groupLessons ?? []).map((l) =>
+        l.id === editingGroupLessonId
+          ? { ...l, teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject, dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: Number.parseInt(groupSlotNumber, 10) }
+          : l,
+      ),
+    }))
+    changeLogRef.current.add('集団授業編集')
+    setEditingGroupLessonId(null)
+    setGroupTeacherId(''); setGroupSubject(''); setGroupDayOfWeek(''); setGroupSlotNumber(''); setGroupStudentIds([])
+  }
+
+  const cancelEditGroupLesson = (): void => {
+    setEditingGroupLessonId(null)
+    setGroupTeacherId(''); setGroupSubject(''); setGroupDayOfWeek(''); setGroupSlotNumber(''); setGroupStudentIds([])
   }
 
   // Edit pair constraint: populate form
@@ -1446,6 +1503,68 @@ const HomePage = () => {
                             <td>
                               <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
                               <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="panel">
+                  <h3>集団授業設定</h3>
+                  <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                    <select value={groupTeacherId} onChange={(e) => setGroupTeacherId(e.target.value)}>
+                      <option value="">講師を選択</option>
+                      {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                    </select>
+                    <select value={groupSubject} onChange={(e) => setGroupSubject(e.target.value)}>
+                      <option value="">科目を選択</option>
+                      {(BASE_SUBJECTS as readonly string[]).map((s) => (<option key={s} value={s}>{s}</option>))}
+                    </select>
+                    <select value={groupDayOfWeek} onChange={(e) => setGroupDayOfWeek(e.target.value)}>
+                      <option value="">曜日を選択</option>
+                      <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
+                      <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
+                    </select>
+                    <input type="number" value={groupSlotNumber} onChange={(e) => setGroupSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
+                    {editingGroupLessonId ? (
+                      <>
+                        <button className="btn" type="button" onClick={() => void saveEditGroupLesson()}>更新</button>
+                        <button className="btn secondary" type="button" onClick={cancelEditGroupLesson}>キャンセル</button>
+                      </>
+                    ) : (
+                      <button className="btn" type="button" onClick={() => void addGroupLesson()}>追加</button>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 8 }}>
+                    <p style={{ fontSize: '0.85em', color: '#475569', margin: '0 0 4px' }}>生徒を選択（複数可）:</p>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 120, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 4, padding: 6 }}>
+                      {masterData.students.map((s) => (
+                        <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: '0.85em', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={groupStudentIds.includes(s.id)}
+                            onChange={(e) => setGroupStudentIds((prev) => e.target.checked ? [...prev, s.id] : prev.filter((id) => id !== s.id))} />
+                          {s.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="muted">集団授業は一科目・講師1人・生徒複数で毎週指定曜日/時限に実施されます。</p>
+                  <table className="table">
+                    <thead><tr><th>講師</th><th>科目</th><th>生徒</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {(masterData.groupLessons ?? []).map((l) => {
+                        const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                        const studentNames = l.studentIds.map((sid) => masterData.students.find((s) => s.id === sid)?.name ?? '?').join(', ')
+                        return (
+                          <tr key={l.id}>
+                            <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
+                            <td>{l.subject}</td>
+                            <td style={{ fontSize: '0.85em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{studentNames}</td>
+                            <td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                            <td>
+                              <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditGroupLesson(l)}>編集</button>
+                              <button className="btn secondary" type="button" onClick={() => void removeGroupLesson(l.id)}>削除</button>
                             </td>
                           </tr>
                         )
@@ -2355,6 +2474,7 @@ const AdminPage = () => {
         students: mergedStudents,
         constraints: master.constraints,
         regularLessons: master.regularLessons,
+        groupLessons: master.groupLessons ?? [],
       }
       // Only save if something actually changed
       const changed =
@@ -2363,7 +2483,8 @@ const AdminPage = () => {
         JSON.stringify(data.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) !==
           JSON.stringify(next.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) ||
         JSON.stringify(data.constraints) !== JSON.stringify(next.constraints) ||
-        JSON.stringify(data.regularLessons) !== JSON.stringify(next.regularLessons)
+        JSON.stringify(data.regularLessons) !== JSON.stringify(next.regularLessons) ||
+        JSON.stringify(data.groupLessons ?? []) !== JSON.stringify(next.groupLessons)
       if (changed) {
         setData(next)
         await saveSession(classroomId, sessionId, next)
@@ -2379,7 +2500,7 @@ const AdminPage = () => {
     const assignmentStateSig = slotKeys
       .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
       .join(',')
-    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${assignmentStateSig}`
+    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${(data.groupLessons ?? []).map((l) => `G${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${assignmentStateSig}`
     if (sig === regularFillSigRef.current) return
     regularFillSigRef.current = sig
 
@@ -2425,10 +2546,35 @@ const AdminPage = () => {
       changed = true
     }
 
-    // Auto-register regular lesson slots as teacher availability
+    // Auto-fill group lessons for matching day-of-week and slot number
+    for (const slot of slotKeys) {
+      const dayOfWeek = getSlotDayOfWeek(slot)
+      const slotNumber = getSlotNumber(slot)
+      const matchingGroupLessons = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === dayOfWeek && gl.slotNumber === slotNumber)
+      if (matchingGroupLessons.length === 0) continue
+
+      const existing = nextAssignments[slot] ?? []
+      for (const gl of matchingGroupLessons) {
+        // Check if this group lesson is already present
+        const alreadyPresent = existing.some((a) => a.isRegular && a.teacherId === gl.teacherId && a.studentIds.length === gl.studentIds.length && gl.studentIds.every((sid) => a.studentIds.includes(sid)))
+        if (alreadyPresent) continue
+
+        existing.push({
+          teacherId: gl.teacherId,
+          studentIds: [...gl.studentIds],
+          subject: gl.subject,
+          isRegular: true, // Treated like regular (auto-placed, not editable)
+        })
+        changed = true
+      }
+      nextAssignments[slot] = existing
+    }
+
+    // Auto-register regular lesson and group lesson slots as teacher availability
     const nextAvailability = { ...data.availability }
     let availChanged = false
-    for (const lesson of data.regularLessons) {
+    const allAutoLessons = [...data.regularLessons, ...(data.groupLessons ?? []).map((gl) => ({ ...gl, studentSubjects: undefined }))]
+    for (const lesson of allAutoLessons) {
       const teacherKey = personKey('teacher', lesson.teacherId)
       const currentSlots = new Set(nextAvailability[teacherKey] ?? [])
       for (const sk of slotKeys) {
@@ -3234,6 +3380,7 @@ service cloud.firestore {
                                     <option key={k} value={k}>{v}</option>
                                   ))}
                                 </select>
+                                {(c.type === 'consecutive' || c.type === 'gap-then-consecutive' || c.type === 'with-regular') && (
                                 <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
                                   <input type="number" min={2} max={6} value={c.params.count ?? 2} style={{ width: 40, fontSize: '0.85em' }}
                                     onChange={(e) => {
@@ -3245,6 +3392,7 @@ service cloud.firestore {
                                       }))
                                     }} />コマ
                                 </label>
+                                )}
                                 {c.type === 'gap-then-consecutive' && (
                                   <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
                                     <input type="number" min={1} max={4} value={c.params.gapSlots ?? 1} style={{ width: 40, fontSize: '0.85em' }}
@@ -3258,6 +3406,7 @@ service cloud.firestore {
                                       }} />コマ空け
                                   </label>
                                 )}
+                                {(c.type === 'consecutive' || c.type === 'gap-then-consecutive' || c.type === 'with-regular') && (
                                 <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
                                   <input type="checkbox" checked={!!c.params.diffSubject}
                                     onChange={(e) => {
@@ -3269,6 +3418,20 @@ service cloud.firestore {
                                       }))
                                     }} />別教科
                                 </label>
+                                )}
+                                {c.type === 'same-day-limit' && (
+                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
+                                  最大<input type="number" min={1} max={6} value={c.params.sameDayMax ?? 2} style={{ width: 40, fontSize: '0.85em' }}
+                                    onChange={(e) => {
+                                      const updated = [...constraints]
+                                      updated[ci] = { ...c, params: { ...c.params, sameDayMax: Number(e.target.value) || 2 } }
+                                      void update((cur) => ({
+                                        ...cur,
+                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                      }))
+                                    }} />コマ/日
+                                </label>
+                                )}
                                 <select value={c.priority} style={{ fontSize: '0.8em' }}
                                   onChange={(e) => {
                                     const updated = [...constraints]
@@ -3656,7 +3819,7 @@ service cloud.firestore {
                   <div style={{ display: 'grid', gap: '10px' }}>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
-                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒1〜2人。★=通常授業（マスタから自動配置・編集不可）。机数上限あり。</p>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒1〜2人。★=通常授業（マスタから自動配置・編集不可）。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>自動提案 スコアリング（優先順）</h4>
@@ -3665,13 +3828,13 @@ service cloud.firestore {
                         <li><b>同日同ペア連続コマ +60</b> / 非連続 −40 → ペアの連続配置を優先</li>
                         <li><b>通常授業ペアボーナス +30</b> → 普段のペアを優先</li>
                         <li><b>2人ペアボーナス +30</b> → 1人より2人ペアを優先</li>
-                        <li><b>前半日程ボーナス 最大+25</b> → 前半の日付を優先的に埋める</li>
+                        <li><b>後半コマ優先 最大+25</b> → 高3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
                         <li><b>講師連続コマ +20</b> → 同日の連続コマに配置</li>
                         <li><b>生徒配分スコア</b> → 残コマ数が多い生徒を優先、同日複数回を抑制</li>
                         <li><b>混合科目 −15</b> → 同科目ペアを優先</li>
                         <li><b>隣接同科目 −20</b> → 同じ生徒の連続コマで科目を変える</li>
                         <li><b>講師負荷 −2/コマ</b> → 講師の負荷を均等化</li>
-                        <li><b>コマ制約カード</b> → 生徒ごとの連続コマ・空けて連続等の制約（必須=±150 / 希望=±40）</li>
+                        <li><b>コマ制約カード</b> → 連続・空けて連続・通常授業連結・単独のみ・同日上限（必須=±150 / 希望=±40）</li>
                       </ol>
                     </section>
                     <section>

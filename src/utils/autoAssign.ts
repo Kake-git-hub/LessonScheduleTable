@@ -375,18 +375,6 @@ export const buildIncrementalAutoAssignments = async (
 
   // Phase 3: Fill empty slots — minimize total teacher attendance dates, distribute students evenly
 
-  // Compute date ordering for first-half bias
-  const allDatesInOrder: string[] = []
-  for (const s of slots) {
-    const d = s.split('_')[0]
-    if (allDatesInOrder.length === 0 || allDatesInOrder[allDatesInOrder.length - 1] !== d) {
-      allDatesInOrder.push(d)
-    }
-  }
-  const totalDates = allDatesInOrder.length
-  const dateIndexMap = new Map<string, number>()
-  for (let i = 0; i < totalDates; i++) dateIndexMap.set(allDatesInOrder[i], i)
-
   const deskCountLimit = data.settings.deskCount ?? 0
 
   let slotCounter = 0
@@ -408,9 +396,9 @@ export const buildIncrementalAutoAssignments = async (
       continue
     }
 
-    // First-half bias: earlier dates get a bonus (max +25 for first date, 0 for last)
-    const dateIdx = dateIndexMap.get(currentDate) ?? 0
-    const firstHalfBonus = totalDates > 1 ? Math.round(25 * (1 - dateIdx / (totalDates - 1))) : 0
+    // Late-slot bias: non-高3 students prefer slot 3+ to encourage 2-student pairing
+    // Slots 3,4,5 get a bonus; slots 1,2 get no bonus or slight penalty
+    const lateSlotBonusForSlot = currentSlotNum >= 3 ? 25 : (currentSlotNum === 2 ? 5 : 0)
 
     const teachers = data.teachers.filter((teacher) =>
       hasAvailability(data.availability, 'teacher', teacher.id, slot),
@@ -458,6 +446,9 @@ export const buildIncrementalAutoAssignments = async (
       let bestPlan: { score: number; assignment: Assignment } | null = null
 
       for (const combo of [...candidates.map((s) => [s]), ...candidates.flatMap((l, i) => candidates.slice(i + 1).map((r) => [l, r]))]) {
+        // Enforce single-only constraint: skip 2-student combos if any student has single-only
+        if (combo.length === 2 && combo.some((st) => (st.slotConstraints ?? []).some((c) => c.type === 'single-only'))) continue
+
         // Avoid assigning the same student to this teacher's consecutive slot
         const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
         if (hasSameStudentConsecutive) continue
@@ -595,7 +586,7 @@ export const buildIncrementalAutoAssignments = async (
         let constraintCardScore = 0
         let hasMustViolation = false
         for (const st of combo) {
-          const evalResult = evaluateSlotConstraints(st, slot, result, data.settings.slotsPerDay)
+          const evalResult = evaluateSlotConstraints(st, slot, result, data.settings.slotsPerDay, data.regularLessons)
           constraintCardScore += evalResult.score
           if (evalResult.mustViolations.length > 0) {
             hasMustViolation = true
@@ -604,10 +595,13 @@ export const buildIncrementalAutoAssignments = async (
         }
         if (hasMustViolation) continue // Skip combos that violate must-constraints
 
+        // Late-slot bonus: non-高3 students get a bonus for slots 3+ to fill later slots first for better pairing
+        const comboLateSlotBonus = combo.some((st) => st.grade === '高3') ? 0 : lateSlotBonusForSlot
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +
           teacherConsecutiveBonus +
-          firstHalfBonus +
+          comboLateSlotBonus +
           regularPairBonus +
           pairConsecutiveBonus +
           (combo.length === 2 ? 30 : 0) +

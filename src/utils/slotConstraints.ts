@@ -7,8 +7,8 @@
  * - 'must' constraints: applied as hard filters (block invalid placements) AND a large scoring bonus
  * - 'prefer' constraints: applied only as scoring bonuses/penalties
  */
-import type { Assignment, SlotConstraint, Student } from '../types'
-import { getSlotNumber, getStudentSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
+import type { Assignment, RegularLesson, SlotConstraint, Student } from '../types'
+import { getSlotNumber, getIsoDayOfWeek, getStudentSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
 
 export interface ConstraintEvalResult {
   /** Total score adjustment from all constraints */
@@ -23,6 +23,9 @@ export interface ConstraintEvalResult {
 export const SLOT_CONSTRAINT_LABELS: Record<string, string> = {
   'consecutive': '連続コマ',
   'gap-then-consecutive': '空けて連続',
+  'with-regular': '通常授業連結',
+  'single-only': '単独のみ',
+  'same-day-limit': '同日上限',
 }
 
 /**
@@ -34,6 +37,12 @@ export const defaultConstraintParams = (type: string): SlotConstraint['params'] 
       return { count: 2, diffSubject: false }
     case 'gap-then-consecutive':
       return { count: 2, gapSlots: 1, diffSubject: false }
+    case 'with-regular':
+      return { count: 2, diffSubject: false }
+    case 'single-only':
+      return {}
+    case 'same-day-limit':
+      return { sameDayMax: 2 }
     default:
       return {}
   }
@@ -42,10 +51,11 @@ export const defaultConstraintParams = (type: string): SlotConstraint['params'] 
 /**
  * Evaluate all slot constraints for a student being placed in a candidate slot.
  *
- * @param student       The student being evaluated
- * @param candidateSlot The slot key being considered (e.g. "2026-03-15_2")
- * @param assignments   Current assignment state
- * @param slotsPerDay   Total slots per day (from session settings)
+ * @param student        The student being evaluated
+ * @param candidateSlot  The slot key being considered (e.g. "2026-03-15_2")
+ * @param assignments    Current assignment state
+ * @param slotsPerDay    Total slots per day (from session settings)
+ * @param regularLessons Regular lessons (for 'with-regular' constraint)
  * @returns Score adjustment and any must-violations
  */
 export const evaluateSlotConstraints = (
@@ -53,6 +63,7 @@ export const evaluateSlotConstraints = (
   candidateSlot: string,
   assignments: Record<string, Assignment[]>,
   slotsPerDay: number,
+  regularLessons?: RegularLesson[],
 ): ConstraintEvalResult => {
   const constraints = student.slotConstraints ?? []
   if (constraints.length === 0) return { score: 0, mustViolations: [] }
@@ -125,6 +136,64 @@ export const evaluateSlotConstraints = (
               score += weight / 4
             }
           }
+        }
+        break
+      }
+
+      case 'with-regular': {
+        // Desired: special lesson slots should be adjacent to student's regular lesson on this day-of-week
+        const count = c.params.count ?? 2
+        const dayOfWeek = getIsoDayOfWeek(date)
+        const studentRegularSlots = (regularLessons ?? [])
+          .filter((rl) => rl.dayOfWeek === dayOfWeek && rl.studentIds.includes(student.id))
+          .map((rl) => rl.slotNumber)
+        if (studentRegularSlots.length > 0) {
+          const isAdjacent = studentRegularSlots.some((n) => Math.abs(n - slotNum) === 1)
+          const allSlots = [...existingSlotNums, slotNum, ...studentRegularSlots].sort((a, b) => a - b)
+          const unique = [...new Set(allSlots)]
+          // Check if we can form a consecutive block of `count` including regular slots
+          let hasBlock = false
+          for (let start = 0; start <= unique.length - count; start++) {
+            let isRun = true
+            for (let i = 1; i < count; i++) {
+              if (unique[start + i] !== unique[start] + i) { isRun = false; break }
+            }
+            if (isRun) { hasBlock = true; break }
+          }
+          if (hasBlock) {
+            score += weight
+          } else if (isAdjacent) {
+            score += weight / 2
+          } else {
+            score -= weight / 2
+            if (c.priority === 'must') {
+              mustViolations.push(`通常授業に連結して${count}コマ連続が必要`)
+            }
+          }
+        }
+        // If no regular lesson on this day-of-week, constraint is N/A (no effect)
+        break
+      }
+
+      case 'single-only': {
+        // This constraint does NOT affect slot evaluation scoring.
+        // It's enforced in autoAssign by filtering out 2-student combos.
+        // Just a small bonus to confirm the constraint is considered.
+        score += 0
+        break
+      }
+
+      case 'same-day-limit': {
+        // Desired: student should not exceed N slots per day
+        const maxSlots = c.params.sameDayMax ?? 2
+        const totalOnDate = existingSlotNums.length + 1 // including candidate
+        if (totalOnDate > maxSlots) {
+          score -= weight
+          if (c.priority === 'must') {
+            mustViolations.push(`同日${maxSlots}コマまでの制限を超過`)
+          }
+        } else if (totalOnDate === maxSlots) {
+          score += weight / 4 // Exactly at limit — neutral to slightly positive
         }
         break
       }
@@ -269,6 +338,12 @@ export const summarizeConstraints = (constraints: SlotConstraint[]): string => {
         return `${c.params.count ?? 2}コマ連続${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
       case 'gap-then-consecutive':
         return `${c.params.gapSlots ?? 1}コマ空け→${c.params.count ?? 2}コマ連続${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
+      case 'with-regular':
+        return `通常授業連結${c.params.count ?? 2}コマ${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
+      case 'single-only':
+        return `単独のみ[${priority}]`
+      case 'same-day-limit':
+        return `同日最大${c.params.sameDayMax ?? 2}コマ[${priority}]`
       default:
         return `${c.type}[${priority}]`
     }
@@ -286,10 +361,16 @@ export const validateConstraints = (constraints: SlotConstraint[]): string[] => 
   const types = constraints.map((c) => c.type)
   const hasConsecutive = types.includes('consecutive')
   const hasGapConsecutive = types.includes('gap-then-consecutive')
+  const hasWithRegular = types.includes('with-regular')
 
   // consecutive + gap-then-consecutive conflict: both dictate placement pattern
   if (hasConsecutive && hasGapConsecutive) {
     warnings.push('「連続コマ」と「空けて連続」は同時に設定できません。どちらか一方にしてください。')
+  }
+
+  // with-regular + gap-then-consecutive conflict
+  if (hasWithRegular && hasGapConsecutive) {
+    warnings.push('「通常授業連結」と「空けて連続」は同時に設定できません。')
   }
 
   // Multiple of the same type
@@ -306,6 +387,21 @@ export const validateConstraints = (constraints: SlotConstraint[]): string[] => 
   const gapCards = constraints.filter((c) => c.type === 'gap-then-consecutive')
   if (gapCards.length > 1) {
     warnings.push('「空けて連続」制約が重複しています。1つにまとめてください。')
+  }
+
+  const singleOnlyCards = constraints.filter((c) => c.type === 'single-only')
+  if (singleOnlyCards.length > 1) {
+    warnings.push('「単独のみ」制約が重複しています。')
+  }
+
+  const sameDayLimitCards = constraints.filter((c) => c.type === 'same-day-limit')
+  if (sameDayLimitCards.length > 1) {
+    warnings.push('「同日上限」制約が重複しています。')
+  }
+
+  const withRegularCards = constraints.filter((c) => c.type === 'with-regular')
+  if (withRegularCards.length > 1) {
+    warnings.push('「通常授業連結」制約が重複しています。')
   }
 
   return warnings
