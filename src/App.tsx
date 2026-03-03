@@ -832,12 +832,16 @@ const HomePage = () => {
     const sampleRegularLessons = [
       ['田中講師', '青木 太郎', '数', '', '', '月', '1'],
     ]
+    const sampleGroupLessons = [
+      ['田中講師', '数', '青木 太郎, 伊藤 花, 上田 陽介', '月', '2'],
+    ]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', 'メール'], ...sampleManagers]), 'マネージャー')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目(カンマ区切り: ' + ALL_TEACHER_SUBJECTS.join(',') + ')', 'メモ', 'メール'], ...sampleTeachers]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...sampleStudents]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...sampleConstraints]), '制約')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...sampleRegularLessons]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日', '時限'], ...sampleGroupLessons]), '集団授業')
     XLSX.writeFile(wb, 'テンプレート.xlsx')
   }
 
@@ -875,7 +879,14 @@ const HomePage = () => {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '担当科目', 'メモ', 'メール'], ...teacherRows]), '講師')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['名前', '学年', 'メモ', 'メール'], ...studentRows]), '生徒')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['人物A種別', '人物A名', '人物B種別', '人物B名', '種別'], ...constraintRows]), '制約')
+    const groupLessonRows = (md.groupLessons ?? []).map((gl) => [
+      md.teachers.find((t) => t.id === gl.teacherId)?.name ?? gl.teacherId,
+      gl.subject,
+      gl.studentIds.map((sid) => md.students.find((s) => s.id === sid)?.name ?? sid).join(', '),
+      dayNames[gl.dayOfWeek] ?? '', gl.slotNumber,
+    ])
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '生徒1名', '生徒1科目', '生徒2名', '生徒2科目', '曜日', '時限'], ...regularLessonRows]), '通常授業')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['講師名', '科目', '生徒名(カンマ区切り)', '曜日', '時限'], ...groupLessonRows]), '集団授業')
     XLSX.writeFile(wb, '管理データ.xlsx')
   }
 
@@ -890,6 +901,7 @@ const HomePage = () => {
     const importedStudents: Student[] = []
     const importedConstraints: PairConstraint[] = []
     const importedRegularLessons: RegularLesson[] = []
+    const importedGroupLessons: GroupLesson[] = []
 
     const findTeacherId = (name: string): string | null => {
       const existing = md.teachers.find((t) => t.name === name)
@@ -1003,6 +1015,37 @@ const HomePage = () => {
       }
     }
 
+    const groupWs = wb.Sheets['集団授業']
+    if (groupWs) {
+      const rows = XLSX.utils.sheet_to_json(groupWs, { header: 1 }) as unknown as unknown[][]
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const tName = String(row?.[0] ?? '').trim()
+        const subject = String(row?.[1] ?? '').trim()
+        const studentsStr = String(row?.[2] ?? '').trim()
+        const dayStr = String(row?.[3] ?? '').trim()
+        const slotNum = Number(row?.[4])
+        const tid = findTeacherId(tName)
+        if (!tid || !subject) continue
+        const dow = dayNameMap[dayStr]
+        if (dow === undefined || Number.isNaN(slotNum) || slotNum < 1) continue
+        const studentNames = studentsStr.split(/[、,]/).map((s) => s.trim()).filter(Boolean)
+        const sids = studentNames.map((n) => findStudentId(n)).filter(Boolean) as string[]
+        if (sids.length === 0) continue
+        // Dedup: skip if same group lesson already exists
+        const sortedSids = [...sids].sort()
+        const isDup = (md.groupLessons ?? []).some((existing) =>
+          existing.teacherId === tid &&
+          existing.dayOfWeek === dow &&
+          existing.slotNumber === slotNum &&
+          existing.studentIds.length === sortedSids.length &&
+          [...existing.studentIds].sort().every((id, j) => id === sortedSids[j]),
+        )
+        if (isDup) continue
+        importedGroupLessons.push({ id: createId(), teacherId: tid, studentIds: sids, subject, dayOfWeek: dow, slotNumber: slotNum })
+      }
+    }
+
     // --- Validation: check for inconsistencies ---
     const validationWarnings: string[] = []
     // All teachers (existing + imported)
@@ -1031,6 +1074,23 @@ const HomePage = () => {
       }
       return valid
     })
+    // Check group lessons
+    const validGroupLessons = importedGroupLessons.filter((gl) => {
+      const teacher = allTeachers.find((t) => t.id === gl.teacherId)
+      const dayNames2 = ['日', '月', '火', '水', '木', '金', '土']
+      let valid = true
+      if (teacher && !teacherHasSubject(teacher.subjects, gl.subject)) {
+        validationWarnings.push(`集団授業スキップ: ${teacher.name} の担当科目に「${gl.subject}」がありません（${dayNames2[gl.dayOfWeek]}曜${gl.slotNumber}限）`)
+        valid = false
+      }
+      for (const sid of gl.studentIds) {
+        if (!allStudents.find((s) => s.id === sid)) {
+          validationWarnings.push(`集団授業スキップ: 生徒ID「${sid}」が見つかりません（${dayNames2[gl.dayOfWeek]}曜${gl.slotNumber}限）`)
+          valid = false
+        }
+      }
+      return valid
+    })
     // Check constraints reference valid people — remove invalid ones
     const validConstraints = importedConstraints.filter((c) => {
       const aList = c.personAType === 'teacher' ? allTeachers : allStudents
@@ -1053,6 +1113,7 @@ const HomePage = () => {
     if (importedStudents.length) added.push(`生徒${importedStudents.length}名`)
     if (validConstraints.length) added.push(`制約${validConstraints.length}件`)
     if (validRegularLessons.length) added.push(`通常授業${validRegularLessons.length}件`)
+    if (validGroupLessons.length) added.push(`集団授業${validGroupLessons.length}件`)
     if (added.length === 0 && validationWarnings.length === 0) { alert('新規データがありませんでした（同名は重複スキップ）。'); return }
     if (added.length === 0 && validationWarnings.length > 0) { alert(`⚠️ 以下のデータにエラーがあり、取り込めるデータがありませんでした:\n\n${validationWarnings.join('\n')}`); return }
     const confirmMsg = validationWarnings.length > 0
@@ -1067,6 +1128,7 @@ const HomePage = () => {
       students: [...c.students, ...importedStudents],
       constraints: [...c.constraints, ...validConstraints],
       regularLessons: [...c.regularLessons, ...validRegularLessons],
+      groupLessons: [...(c.groupLessons ?? []), ...validGroupLessons],
     }))
     changeLogRef.current.add(`ファイル取り込み (${added.join(', ')})`)
     setTimeout(() => alert('取り込み完了！'), 50)
