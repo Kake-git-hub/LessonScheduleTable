@@ -2836,11 +2836,15 @@ const AdminPage = () => {
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
     const highlightDetails: Record<string, Record<string, string>> = {}
-    const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
-    for (const slot of allSlotSet) {
-      if ((addedPairSignatures[slot] ?? []).length > 0) highlightAdded[slot] = [...addedPairSignatures[slot]]
-      if ((changedPairSignatures[slot] ?? []).length > 0) highlightChanged[slot] = [...changedPairSignatures[slot]]
-      if (changeDetails[slot]) highlightDetails[slot] = { ...changeDetails[slot] }
+    // Only show NEW/UPDATE badges on 2nd+ auto-assign (skip when previous assignments were empty)
+    const hadPreviousAssignments = Object.values(data.assignments).some(a => a && a.length > 0)
+    if (hadPreviousAssignments) {
+      const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
+      for (const slot of allSlotSet) {
+        if ((addedPairSignatures[slot] ?? []).length > 0) highlightAdded[slot] = [...addedPairSignatures[slot]]
+        if ((changedPairSignatures[slot] ?? []).length > 0) highlightChanged[slot] = [...changedPairSignatures[slot]]
+        if (changeDetails[slot]) highlightDetails[slot] = { ...changeDetails[slot] }
+      }
     }
 
     const remainingStudents = data.students
@@ -4001,47 +4005,7 @@ service cloud.firestore {
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
                 const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable && !studentDragNoTarget
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
-                const isPairMove = isDragActive && !isStudentDrag
                 const isSourceSlot = isDragActive && dragInfo.sourceSlot === slot
-
-                // Pair move active: show compact slot with destination button
-                if (isPairMove) {
-                  return (
-                    <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
-                      style={{ padding: '6px 10px', minHeight: 0 }}
-                    >
-                      <div className="slot-title" style={{ marginBottom: (isSourceSlot || (isDropValid && !isSourceSlot)) ? 4 : 0 }}>
-                        <span>{slotLabel(slot, isMendan, mendanStart)}</span>
-                        {(data.settings.deskCount ?? 0) > 0 && (
-                          <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280' }}>
-                            {slotAssignments.length}/{data.settings.deskCount}
-                          </span>
-                        )}
-                      </div>
-                      {isSourceSlot && (
-                        <div style={{ background: '#eff6ff', border: '1px solid #3b82f6', borderRadius: '6px', padding: '6px 8px', fontSize: '0.82em', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ fontWeight: 600, color: '#1e40af' }}>ペアを移動中...</span>
-                          <button className="btn secondary" type="button" style={{ fontSize: '0.85em', padding: '2px 8px' }}
-                            onClick={() => { setDragInfo(null); setTransferSlot(null) }}>キャンセル</button>
-                        </div>
-                      )}
-                      {isDropValid && !isSourceSlot && (
-                        <button
-                          className="btn"
-                          type="button"
-                          style={{ width: '100%', fontSize: '0.82em', padding: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
-                          onClick={() => {
-                            void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
-                            setDragInfo(null)
-                            setTransferSlot(null)
-                          }}
-                        >
-                          ここに移動
-                        </button>
-                      )}
-                    </div>
-                  )
-                }
 
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
@@ -4108,12 +4072,13 @@ service cloud.firestore {
                         style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                         onClick={() => {
                           if (dragInfo.studentDragId) {
-                            // Find the best target: first try an existing compatible block, otherwise create new pair
+                            // Find the best target: first try an existing compatible block with a teacher, otherwise create new pair
                             const draggedStudent = data.students.find(s => s.id === dragInfo.studentDragId)
                             const dragSubject = dragInfo.studentDragSubject ?? ''
                             const bestIdx = slotAssignments.findIndex((a) => {
                               if (a.isGroupLesson || a.studentIds.length >= 2) return false
-                              if (!isMendan && draggedStudent && dragSubject && a.teacherId) {
+                              if (!a.teacherId) return false // skip blocks without teacher
+                              if (!isMendan && draggedStudent && dragSubject) {
                                 const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
                                 if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
                               }
@@ -4228,35 +4193,6 @@ service cloud.firestore {
                         const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
                         const isAutoDiff = isAutoAdded || isAutoChanged
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
-
-                        // Compact display when pair-move is active (not student-move)
-                        const isPairMoveActive = isDragActive && !isStudentDrag
-                        const isBeingMoved = isPairMoveActive && dragInfo.sourceSlot === slot && dragInfo.sourceIdx === idx
-
-                        if (isPairMoveActive && !isBeingMoved) {
-                          // Show compact text-only summary
-                          const tName = selectedTeacher?.name ?? (assignment.teacherId ? '?' : '未定')
-                          const sNames = assignment.studentIds
-                            .map((sid) => {
-                              const name = data.students.find((s) => s.id === sid)?.name ?? ''
-                              const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(sid))
-                              const mkInfo = assignment.regularMakeupInfo?.[sid]
-                              return (isRegAtSlot || mkInfo) ? `★${name}` : name
-                            })
-                            .filter(Boolean)
-                            .join('・') || '未定'
-                          return (
-                            <div key={idx} className={`assignment-block assignment-block-compact${assignment.isRegular ? ' assignment-block-regular' : ''}`}
-                              style={{ position: 'relative', padding: '3px 6px', fontSize: '0.82em', lineHeight: 1.3, opacity: 0.7 }}>
-                              {assignment.isGroupLesson
-                                ? <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.7em', marginRight: 3 }}>■</span>
-                                : null}
-                              <span style={{ fontWeight: 600 }}>{tName}</span>
-                              <span style={{ margin: '0 4px', color: '#94a3b8' }}>|</span>
-                              <span>{sNames}</span>
-                            </div>
-                          )
-                        }
 
                         // Compute student-drag drop validity for this specific assignment block
                         const isStudentDropCandidate = isDragActive && isStudentDrag && !assignment.isGroupLesson && assignment.studentIds.length < 2
