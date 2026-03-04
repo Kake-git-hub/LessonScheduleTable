@@ -35,10 +35,11 @@ export const buildIncrementalAutoAssignments = async (
   data: SessionData,
   slots: string[],
   onProgress?: (ratio: number) => void,
-): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> }> => {
+): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; makeupPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> }> => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
   const addedPairSigSetBySlot: Record<string, Set<string>> = {}
+  const makeupPairSigSetBySlot: Record<string, Set<string>> = {}
   const changeDetailsBySlot: Record<string, Record<string, string>> = {}
 
   // --- Helpers for detailed submission-based reasons ---
@@ -115,6 +116,16 @@ export const buildIncrementalAutoAssignments = async (
     if (!addedPairSigSetBySlot[slot]) addedPairSigSetBySlot[slot] = new Set<string>()
     const sig = assignmentSignature(assignment)
     addedPairSigSetBySlot[slot].add(sig)
+    if (detail) {
+      if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
+      changeDetailsBySlot[slot][sig] = detail
+    }
+  }
+  const markMakeupPair = (slot: string, assignment: Assignment, detail?: string): void => {
+    if (assignment.isRegular) return
+    if (!makeupPairSigSetBySlot[slot]) makeupPairSigSetBySlot[slot] = new Set<string>()
+    const sig = assignmentSignature(assignment)
+    makeupPairSigSetBySlot[slot].add(sig)
     if (detail) {
       if (!changeDetailsBySlot[slot]) changeDetailsBySlot[slot] = {}
       changeDetailsBySlot[slot][sig] = detail
@@ -252,9 +263,8 @@ export const buildIncrementalAutoAssignments = async (
           markChangedPair(slot, changedAssignment, `生徒解除:\n${removedNames}`)
         }
       } else if (removedStudentIds.length > 0) {
-        const changedAssignment = { ...assignment, studentIds: [] }
-        cleaned.push(changedAssignment)
-        changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留（予定変更のため）` })
+        // All students removed — don't keep teacher-only assignment
+        changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留破棄（予定変更のため）` })
       } else {
         cleaned.push(assignment)
       }
@@ -686,7 +696,15 @@ export const buildIncrementalAutoAssignments = async (
         if (tChange) detailParts.push(`[講師] ${tChange}`)
         if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
         const fullDetail = detailParts.join(' | ')
-        markAddedPair(slot, a, fullDetail)
+        // Check if any student in this assignment has a regular lesson → mark as makeup (振替)
+        const hasRegularStudent = a.studentIds.some((sid) =>
+          data.regularLessons.some((rl) => rl.studentIds.includes(sid)),
+        )
+        if (hasRegularStudent) {
+          markMakeupPair(slot, a, fullDetail)
+        } else {
+          markAddedPair(slot, a, fullDetail)
+        }
         changeLog.push({ slot, action: '新規割当', detail: fullDetail })
       }
     }
@@ -704,7 +722,22 @@ export const buildIncrementalAutoAssignments = async (
     if (signatureSet.size > 0) addedPairSignatures[slot] = [...signatureSet]
   }
 
-  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, changeDetails: changeDetailsBySlot }
+  const makeupPairSignatures: Record<string, string[]> = {}
+  for (const [slot, signatureSet] of Object.entries(makeupPairSigSetBySlot)) {
+    if (signatureSet.size > 0) makeupPairSignatures[slot] = [...signatureSet]
+  }
+
+  // Cleanup: remove assignments with no students (empty teacher-only pairs)
+  for (const slot of Object.keys(result)) {
+    const cleaned = result[slot].filter((a) => a.studentIds.length > 0 || a.isGroupLesson)
+    if (cleaned.length > 0) {
+      result[slot] = cleaned
+    } else {
+      delete result[slot]
+    }
+  }
+
+  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot }
 }
 
 /** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */

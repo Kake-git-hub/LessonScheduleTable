@@ -2824,7 +2824,7 @@ const AdminPage = () => {
       await updateAssignments((current) => ({
         ...current,
         assignments: nextAssignments,
-        autoAssignHighlights: { added: {}, changed: {} },
+        autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }))
 
@@ -2837,19 +2837,28 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
+    const highlightMakeup: Record<string, string[]> = {}
     const highlightDetails: Record<string, Record<string, string>> = {}
-    // Only show NEW/UPDATE badges on 2nd+ auto-assign (skip when previous assignments were all regular auto-fill)
+    // Always show 振替 badges for regular student makeup assignments
+    for (const slot of Object.keys(makeupPairSignatures)) {
+      if ((makeupPairSignatures[slot] ?? []).length > 0) highlightMakeup[slot] = [...makeupPairSignatures[slot]]
+      if (changeDetails[slot]) {
+        if (!highlightDetails[slot]) highlightDetails[slot] = {}
+        Object.assign(highlightDetails[slot], changeDetails[slot])
+      }
+    }
+    // Only show 新規/変更 badges on 2nd+ auto-assign (skip when previous assignments were all regular auto-fill)
     const hadPreviousAssignments = Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
     if (hadPreviousAssignments) {
       const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
       for (const slot of allSlotSet) {
         if ((addedPairSignatures[slot] ?? []).length > 0) highlightAdded[slot] = [...addedPairSignatures[slot]]
         if ((changedPairSignatures[slot] ?? []).length > 0) highlightChanged[slot] = [...changedPairSignatures[slot]]
-        if (changeDetails[slot]) highlightDetails[slot] = { ...changeDetails[slot] }
+        if (changeDetails[slot]) highlightDetails[slot] = { ...(highlightDetails[slot] ?? {}), ...changeDetails[slot] }
       }
     }
 
@@ -2900,7 +2909,7 @@ const AdminPage = () => {
     await updateAssignments((current) => ({
       ...current,
       assignments: nextAssignments,
-      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, changeDetails: highlightDetails },
+      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails },
       settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
     }))
     const remainingMessage = remainingStudents.length > 0
@@ -2932,7 +2941,7 @@ const AdminPage = () => {
     await updateAssignments((current) => ({
       ...current,
       assignments: {},
-      autoAssignHighlights: { added: {}, changed: {} },
+      autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
     }))
   }
 
@@ -3317,12 +3326,19 @@ const AdminPage = () => {
       })
       if (movedTargetAssignment) {
         const hl = current.autoAssignHighlights ?? {}
-        const changedSigs = { ...(hl.changed ?? {}) }
         const sig = assignmentSignature(movedTargetAssignment)
-        changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
         const details = { ...(hl.changeDetails ?? {}) }
         if (!details[targetSlot]) details[targetSlot] = {}
         const studentName = student?.name ?? studentId
+        // Regular student move → 振替 badge, otherwise → 変更 badge
+        if (studentMakeupInfo) {
+          const makeupSigs = { ...(hl.makeup ?? {}) }
+          makeupSigs[targetSlot] = [...(makeupSigs[targetSlot] ?? []), sig]
+          details[targetSlot][sig] = `振替: ${studentName} (${sourceSlot} → ${targetSlot})`
+          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, makeup: makeupSigs, changeDetails: details } }
+        }
+        const changedSigs = { ...(hl.changed ?? {}) }
+        changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
         details[targetSlot][sig] = `生徒移動: ${studentName} (${sourceSlot} → ${targetSlot})`
         return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, changeDetails: details } }
       }
@@ -4266,7 +4282,8 @@ service cloud.firestore {
                         const hl = data.autoAssignHighlights ?? {}
                         const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
                         const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
-                        const isAutoDiff = isAutoAdded || isAutoChanged
+                        const isAutoMakeup = (hl.makeup?.[slot] ?? []).includes(sig)
+                        const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeup
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
 
                         // Compute student-drag drop validity for this specific assignment block
@@ -4332,11 +4349,12 @@ service cloud.firestore {
                               </button>
                             )}
                             {/* Badges row above teacher */}
-                            {(isIncompatiblePair || isAutoAdded || isAutoChanged) && (
+                            {(isIncompatiblePair || isAutoAdded || isAutoChanged || isAutoMakeup) && (
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
-                                {isAutoAdded && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>NEW</span>}
-                                {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>UPDATE</span>}
+                                {isAutoMakeup && <span className="badge auto-diff-badge" style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }} title={changeDetail || '通常授業の振替'}>振替</span>}
+                                {isAutoAdded && !isAutoMakeup && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
+                                {isAutoChanged && !isAutoMakeup && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
                               </div>
                             )}
                             {/* Teacher row: select + pair move + delete */}
@@ -5099,19 +5117,21 @@ const StudentInputPage = ({
     return initial
   })
 
-  const regularSlotKeys = useMemo(() => {
-    const keys = new Set<string>()
+  const regularSlotMap = useMemo(() => {
+    const map = new Map<string, string>()
     const studentLessons = data.regularLessons.filter((lesson) => lesson.studentIds.includes(student.id))
     for (const date of dates) {
       const dayOfWeek = getIsoDayOfWeek(date)
       for (const lesson of studentLessons) {
         if (lesson.dayOfWeek === dayOfWeek) {
-          keys.add(`${date}_${lesson.slotNumber}`)
+          const subj = lesson.studentSubjects?.[student.id] ?? lesson.subject ?? ''
+          map.set(`${date}_${lesson.slotNumber}`, subj)
         }
       }
     }
-    return keys
+    return map
   }, [dates, data.regularLessons, student.id])
+  const regularSlotKeys = useMemo(() => new Set(regularSlotMap.keys()), [regularSlotMap])
 
   const toggleSlot = (slotKey: string) => {
     // Check if this slot has a regular lesson
@@ -5364,8 +5384,9 @@ const StudentInputPage = ({
                             className={`teacher-slot-btn ${isUnavail ? 'unavail' : ''} ${hasRegular && !isUnavail ? 'regular' : ''}`}
                             onClick={() => toggleSlot(slotKey)}
                             type="button"
+                            style={hasRegular && !isUnavail ? { fontSize: '11px', lineHeight: '1.1', padding: '2px 1px' } : undefined}
                           >
-                            {isUnavail ? '✕' : hasRegular ? '通' : ''}
+                            {isUnavail ? '✕' : hasRegular ? <>通常<br />{regularSlotMap.get(slotKey) ?? ''}</> : ''}
                           </button>
                         </td>
                       )
