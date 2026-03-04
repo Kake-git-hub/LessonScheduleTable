@@ -135,8 +135,9 @@ export const buildIncrementalAutoAssignments = async (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
-  // Pre-compute makeup student counts: for each regular-lesson student, how many regular slots are unavailable
-  const makeupStudentRemaining = new Map<string, number>()
+  // Pre-compute makeup student info: for each regular-lesson student, which regular slots are unavailable
+  // Stores per-student array of { teacherId, dayOfWeek, slotNumber } for each unavailable regular slot
+  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number }>>()
   for (const rl of data.regularLessons) {
     for (const sid of rl.studentIds) {
       const student = data.students.find((s) => s.id === sid)
@@ -146,7 +147,9 @@ export const buildIncrementalAutoAssignments = async (
         const dow = getIsoDayOfWeek(date)
         if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
           if (!isStudentAvailable(student, slot)) {
-            makeupStudentRemaining.set(sid, (makeupStudentRemaining.get(sid) ?? 0) + 1)
+            const arr = makeupStudentInfo.get(sid) ?? []
+            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber })
+            makeupStudentInfo.set(sid, arr)
           }
         }
       }
@@ -665,6 +668,15 @@ export const buildIncrementalAutoAssignments = async (
           }
         }
 
+        // Makeup bonus: strongly prefer assigning makeup students to their regular teacher
+        let makeupBonus = 0
+        for (const st of combo) {
+          const mkInfos = makeupStudentInfo.get(st.id)
+          if (mkInfos && mkInfos.length > 0 && mkInfos.some(mk => mk.teacherId === teacher.id)) {
+            makeupBonus += 200
+          }
+        }
+
         const score = 100 +
           (isExistingDate ? 80 : -50) +
           teacherConsecutiveBonus +
@@ -672,6 +684,7 @@ export const buildIncrementalAutoAssignments = async (
           ju3GroupBonus +
           regularPairBonus +
           pairConsecutiveBonus +
+          makeupBonus +
           (combo.length === 2 ? 30 : 0) +
           mixedSubjectPenalty +
           consecutiveSameSubjectPenalty +
@@ -714,13 +727,24 @@ export const buildIncrementalAutoAssignments = async (
         if (tChange) detailParts.push(`[講師] ${tChange}`)
         if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
         const fullDetail = detailParts.join(' | ')
-        // Check if any student is a makeup student with remaining makeup count
-        const makeupSids = a.studentIds.filter((sid) => (makeupStudentRemaining.get(sid) ?? 0) > 0)
+        // Check if any student is a makeup student assigned to their regular teacher
+        const makeupSids = a.studentIds.filter((sid) => {
+          const mkInfos = makeupStudentInfo.get(sid)
+          return mkInfos && mkInfos.length > 0 && mkInfos.some(mk => mk.teacherId === a.teacherId)
+        })
         if (makeupSids.length > 0) {
-          // Decrement remaining makeup count for each student used
+          // Set regularMakeupInfo so the ★ badge appears alongside 振替
+          const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number }> = { ...(a.regularMakeupInfo ?? {}) }
           for (const sid of makeupSids) {
-            makeupStudentRemaining.set(sid, (makeupStudentRemaining.get(sid) ?? 1) - 1)
+            const mkInfos = makeupStudentInfo.get(sid)!
+            const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId)
+            if (matchIdx >= 0) {
+              const match = mkInfos[matchIdx]
+              regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber }
+              mkInfos.splice(matchIdx, 1) // consume this makeup entry
+            }
           }
+          a.regularMakeupInfo = regularMakeupInfo
           markMakeupPair(slot, a, fullDetail)
         } else {
           markAddedPair(slot, a, fullDetail)
