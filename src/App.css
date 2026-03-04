@@ -774,9 +774,18 @@
   min-width: 0;
 }
 
-.assignment-block > .student-select-row > select:first-of-type,
+.row-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 75px;
+  flex-shrink: 0;
+  justify-content: flex-end;
+}
+
 .assignment-block select {
   min-width: 0;
+  width: 100%;
 }
 
 .subject-select-inline {

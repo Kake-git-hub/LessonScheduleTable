@@ -3974,11 +3974,19 @@ service cloud.firestore {
                 // For student drag to a different slot: check if student can be placed (existing block accepts OR a compatible teacher is available for new pair)
                 const studentDragNoTarget = (() => {
                   if (!isStudentDrag || isSameSlot) return false
-                  const hasAcceptableBlock = slotAssignments.some((a) => !a.isGroupLesson && a.studentIds.length < 2)
-                  if (hasAcceptableBlock) return false
-                  // No existing block accepts — check if a compatible teacher exists for new pair
                   const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
                   const dragSubject = dragInfo.studentDragSubject ?? ''
+                  // Check if any existing block can accept (has space, not group, and teacher can teach subject)
+                  const hasAcceptableBlock = slotAssignments.some((a) => {
+                    if (a.isGroupLesson || a.studentIds.length >= 2) return false
+                    if (!isMendan && draggedStudent && dragSubject && a.teacherId) {
+                      const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
+                      if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
+                    }
+                    return true
+                  })
+                  if (hasAcceptableBlock) return false
+                  // No existing block accepts — check if a compatible teacher exists for new pair
                   for (const inst of instructors) {
                     if (usedTeacherIds.has(inst.id)) continue
                     if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
@@ -4327,29 +4335,31 @@ service cloud.firestore {
                                   )
                                 })}
                               </select>
-                              {!assignment.isGroupLesson && !isDragActive && !isRecorded && (
-                                <button
-                                  type="button"
-                                  title="ペアを別コマへ移動"
-                                  style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1, flexShrink: 0 }}
-                                  onClick={() => {
-                                    setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
-                                    setTransferSlot(slot)
-                                  }}
-                                >
-                                  ⇔
-                                </button>
-                              )}
-                              {!assignment.isGroupLesson && !isDragActive && (
-                                <button
-                                  type="button"
-                                  title="このペアを削除"
-                                  style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
-                                  onClick={() => void setSlotTeacher(slot, idx, '')}
-                                >
-                                  ×
-                                </button>
-                              )}
+                              <div className="row-actions-right">
+                                {!assignment.isGroupLesson && !isDragActive && !isRecorded && (
+                                  <button
+                                    type="button"
+                                    title="ペアを別コマへ移動"
+                                    style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1, flexShrink: 0 }}
+                                    onClick={() => {
+                                      setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
+                                      setTransferSlot(slot)
+                                    }}
+                                  >
+                                    ⇔
+                                  </button>
+                                )}
+                                {!assignment.isGroupLesson && !isDragActive && (
+                                  <button
+                                    type="button"
+                                    title="このペアを削除"
+                                    style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
+                                    onClick={() => void setSlotTeacher(slot, idx, '')}
+                                  >
+                                    ×
+                                  </button>
+                                )}
+                              </div>
                             </div>
 
                             {assignment.teacherId && (
@@ -4444,6 +4454,7 @@ service cloud.firestore {
                                         )
                                       })}
                                     </select>
+                                    <div className="row-actions-right">
                                     {currentStudentId && !assignment.isGroupLesson && !isMendan && (
                                       <select
                                         className="subject-select-inline"
@@ -4486,6 +4497,7 @@ service cloud.firestore {
                                         ⇔
                                       </button>
                                     )}
+                                    </div>
                                     </div>
                                   )
                                 })}
