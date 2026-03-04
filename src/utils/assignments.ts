@@ -120,7 +120,7 @@ export const countStudentAssignedDates = (assignments: Record<string, Assignment
 
 /** Count how many SPECIAL (non-regular) slots a student is assigned */
 export const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
-  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular).length
+  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular && !a.regularMakeupInfo?.[studentId]).length
 
 /** Count how many SPECIAL (non-regular) slots a student is assigned for a specific subject */
 export const countStudentSubjectLoad = (
@@ -129,7 +129,7 @@ export const countStudentSubjectLoad = (
   subject: string,
 ): number =>
   allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular,
+    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId],
   ).length
 
 export type TeacherShortageEntry = {
