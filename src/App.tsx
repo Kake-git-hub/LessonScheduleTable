@@ -4011,7 +4011,7 @@ service cloud.firestore {
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
             <div style={{ position: 'relative' }}>
             {autoAssignLoading && (
-              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18px', borderRadius: '8px' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', background: '#fff', padding: '16px 28px', borderRadius: '10px', boxShadow: '0 2px 12px rgba(0,0,0,0.15)' }}>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '1em', color: '#334155', fontWeight: 600 }}>
                     <span className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />

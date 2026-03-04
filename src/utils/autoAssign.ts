@@ -135,19 +135,18 @@ export const buildIncrementalAutoAssignments = async (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
-  // Pre-compute makeup student IDs: regular lesson students who are unavailable for their regular slot
-  const makeupStudentIds = new Set<string>()
+  // Pre-compute makeup student counts: for each regular-lesson student, how many regular slots are unavailable
+  const makeupStudentRemaining = new Map<string, number>()
   for (const rl of data.regularLessons) {
     for (const sid of rl.studentIds) {
       const student = data.students.find((s) => s.id === sid)
       if (!student) continue
-      // Check if any session slot matching this regular lesson is unavailable for the student
       for (const slot of slots) {
         const [date] = slot.split('_')
         const dow = getIsoDayOfWeek(date)
         if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
           if (!isStudentAvailable(student, slot)) {
-            makeupStudentIds.add(sid)
+            makeupStudentRemaining.set(sid, (makeupStudentRemaining.get(sid) ?? 0) + 1)
           }
         }
       }
@@ -715,9 +714,13 @@ export const buildIncrementalAutoAssignments = async (
         if (tChange) detailParts.push(`[講師] ${tChange}`)
         if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
         const fullDetail = detailParts.join(' | ')
-        // Check if any student is a makeup student (regular lesson student whose regular slot is unavailable)
-        const hasMakeupStudent = a.studentIds.some((sid) => makeupStudentIds.has(sid))
-        if (hasMakeupStudent) {
+        // Check if any student is a makeup student with remaining makeup count
+        const makeupSids = a.studentIds.filter((sid) => (makeupStudentRemaining.get(sid) ?? 0) > 0)
+        if (makeupSids.length > 0) {
+          // Decrement remaining makeup count for each student used
+          for (const sid of makeupSids) {
+            makeupStudentRemaining.set(sid, (makeupStudentRemaining.get(sid) ?? 1) - 1)
+          }
           markMakeupPair(slot, a, fullDetail)
         } else {
           markAddedPair(slot, a, fullDetail)
