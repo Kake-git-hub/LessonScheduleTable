@@ -2836,8 +2836,8 @@ const AdminPage = () => {
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
     const highlightDetails: Record<string, Record<string, string>> = {}
-    // Only show NEW/UPDATE badges on 2nd+ auto-assign (skip when previous assignments were empty)
-    const hadPreviousAssignments = Object.values(data.assignments).some(a => a && a.length > 0)
+    // Only show NEW/UPDATE badges on 2nd+ auto-assign (skip when previous assignments were all regular auto-fill)
+    const hadPreviousAssignments = Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
     if (hadPreviousAssignments) {
       const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
       for (const slot of allSlotSet) {
@@ -3210,6 +3210,7 @@ const AdminPage = () => {
           ...targetAssignment,
           studentIds: updatedTargetStudentIds,
           studentSubjects: updatedTargetStudentSubjects,
+          isRegular: false, // Mark as manual so auto-fill won't overwrite
           ...(updatedTargetMakeupInfo ? { regularMakeupInfo: updatedTargetMakeupInfo } : {}),
         }
       } else {
@@ -3251,6 +3252,7 @@ const AdminPage = () => {
           ...srcAssignment,
           studentIds: updatedSrcStudentIds,
           studentSubjects: updatedSrcStudentSubjects,
+          isRegular: false, // Mark as manual so auto-fill won't overwrite
         }
       }
 
