@@ -34,6 +34,7 @@ const yieldToMain = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 export const buildIncrementalAutoAssignments = async (
   data: SessionData,
   slots: string[],
+  onProgress?: (ratio: number) => void,
 ): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> }> => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
@@ -381,7 +382,10 @@ export const buildIncrementalAutoAssignments = async (
   let slotCounter = 0
   for (const slot of slots) {
     // Yield every 5 slots to keep the page responsive
-    if (++slotCounter % 5 === 0) await yieldToMain()
+    if (++slotCounter % 5 === 0) {
+      await yieldToMain()
+      onProgress?.(slotCounter / slots.length)
+    }
 
     const currentDate = slot.split('_')[0]
     const currentSlotNum = getSlotNumber(slot)

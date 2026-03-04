@@ -2122,7 +2122,7 @@ const AdminPage = () => {
   const { data, setData, loading, error: sessionError } = useSessionData(classroomId, sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
-  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; regularTeacherId?: string } | null>(null)
   const [, setTransferSlot] = useState<string | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
@@ -2134,6 +2134,7 @@ const AdminPage = () => {
   const [showSalary, setShowSalary] = useState(false)
   const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
+  const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
@@ -2791,6 +2792,7 @@ const AdminPage = () => {
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
     setAutoAssignLoading(true)
+    setAutoAssignProgress(0)
     setManuallyModifiedSlots(new Set()) // Clear manual modifications on auto-assign
     // Yield to let React render the spinner
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
@@ -2835,7 +2837,7 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -3234,16 +3236,22 @@ const AdminPage = () => {
         const instructorsList = isMendan ? current.managers : current.teachers
         const pType: PersonType = isMendan ? 'manager' : 'teacher'
         let autoTeacherId = ''
-        for (const inst of instructorsList) {
-          if (usedTeacherIdsInTarget.has(inst.id)) continue
-          if (!hasAvailability(current.availability, pType, inst.id, targetSlot)) continue
-          // Check subject compatibility (skip for mendan)
-          if (!isMendan && student) {
-            const compatible = canTeachSubject((inst as Teacher).subjects ?? [], student.grade, studentSubject)
-            if (!compatible) continue
+        // For regular students, prefer their regular teacher
+        const regLesson = !isMendan ? current.regularLessons.find(r => r.studentIds.includes(studentId)) : undefined
+        if (regLesson?.teacherId && !usedTeacherIdsInTarget.has(regLesson.teacherId) && hasAvailability(current.availability, pType, regLesson.teacherId, targetSlot)) {
+          autoTeacherId = regLesson.teacherId
+        } else {
+          for (const inst of instructorsList) {
+            if (usedTeacherIdsInTarget.has(inst.id)) continue
+            if (!hasAvailability(current.availability, pType, inst.id, targetSlot)) continue
+            // Check subject compatibility (skip for mendan)
+            if (!isMendan && student) {
+              const compatible = canTeachSubject((inst as Teacher).subjects ?? [], student.grade, studentSubject)
+              if (!compatible) continue
+            }
+            autoTeacherId = inst.id
+            break
           }
-          autoTeacherId = inst.id
-          break
         }
 
         targetAssignments.push({
@@ -3301,8 +3309,12 @@ const AdminPage = () => {
       }
 
       // Highlight moved student's target assignment as UPDATE
-      // Find the target assignment that contains the student
-      const movedTargetAssignment = targetAssignments.find((a) => a.studentIds.includes(studentId))
+      // For same-slot moves, use the merged assignments; for cross-slot, use targetAssignments
+      const finalTargetAssignments = isSameSlotMove ? (nextAssignments[targetSlot] ?? []) : targetAssignments
+      const movedTargetAssignment = finalTargetAssignments.find((a, aIdx) => {
+        if (isSameSlotMove && aIdx === sourceIdx && updatedSrcStudentIds.length > 0) return false // skip modified source
+        return a.studentIds.includes(studentId)
+      })
       if (movedTargetAssignment) {
         const hl = current.autoAssignHighlights ?? {}
         const changedSigs = { ...(hl.changed ?? {}) }
@@ -3983,11 +3995,14 @@ service cloud.firestore {
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
             <div style={{ position: 'relative' }}>
             {autoAssignLoading && (
-              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18px', borderRadius: '8px' }}>
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '18px', borderRadius: '8px' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '1em', color: '#334155', fontWeight: 600, background: '#fff', padding: '10px 24px', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
                   <span className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />
-                  実行中...
+                  自動コマ割り実行中...
                 </span>
+                <div style={{ width: '220px', height: '6px', background: '#e2e8f0', borderRadius: '3px', marginTop: '10px', overflow: 'hidden' }}>
+                  <div style={{ width: `${Math.round(autoAssignProgress * 100)}%`, height: '100%', background: '#3b82f6', borderRadius: '3px', transition: 'width 0.2s ease' }} />
+                </div>
               </div>
             )}
             <div className="grid-slots">
@@ -4021,9 +4036,12 @@ service cloud.firestore {
                   if (!isStudentDrag || isSameSlot) return false
                   const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
                   const dragSubject = dragInfo.studentDragSubject ?? ''
+                  const regTid = dragInfo.regularTeacherId
                   // Check if any existing block can accept (has space, not group, and teacher can teach subject)
                   const hasAcceptableBlock = slotAssignments.some((a) => {
                     if (a.isGroupLesson || a.studentIds.length >= 2) return false
+                    // For regular student: only allow their regular teacher's block
+                    if (regTid && a.teacherId !== regTid) return false
                     if (!isMendan && draggedStudent && dragSubject && a.teacherId) {
                       const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
                       if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
@@ -4032,6 +4050,12 @@ service cloud.firestore {
                   })
                   if (hasAcceptableBlock) return false
                   // No existing block accepts — check if a compatible teacher exists for new pair
+                  if (regTid) {
+                    // Regular student: only their regular teacher can form a new pair
+                    if (usedTeacherIds.has(regTid)) return true
+                    if (!hasAvailability(data.availability, instructorPersonType, regTid, slot)) return true
+                    return false
+                  }
                   for (const inst of instructors) {
                     if (usedTeacherIds.has(inst.id)) continue
                     if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
@@ -4054,6 +4078,12 @@ service cloud.firestore {
                   const dragSubject = dragInfo.studentDragSubject ?? ''
                   const dCount = data.settings.deskCount ?? 0
                   if (dCount > 0 && slotAssignments.length >= dCount) return false
+                  const regTid = dragInfo.regularTeacherId
+                  if (regTid) {
+                    // Regular student: only their regular teacher can form a new pair
+                    if (usedTeacherIds.has(regTid)) return false
+                    return hasAvailability(data.availability, instructorPersonType, regTid, slot)
+                  }
                   for (const inst of instructors) {
                     if (usedTeacherIds.has(inst.id)) continue
                     if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
@@ -4248,6 +4278,9 @@ service cloud.firestore {
                         })
                         const isTeacherCompatibleForDrag = (() => {
                           if (!isStudentDropCandidate || !selectedTeacher) return true
+                          // For regular student: only allow their regular teacher's block
+                          const regTid = dragInfo.regularTeacherId
+                          if (regTid && selectedTeacher.id !== regTid) return false
                           const draggedStudent = data.students.find(s => s.id === draggedStudentId)
                           const dragSubject = isStudentDrag ? dragInfo.studentDragSubject ?? '' : ''
                           if (!draggedStudent || !dragSubject) return true
@@ -4471,12 +4504,12 @@ service cloud.firestore {
                                         onChange={(e) => void setSlotSubject(slot, idx, e.target.value, currentStudentId)}
                                       >
                                         {studentSubjectOptions.map((subj) => (
-                                          <option key={subj} value={subj}>{subj}</option>
+                                          <option key={subj} value={subj}>{currentStudent ? `${currentStudent.grade} ${subj}` : subj}</option>
                                         ))}
                                       </select>
                                     )}
                                     {currentStudentId && assignment.isGroupLesson && !isMendan && (
-                                      <span className="subject-label-inline">{studentSubject}</span>
+                                      <span className="subject-label-inline">{currentStudent ? `${currentStudent.grade} ${studentSubject}` : studentSubject}</span>
                                     )}
                                     {currentStudentId && !assignment.isGroupLesson && !isDragActive && !isRecorded && (
                                       <button
@@ -4484,6 +4517,9 @@ service cloud.firestore {
                                         title="生徒を別コマへ移動"
                                         style={{ cursor: 'pointer', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '0 4px', color: '#2563eb', fontSize: '0.8em', lineHeight: 1.4, flexShrink: 0, marginLeft: 2 }}
                                         onClick={() => {
+                                          // Find the regular lesson teacher for this student (if any)
+                                          const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId))
+                                          const isRegularStudent = !!(starBadge || regLesson)
                                           setDragInfo({
                                             sourceSlot: slot,
                                             sourceIdx: idx,
@@ -4491,6 +4527,7 @@ service cloud.firestore {
                                             studentIds: [currentStudentId],
                                             studentDragId: currentStudentId,
                                             studentDragSubject: studentSubject,
+                                            ...(isRegularStudent && regLesson ? { regularTeacherId: regLesson.teacherId } : {}),
                                           })
                                           setTransferSlot(slot)
                                         }}
