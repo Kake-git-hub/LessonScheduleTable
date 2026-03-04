@@ -4002,7 +4002,7 @@ service cloud.firestore {
                     <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
                       style={{ padding: '6px 10px', minHeight: 0 }}
                     >
-                      <div className="slot-title" style={{ marginBottom: isDropValid && !isSourceSlot ? 4 : 0 }}>
+                      <div className="slot-title" style={{ marginBottom: (isSourceSlot || (isDropValid && !isSourceSlot)) ? 4 : 0 }}>
                         <span>{slotLabel(slot, isMendan, mendanStart)}</span>
                         {(data.settings.deskCount ?? 0) > 0 && (
                           <span style={{ fontSize: '0.75em', color: slotAssignments.length >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#6b7280' }}>
@@ -4010,6 +4010,13 @@ service cloud.firestore {
                           </span>
                         )}
                       </div>
+                      {isSourceSlot && (
+                        <div style={{ background: '#eff6ff', border: '1px solid #3b82f6', borderRadius: '6px', padding: '6px 8px', fontSize: '0.82em', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ fontWeight: 600, color: '#1e40af' }}>ペアを移動中...</span>
+                          <button className="btn secondary" type="button" style={{ fontSize: '0.85em', padding: '2px 8px' }}
+                            onClick={() => { setDragInfo(null); setTransferSlot(null) }}>キャンセル</button>
+                        </div>
+                      )}
                       {isDropValid && !isSourceSlot && (
                         <button
                           className="btn"
@@ -4295,13 +4302,13 @@ service cloud.firestore {
                               <button
                                 type="button"
                                 title="ペアを別コマへ移動"
-                                style={{ position: 'absolute', top: '2px', right: '22px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85em', color: '#3b82f6', padding: '0 2px', lineHeight: 1 }}
+                                style={{ position: 'absolute', top: '2px', right: '22px', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1 }}
                                 onClick={() => {
                                   setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
                                   setTransferSlot(slot)
                                 }}
                               >
-                                ↔
+                                ⇔
                               </button>
                             )}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
@@ -4348,27 +4355,7 @@ service cloud.firestore {
                                   return (
                                     <div key={pos} className="student-select-row"
                                     >
-                                    {currentStudentId && !assignment.isGroupLesson && !isDragActive && !isRecorded && (
-                                      <button
-                                        type="button"
-                                        className="student-drag-handle"
-                                        title="別コマへ移動"
-                                        style={{ cursor: 'pointer', background: 'none', border: 'none', padding: '0 2px', color: '#3b82f6', fontSize: '1em', lineHeight: 1 }}
-                                        onClick={() => {
-                                          setDragInfo({
-                                            sourceSlot: slot,
-                                            sourceIdx: idx,
-                                            teacherId: '',
-                                            studentIds: [currentStudentId],
-                                            studentDragId: currentStudentId,
-                                            studentDragSubject: studentSubject,
-                                          })
-                                          setTransferSlot(slot)
-                                        }}
-                                      >
-                                        ↔
-                                      </button>
-                                    )}                                    <select
+                                    <select
                                       value={currentStudentId}
                                       disabled={assignment.isGroupLesson}
                                       onChange={(e) => {
@@ -4464,6 +4451,26 @@ service cloud.firestore {
                                       if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', marginLeft: 3, verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
                                       return null
                                     })()}
+                                    {currentStudentId && !assignment.isGroupLesson && !isDragActive && !isRecorded && (
+                                      <button
+                                        type="button"
+                                        title="生徒を別コマへ移動"
+                                        style={{ cursor: 'pointer', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '0 4px', color: '#2563eb', fontSize: '0.8em', lineHeight: 1.4, flexShrink: 0, marginLeft: 2 }}
+                                        onClick={() => {
+                                          setDragInfo({
+                                            sourceSlot: slot,
+                                            sourceIdx: idx,
+                                            teacherId: '',
+                                            studentIds: [currentStudentId],
+                                            studentDragId: currentStudentId,
+                                            studentDragSubject: studentSubject,
+                                          })
+                                          setTransferSlot(slot)
+                                        }}
+                                      >
+                                        ⇔
+                                      </button>
+                                    )}
                                     </div>
                                   )
                                 })}
