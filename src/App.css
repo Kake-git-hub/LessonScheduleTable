@@ -774,6 +774,11 @@
   min-width: 0;
 }
 
+.assignment-block > .student-select-row > select:first-of-type,
+.assignment-block select {
+  min-width: 0;
+}
+
 .subject-select-inline {
   width: 42px;
   min-width: 42px;

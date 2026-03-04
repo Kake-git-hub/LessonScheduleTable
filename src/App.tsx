@@ -4244,7 +4244,14 @@ service cloud.firestore {
                           if (dragInfo.sourceSlot === slot && dragInfo.sourceIdx === aIdx) return false // source being removed
                           return a.studentIds.includes(draggedStudentId)
                         })
-                        const isStudentDropValid = isStudentDropCandidate && !isSameAssignment && !isStudentAlreadyInSlot && !hasUnavailableStudent
+                        const isTeacherCompatibleForDrag = (() => {
+                          if (!isStudentDropCandidate || !selectedTeacher) return true
+                          const draggedStudent = data.students.find(s => s.id === draggedStudentId)
+                          const dragSubject = isStudentDrag ? dragInfo.studentDragSubject ?? '' : ''
+                          if (!draggedStudent || !dragSubject) return true
+                          return canTeachSubject(selectedTeacher.subjects, draggedStudent.grade, dragSubject)
+                        })()
+                        const isStudentDropValid = isStudentDropCandidate && !isSameAssignment && !isStudentAlreadyInSlot && !hasUnavailableStudent && isTeacherCompatibleForDrag
                         const isStudentDropInvalid = isDragActive && isStudentDrag && !isStudentDropValid && !isSameAssignment
 
                         // Group lesson: show compact non-editable block with ■ marker
@@ -4271,7 +4278,6 @@ service cloud.firestore {
                           <div
                             key={idx}
                             className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
-                            style={{ position: 'relative' }}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
                             {isStudentDropValid && (
@@ -4288,54 +4294,63 @@ service cloud.firestore {
                                 ここに移動
                               </button>
                             )}
-                            {!assignment.isGroupLesson && !isDragActive && (
-                              <button
-                                type="button"
-                                className="pair-delete-btn"
-                                title="このペアを削除"
-                                onClick={() => void setSlotTeacher(slot, idx, '')}
-                              >
-                                ×
-                              </button>
+                            {/* Badges row above teacher */}
+                            {(isIncompatiblePair || isAutoAdded || isAutoChanged) && (
+                              <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
+                                {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
+                                {isAutoAdded && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>NEW</span>}
+                                {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>UPDATE</span>}
+                              </div>
                             )}
-                            {!assignment.isGroupLesson && !isDragActive && !isRecorded && (
-                              <button
-                                type="button"
-                                title="ペアを別コマへ移動"
-                                style={{ position: 'absolute', top: '2px', right: '22px', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1 }}
-                                onClick={() => {
-                                  setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
-                                  setTransferSlot(slot)
-                                }}
+                            {/* Teacher row: select + pair move + delete */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                              <select
+                                style={{ flex: 1, minWidth: 0 }}
+                                value={assignment.teacherId}
+                                onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
+                                disabled={assignment.isGroupLesson}
                               >
-                                ⇔
-                              </button>
-                            )}
-                            {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
-                            {isAutoAdded && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>NEW</span>}
-                            {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>UPDATE</span>}
-                            <select
-                              value={assignment.teacherId}
-                              onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
-                              disabled={assignment.isGroupLesson}
-                            >
-                              <option value="">{instructorLabel}を選択</option>
-                              {instructors
-                                .filter((inst) => {
-                                  // Always show currently assigned instructor
-                                  if (inst.id === assignment.teacherId) return true
-                                  // Only show instructors who have availability for this slot
-                                  return hasAvailability(data.availability, instructorPersonType, inst.id, slot)
-                                })
-                                .map((inst) => {
-                                const usedElsewhere = usedTeacherIds.has(inst.id) && inst.id !== assignment.teacherId
-                                return (
-                                  <option key={inst.id} value={inst.id} disabled={usedElsewhere}>
-                                    {inst.name}{usedElsewhere ? ' (割当済)' : ''}
-                                  </option>
-                                )
-                              })}
-                            </select>
+                                <option value="">{instructorLabel}を選択</option>
+                                {instructors
+                                  .filter((inst) => {
+                                    // Always show currently assigned instructor
+                                    if (inst.id === assignment.teacherId) return true
+                                    // Only show instructors who have availability for this slot
+                                    return hasAvailability(data.availability, instructorPersonType, inst.id, slot)
+                                  })
+                                  .map((inst) => {
+                                  const usedElsewhere = usedTeacherIds.has(inst.id) && inst.id !== assignment.teacherId
+                                  return (
+                                    <option key={inst.id} value={inst.id} disabled={usedElsewhere}>
+                                      {inst.name}{usedElsewhere ? ' (割当済)' : ''}
+                                    </option>
+                                  )
+                                })}
+                              </select>
+                              {!assignment.isGroupLesson && !isDragActive && !isRecorded && (
+                                <button
+                                  type="button"
+                                  title="ペアを別コマへ移動"
+                                  style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1, flexShrink: 0 }}
+                                  onClick={() => {
+                                    setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
+                                    setTransferSlot(slot)
+                                  }}
+                                >
+                                  ⇔
+                                </button>
+                              )}
+                              {!assignment.isGroupLesson && !isDragActive && (
+                                <button
+                                  type="button"
+                                  title="このペアを削除"
+                                  style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
+                                  onClick={() => void setSlotTeacher(slot, idx, '')}
+                                >
+                                  ×
+                                </button>
+                              )}
+                            </div>
 
                             {assignment.teacherId && (
                               <>
