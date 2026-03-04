@@ -4029,7 +4029,7 @@ service cloud.firestore {
                         <button
                           className="btn"
                           type="button"
-                          style={{ width: '100%', fontSize: '0.82em', padding: '4px', background: '#dcfce7', border: '1px solid #22c55e' }}
+                          style={{ width: '100%', fontSize: '0.82em', padding: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                           onClick={() => {
                             void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
                             setDragInfo(null)
@@ -4105,7 +4105,7 @@ service cloud.firestore {
                       <button
                         className="btn"
                         type="button"
-                        style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e' }}
+                        style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                         onClick={() => {
                           if (dragInfo.studentDragId) {
                             void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
@@ -4116,7 +4116,7 @@ service cloud.firestore {
                           setTransferSlot(null)
                         }}
                       >
-                        ここに移動
+                        このコマに移動
                       </button>
                     )}
                     {/* Actual result recording panel */}
@@ -4292,7 +4292,7 @@ service cloud.firestore {
                               <button
                                 className="btn"
                                 type="button"
-                                style={{ width: '100%', fontSize: '0.78em', padding: '3px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e' }}
+                                style={{ width: '100%', fontSize: '0.78em', padding: '3px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                                 onClick={() => {
                                   void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId!, slot, idx)
                                   setDragInfo(null)
