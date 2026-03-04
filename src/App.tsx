@@ -4108,7 +4108,22 @@ service cloud.firestore {
                         style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                         onClick={() => {
                           if (dragInfo.studentDragId) {
-                            void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
+                            // Find the best target: first try an existing compatible block, otherwise create new pair
+                            const draggedStudent = data.students.find(s => s.id === dragInfo.studentDragId)
+                            const dragSubject = dragInfo.studentDragSubject ?? ''
+                            const bestIdx = slotAssignments.findIndex((a) => {
+                              if (a.isGroupLesson || a.studentIds.length >= 2) return false
+                              if (!isMendan && draggedStudent && dragSubject && a.teacherId) {
+                                const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
+                                if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
+                              }
+                              return true
+                            })
+                            if (bestIdx >= 0) {
+                              void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot, bestIdx)
+                            } else {
+                              void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
+                            }
                           } else {
                             void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
                           }
@@ -4336,6 +4351,16 @@ service cloud.firestore {
                                 })}
                               </select>
                               <div className="row-actions-right">
+                                {!assignment.isGroupLesson && !isDragActive && (
+                                  <button
+                                    type="button"
+                                    title="このペアを削除"
+                                    style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
+                                    onClick={() => void setSlotTeacher(slot, idx, '')}
+                                  >
+                                    ×
+                                  </button>
+                                )}
                                 {!assignment.isGroupLesson && !isDragActive && !isRecorded && (
                                   <button
                                     type="button"
@@ -4347,16 +4372,6 @@ service cloud.firestore {
                                     }}
                                   >
                                     ⇔
-                                  </button>
-                                )}
-                                {!assignment.isGroupLesson && !isDragActive && (
-                                  <button
-                                    type="button"
-                                    title="このペアを削除"
-                                    style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
-                                    onClick={() => void setSlotTeacher(slot, idx, '')}
-                                  >
-                                    ×
                                   </button>
                                 )}
                               </div>
