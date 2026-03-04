@@ -92,7 +92,7 @@ export type Assignment = {
   /** Per-student regular-lesson makeup info.
    *  Key: studentId → which regular lesson slot this student is making up.
    *  Present when a student was absent from their regular lesson and assigned elsewhere. */
-  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number }>
+  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
 }
 
 /** Actual result for a single pair in a slot (recorded after the lesson). */

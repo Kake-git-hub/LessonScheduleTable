@@ -3230,7 +3230,7 @@ const AdminPage = () => {
       // Determine if this student is a regular student being moved (needs regularMakeupInfo)
       const isRegularSource = srcAssignment.isRegular
       const existingMakeupInfo = srcAssignment.regularMakeupInfo?.[studentId]
-      const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot) } : undefined)
+      const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot), date: sourceSlot.split('_')[0] } : undefined)
 
       // Remove student from source assignment
       const updatedSrcStudentIds = srcAssignment.studentIds.filter((sid) => sid !== studentId)
@@ -3270,11 +3270,15 @@ const AdminPage = () => {
         const instructorsList = isMendan ? current.managers : current.teachers
         const pType: PersonType = isMendan ? 'manager' : 'teacher'
         let autoTeacherId = ''
-        // For regular students, prefer their regular teacher
+        // For regular students, prefer their regular teacher (only if they can teach the subject)
         const regLesson = !isMendan ? current.regularLessons.find(r => r.studentIds.includes(studentId)) : undefined
         if (regLesson?.teacherId && !usedTeacherIdsInTarget.has(regLesson.teacherId) && hasAvailability(current.availability, pType, regLesson.teacherId, targetSlot)) {
-          autoTeacherId = regLesson.teacherId
-        } else {
+          const regTeacher = current.teachers.find(t => t.id === regLesson.teacherId)
+          if (regTeacher && canTeachSubject(regTeacher.subjects, student?.grade ?? '', studentSubject)) {
+            autoTeacherId = regLesson.teacherId
+          }
+        }
+        if (!autoTeacherId) {
           for (const inst of instructorsList) {
             if (usedTeacherIdsInTarget.has(inst.id)) continue
             if (!hasAvailability(current.availability, pType, inst.id, targetSlot)) continue
@@ -4461,7 +4465,14 @@ service cloud.firestore {
                                     const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
                                     if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
-                                    if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
+                                    if (mkInfo) {
+                                      const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
+                                      const origLabel = mkInfo.date ? `${fmtMkDate(mkInfo.date)} ${mkInfo.slotNumber}限` : `${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限`
+                                      const [curDate] = slot.split('_')
+                                      const curSlotNum = getSlotNumber(slot)
+                                      const destLabel = `${fmtMkDate(curDate)} ${curSlotNum}限`
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title={`通常授業の振替（${origLabel} → ${destLabel}）`}>★</span>
+                                    }
                                     return null
                                   })()
                                   const isSourceStudent = isDragActive && isStudentDrag && isSourceSlot && dragInfo.sourceIdx === idx && dragInfo.studentDragId === currentStudentId

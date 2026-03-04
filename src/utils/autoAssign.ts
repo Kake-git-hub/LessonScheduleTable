@@ -137,7 +137,7 @@ export const buildIncrementalAutoAssignments = async (
 
   // Pre-compute makeup student info: for each regular-lesson student, which regular slots are unavailable
   // Stores per-student array of { teacherId, dayOfWeek, slotNumber } for each unavailable regular slot
-  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number }>>()
+  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number; date: string }>>()
   for (const rl of data.regularLessons) {
     for (const sid of rl.studentIds) {
       const student = data.students.find((s) => s.id === sid)
@@ -148,7 +148,7 @@ export const buildIncrementalAutoAssignments = async (
         if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
           if (!isStudentAvailable(student, slot)) {
             const arr = makeupStudentInfo.get(sid) ?? []
-            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber })
+            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date })
             makeupStudentInfo.set(sid, arr)
           }
         }
@@ -734,27 +734,27 @@ export const buildIncrementalAutoAssignments = async (
         })
         if (makeupSids.length > 0) {
           // Set regularMakeupInfo so the ★ badge appears alongside 振替
-          const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number }> = { ...(a.regularMakeupInfo ?? {}) }
+          const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(a.regularMakeupInfo ?? {}) }
           for (const sid of makeupSids) {
             const mkInfos = makeupStudentInfo.get(sid)!
             const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId)
             if (matchIdx >= 0) {
               const match = mkInfos[matchIdx]
-              regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber }
+              regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber, date: match.date }
               mkInfos.splice(matchIdx, 1) // consume this makeup entry
             }
           }
           a.regularMakeupInfo = regularMakeupInfo
-          // Build makeup-specific detail: include original and new slot info
-          const DAY_NAMES_MK = ['日', '月', '火', '水', '木', '金', '土']
+          // Build makeup-specific detail: include original and new slot info with dates
           const [mkDate] = slot.split('_')
           const mkSlotNum = getSlotNumber(slot)
-          const mkDow = getIsoDayOfWeek(mkDate)
+          const fmtDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
           const makeupDetails = makeupSids.map((sid) => {
             const sName = data.students.find((s) => s.id === sid)?.name ?? '?'
             const info = regularMakeupInfo[sid]
             if (!info) return `${sName}: 振替`
-            return `${sName}: ${DAY_NAMES_MK[info.dayOfWeek]}曜${info.slotNumber}限 → ${DAY_NAMES_MK[mkDow]}曜${mkSlotNum}限`
+            const origDate = info.date ? fmtDate(info.date) : ''
+            return `${sName}: ${origDate} ${info.slotNumber}限 → ${fmtDate(mkDate)} ${mkSlotNum}限`
           }).join(', ')
           const makeupDetail = `生徒希望入力で振替希望があったため自動振替（${makeupDetails}）`
           markMakeupPair(slot, a, makeupDetail)
