@@ -745,7 +745,19 @@ export const buildIncrementalAutoAssignments = async (
             }
           }
           a.regularMakeupInfo = regularMakeupInfo
-          markMakeupPair(slot, a, fullDetail)
+          // Build makeup-specific detail: include original and new slot info
+          const DAY_NAMES_MK = ['日', '月', '火', '水', '木', '金', '土']
+          const [mkDate] = slot.split('_')
+          const mkSlotNum = getSlotNumber(slot)
+          const mkDow = getIsoDayOfWeek(mkDate)
+          const makeupDetails = makeupSids.map((sid) => {
+            const sName = data.students.find((s) => s.id === sid)?.name ?? '?'
+            const info = regularMakeupInfo[sid]
+            if (!info) return `${sName}: 振替`
+            return `${sName}: ${DAY_NAMES_MK[info.dayOfWeek]}曜${info.slotNumber}限 → ${DAY_NAMES_MK[mkDow]}曜${mkSlotNum}限`
+          }).join(', ')
+          const makeupDetail = `生徒希望入力で振替希望があったため自動振替（${makeupDetails}）`
+          markMakeupPair(slot, a, makeupDetail)
         } else {
           markAddedPair(slot, a, fullDetail)
         }
