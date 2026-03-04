@@ -2122,7 +2122,8 @@ const AdminPage = () => {
   const { data, setData, loading, error: sessionError } = useSessionData(classroomId, sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
-  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; isClickTransfer?: boolean } | null>(null)
+  const [transferSlot, setTransferSlot] = useState<string | null>(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
@@ -2558,7 +2559,9 @@ const AdminPage = () => {
     const assignmentStateSig = slotKeys
       .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
       .join(',')
-    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${(data.groupLessons ?? []).map((l) => `G${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${assignmentStateSig}`
+    // Include student unavailability in signature so auto-fill reacts to absent students
+    const studentUnavailSig = data.students.map(s => `${s.id}:${(s.unavailableSlots ?? []).join(';')}`).join('|')
+    const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${(data.groupLessons ?? []).map((l) => `G${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${studentUnavailSig}|${assignmentStateSig}`
     if (sig === regularFillSigRef.current) return
     regularFillSigRef.current = sig
 
@@ -2580,13 +2583,21 @@ const AdminPage = () => {
       // Don't overwrite manual (non-regular) assignments
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
 
-      const expectedRegulars = slotRegularLessons.map((lesson) => ({
-        teacherId: lesson.teacherId,
-        studentIds: lesson.studentIds,
-        subject: lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject,
-        studentSubjects: lesson.studentSubjects,
-        isRegular: true,
-      }))
+      const expectedRegulars = slotRegularLessons.map((lesson) => {
+        // Exclude students who are unavailable for this slot (absent)
+        const availableStudentIds = lesson.studentIds.filter((sid) => {
+          const student = data.students.find((s) => s.id === sid)
+          if (!student) return false
+          return isStudentAvailable(student, slot)
+        })
+        return {
+          teacherId: lesson.teacherId,
+          studentIds: availableStudentIds,
+          subject: lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject,
+          studentSubjects: lesson.studentSubjects,
+          isRegular: true,
+        }
+      })
 
       const expectedSig = expectedRegulars
         .map((a) => assignmentSignature(a))
@@ -2600,7 +2611,9 @@ const AdminPage = () => {
         continue
       }
 
-      nextAssignments[slot] = expectedRegulars
+      // Preserve any non-regular assignments already in the slot (e.g. special students added)
+      const nonRegularExisting = (existing ?? []).filter((a) => !a.isRegular || a.isGroupLesson)
+      nextAssignments[slot] = [...nonRegularExisting, ...expectedRegulars]
       changed = true
     }
 
@@ -3068,7 +3081,7 @@ const AdminPage = () => {
     await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
       const moved = srcAssignments[sourceIdx]
-      if (!moved || moved.isRegular) return current
+      if (!moved || moved.isGroupLesson) return current
 
       // Desk count check
       const deskCount = current.settings.deskCount ?? 0
@@ -3090,9 +3103,24 @@ const AdminPage = () => {
         isMendan ? !isParentAvailableForMendan(current.availability, student.id, targetSlot) : !isStudentAvailable(student, targetSlot),
       )) return current
 
+      // When moving a regular assignment, convert to non-regular with regularMakeupInfo
+      const movedCopy = { ...moved }
+      if (movedCopy.isRegular) {
+        const srcDayOfWeek = getSlotDayOfWeek(sourceSlot)
+        const srcSlotNum = getSlotNumber(sourceSlot)
+        const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number }> = { ...(movedCopy.regularMakeupInfo ?? {}) }
+        for (const sid of movedCopy.studentIds) {
+          if (!regularMakeupInfo[sid]) {
+            regularMakeupInfo[sid] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNum }
+          }
+        }
+        movedCopy.isRegular = false
+        movedCopy.regularMakeupInfo = regularMakeupInfo
+      }
+
       // Move
       srcAssignments.splice(sourceIdx, 1)
-      targetAssignments.push(moved)
+      targetAssignments.push(movedCopy)
       const nextAssignments = { ...current.assignments }
       if (srcAssignments.length === 0) {
         delete nextAssignments[sourceSlot]
@@ -3135,7 +3163,7 @@ const AdminPage = () => {
     await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
       const srcAssignment = srcAssignments[sourceIdx]
-      if (!srcAssignment || srcAssignment.isRegular) return current
+      if (!srcAssignment || srcAssignment.isGroupLesson) return current
       if (!srcAssignment.studentIds.includes(studentId)) return current
 
       // Check student/parent availability in target slot
@@ -3148,6 +3176,11 @@ const AdminPage = () => {
       const targetAssignments = [...(current.assignments[targetSlot] ?? [])]
       if (targetAssignments.some((a) => a.studentIds.includes(studentId))) return current
 
+      // Determine if this student is a regular student being moved (needs regularMakeupInfo)
+      const isRegularSource = srcAssignment.isRegular
+      const existingMakeupInfo = srcAssignment.regularMakeupInfo?.[studentId]
+      const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot) } : undefined)
+
       // Remove student from source assignment
       const updatedSrcStudentIds = srcAssignment.studentIds.filter((sid) => sid !== studentId)
       const updatedSrcStudentSubjects = { ...srcAssignment.studentSubjects }
@@ -3159,16 +3192,21 @@ const AdminPage = () => {
         // Add to existing target assignment (max 2 students)
         const targetAssignment = targetAssignments[targetIdx]
         if (targetAssignment.studentIds.length >= 2) return current
-        if (targetAssignment.isRegular) return current
+        if (targetAssignment.isGroupLesson) return current
 
         const updatedTargetStudentIds = [...targetAssignment.studentIds, studentId]
         const updatedTargetStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}) }
         // Set the student's subject in the target assignment
         updatedTargetStudentSubjects[studentId] = studentSubject
+        // Carry over regularMakeupInfo for transferred regular students
+        const updatedTargetMakeupInfo = studentMakeupInfo
+          ? { ...(targetAssignment.regularMakeupInfo ?? {}), [studentId]: studentMakeupInfo }
+          : targetAssignment.regularMakeupInfo
         targetAssignments[targetIdx] = {
           ...targetAssignment,
           studentIds: updatedTargetStudentIds,
           studentSubjects: updatedTargetStudentSubjects,
+          ...(updatedTargetMakeupInfo ? { regularMakeupInfo: updatedTargetMakeupInfo } : {}),
         }
       } else {
         // Create new assignment in target slot with just this student
@@ -3197,6 +3235,7 @@ const AdminPage = () => {
           studentIds: [studentId],
           subject: studentSubject,
           studentSubjects: { [studentId]: studentSubject },
+          ...(studentMakeupInfo ? { regularMakeupInfo: { [studentId]: studentMakeupInfo } } : {}),
         })
       }
 
@@ -3788,7 +3827,7 @@ service cloud.firestore {
               )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業　⚠=制約不可　ペアはドラッグで別コマへ移動可'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'ペアはドラッグで別コマへ移動可' : '★=通常授業生徒　⚠=制約不可　ペア/生徒はドラッグで別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
               const rates = data.tierRates ?? { ...defaultTierRates }
@@ -3878,7 +3917,7 @@ service cloud.firestore {
                   <div style={{ display: 'grid', gap: '10px' }}>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
-                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒1〜2人。★=通常授業（マスタから自動配置・編集不可）。■=集団授業。机数上限あり。</p>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。★=通常授業生徒（マスタから自動配置）。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>自動提案 スコアリング（優先順）</h4>
@@ -3935,7 +3974,7 @@ service cloud.firestore {
                 // For student drag to a different slot: check if student can be placed (existing block accepts OR a compatible teacher is available for new pair)
                 const studentDragNoTarget = (() => {
                   if (!isStudentDrag || isSameSlot) return false
-                  const hasAcceptableBlock = slotAssignments.some((a) => !a.isRegular && a.studentIds.length < 2)
+                  const hasAcceptableBlock = slotAssignments.some((a) => !a.isGroupLesson && a.studentIds.length < 2)
                   if (hasAcceptableBlock) return false
                   // No existing block accepts — check if a compatible teacher exists for new pair
                   const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
@@ -3954,7 +3993,7 @@ service cloud.firestore {
                 const isStudentDragSameSlotOk = isStudentDrag && isSameSlot
                 const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable && !studentDragNoTarget
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
-                const isPairDrag = isDragActive && !isStudentDrag
+                const isPairDrag = isDragActive && !isStudentDrag && !dragInfo.isClickTransfer
                 const isSourceSlot = isDragActive && dragInfo.sourceSlot === slot
 
                 // Pair drag: show only slot label (minimal drop target)
@@ -4030,6 +4069,24 @@ service cloud.firestore {
                       </div>
                       {!isDragActive && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        {data.settings.confirmed && !isRecorded && slotAssignments.length > 0 && (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            style={{ fontSize: '0.7em', padding: '2px 6px', background: transferSlot === slot ? '#dbeafe' : undefined }}
+                            onClick={() => {
+                              if (transferSlot === slot) {
+                                setTransferSlot(null)
+                                setDragInfo(null)
+                              } else {
+                                setTransferSlot(slot)
+                                setDragInfo(null)
+                              }
+                            }}
+                          >
+                            🔄 振替
+                          </button>
+                        )}
                         {data.settings.confirmed && !isRecorded && (
                           <button
                             className="btn secondary"
@@ -4063,6 +4120,77 @@ service cloud.firestore {
                       </div>
                       )}
                     </div>
+                    {/* Transfer selection panel: choose pair or student to transfer */}
+                    {transferSlot === slot && !dragInfo?.isClickTransfer && (
+                      <div style={{ background: '#eff6ff', border: '1px solid #3b82f6', borderRadius: '6px', padding: '8px', marginBottom: '4px', fontSize: '0.82em' }}>
+                        <div style={{ fontWeight: 600, marginBottom: '4px', color: '#1e40af' }}>振替先を選択:</div>
+                        {slotAssignments.map((a, aIdx) => {
+                          if (a.isGroupLesson) return null
+                          const tName = data.teachers.find(t => t.id === a.teacherId)?.name ?? '?'
+                          return (
+                            <div key={aIdx} style={{ marginBottom: '4px' }}>
+                              <button
+                                className="btn secondary"
+                                type="button"
+                                style={{ fontSize: '0.85em', padding: '2px 8px', marginRight: '4px' }}
+                                onClick={() => {
+                                  setDragInfo({
+                                    sourceSlot: slot, sourceIdx: aIdx,
+                                    teacherId: a.teacherId, studentIds: [...a.studentIds],
+                                    isClickTransfer: true,
+                                  })
+                                }}
+                              >
+                                ペア移動: {tName}
+                              </button>
+                              {a.studentIds.map((sid) => {
+                                const sName = data.students.find(s => s.id === sid)?.name ?? '?'
+                                const subj = getStudentSubject(a, sid)
+                                return (
+                                  <button
+                                    key={sid}
+                                    className="btn secondary"
+                                    type="button"
+                                    style={{ fontSize: '0.85em', padding: '2px 8px', marginRight: '4px', marginTop: '2px' }}
+                                    onClick={() => {
+                                      setDragInfo({
+                                        sourceSlot: slot, sourceIdx: aIdx,
+                                        teacherId: '', studentIds: [sid],
+                                        studentDragId: sid, studentDragSubject: subj,
+                                        isClickTransfer: true,
+                                      })
+                                    }}
+                                  >
+                                    生徒移動: {sName}({subj})
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )
+                        })}
+                        <button className="btn secondary" type="button" style={{ fontSize: '0.8em', marginTop: '4px' }}
+                          onClick={() => { setTransferSlot(null); setDragInfo(null) }}>キャンセル</button>
+                      </div>
+                    )}
+                    {/* Click-transfer active: show destination hint on this slot */}
+                    {dragInfo?.isClickTransfer && dragInfo.sourceSlot !== slot && isDropValid && (
+                      <button
+                        className="btn"
+                        type="button"
+                        style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e' }}
+                        onClick={() => {
+                          if (dragInfo.studentDragId) {
+                            void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
+                          } else {
+                            void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
+                          }
+                          setDragInfo(null)
+                          setTransferSlot(null)
+                        }}
+                      >
+                        ここに移動
+                      </button>
+                    )}
                     {/* Actual result recording panel */}
                     {!isDragActive && recordingSlot === slot && (() => {
                       // Collect all student IDs used in this slot's editing results
@@ -4142,7 +4270,7 @@ service cloud.firestore {
                       {displayAssignments.map((assignment, idx) => {
                         // Student drag: hide assignment blocks that can't accept the student
                         if (isStudentDrag && !isSourceSlot) {
-                          const canAccept = !assignment.isRegular && assignment.studentIds.length < 2
+                          const canAccept = !assignment.isGroupLesson && assignment.studentIds.length < 2
                           if (!canAccept) return null
                         }
                         const selectedTeacher = instructors.find((t) => t.id === assignment.teacherId)
@@ -4166,7 +4294,12 @@ service cloud.firestore {
                           // Show compact text-only summary
                           const tName = selectedTeacher?.name ?? (assignment.teacherId ? '?' : '未定')
                           const sNames = assignment.studentIds
-                            .map((sid) => data.students.find((s) => s.id === sid)?.name ?? '')
+                            .map((sid) => {
+                              const name = data.students.find((s) => s.id === sid)?.name ?? ''
+                              const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(sid))
+                              const mkInfo = assignment.regularMakeupInfo?.[sid]
+                              return (isRegAtSlot || mkInfo) ? `★${name}` : name
+                            })
                             .filter(Boolean)
                             .join('・') || '未定'
                           return (
@@ -4174,7 +4307,7 @@ service cloud.firestore {
                               style={{ position: 'relative', padding: '3px 6px', fontSize: '0.82em', lineHeight: 1.3, opacity: 0.7 }}>
                               {assignment.isGroupLesson
                                 ? <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.7em', marginRight: 3 }}>■</span>
-                                : assignment.isRegular && <span className="badge regular-badge" style={{ fontSize: '0.7em', marginRight: 3 }}>★</span>}
+                                : null}
                               <span style={{ fontWeight: 600 }}>{tName}</span>
                               <span style={{ margin: '0 4px', color: '#94a3b8' }}>|</span>
                               <span>{sNames}</span>
@@ -4183,7 +4316,7 @@ service cloud.firestore {
                         }
 
                         // Compute student-drag drop validity for this specific assignment block
-                        const isStudentDropCandidate = isDragActive && isStudentDrag && !assignment.isRegular && assignment.studentIds.length < 2
+                        const isStudentDropCandidate = isDragActive && isStudentDrag && !assignment.isGroupLesson && assignment.studentIds.length < 2
                         const isSameAssignment = isStudentDrag && dragInfo.sourceSlot === slot && dragInfo.sourceIdx === idx
                         const draggedStudentId = isStudentDrag ? dragInfo.studentDragId! : ''
                         const isStudentAlreadyInSlot = isStudentDrag && slotAssignments.some((a, aIdx) => {
@@ -4218,12 +4351,13 @@ service cloud.firestore {
                           <div
                             key={idx}
                             className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
-                            draggable={!assignment.isRegular}
+                            draggable={!assignment.isGroupLesson}
                             onDragStart={(e) => {
                               // Student row drag is handled separately with stopPropagation
                               if ((e.target as HTMLElement).closest('.student-draggable')) {
                                 return // already handled by student row
                               }
+                              if (assignment.isGroupLesson) { e.preventDefault(); return }
                               const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx })
                               e.dataTransfer.setData('text/plain', payload)
                               e.dataTransfer.effectAllowed = 'move'
@@ -4241,7 +4375,7 @@ service cloud.firestore {
                               if (!isStudentDrag) return // let slot-card handle assignment drops
                               e.preventDefault()
                               e.stopPropagation()
-                              if (assignment.isRegular || assignment.studentIds.length >= 2) {
+                              if (assignment.isGroupLesson || assignment.studentIds.length >= 2) {
                                 setDragInfo(null)
                                 return
                               }
@@ -4263,7 +4397,7 @@ service cloud.firestore {
                             onDragEnd={() => setDragInfo(null)}
                             style={{ position: 'relative' }}
                           >
-                            {!assignment.isRegular && (
+                            {!assignment.isGroupLesson && (
                               <button
                                 type="button"
                                 className="pair-delete-btn"
@@ -4273,14 +4407,13 @@ service cloud.firestore {
                                 ×
                               </button>
                             )}
-                            {assignment.isRegular && <span className="badge regular-badge" title="通常授業">★</span>}
                             {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                             {isAutoAdded && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>NEW</span>}
                             {isAutoChanged && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>UPDATE</span>}
                             <select
                               value={assignment.teacherId}
                               onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
-                              disabled={assignment.isRegular}
+                              disabled={assignment.isGroupLesson}
                             >
                               <option value="">{instructorLabel}を選択</option>
                               {instructors
@@ -4316,10 +4449,10 @@ service cloud.firestore {
                                   // For student dropdown filter: base subjects the teacher can teach
                                   const teacherSubjects = selectedTeacher?.subjects ?? []
                                   return (
-                                    <div key={pos} className={`student-select-row${currentStudentId && !assignment.isRegular ? ' student-draggable' : ''}`}
-                                      draggable={!!currentStudentId && !assignment.isRegular}
+                                    <div key={pos} className={`student-select-row${currentStudentId && !assignment.isGroupLesson ? ' student-draggable' : ''}`}
+                                      draggable={!!currentStudentId && !assignment.isGroupLesson}
                                       onDragStart={(e) => {
-                                        if (!currentStudentId || assignment.isRegular) { e.preventDefault(); return }
+                                        if (!currentStudentId || assignment.isGroupLesson) { e.preventDefault(); return }
                                         e.stopPropagation()
                                         const payload = JSON.stringify({ sourceSlot: slot, sourceIdx: idx, studentDragId: currentStudentId })
                                         e.dataTransfer.setData('text/plain', payload)
@@ -4411,7 +4544,7 @@ service cloud.firestore {
                                         )
                                       })}
                                     </select>
-                                    {currentStudentId && !assignment.isRegular && !isMendan && (
+                                    {currentStudentId && !assignment.isGroupLesson && !isMendan && (
                                       <select
                                         className="subject-select-inline"
                                         value={studentSubject}
@@ -4422,9 +4555,17 @@ service cloud.firestore {
                                         ))}
                                       </select>
                                     )}
-                                    {currentStudentId && assignment.isRegular && !isMendan && (
+                                    {currentStudentId && assignment.isGroupLesson && !isMendan && (
                                       <span className="subject-label-inline">{studentSubject}</span>
                                     )}
+                                    {currentStudentId && !isMendan && (() => {
+                                      const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
+                                      const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
+                                      const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
+                                      if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', marginLeft: 3, verticalAlign: 'middle' }} title="通常授業">★</span>
+                                      if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', marginLeft: 3, verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
+                                      return null
+                                    })()}
                                     </div>
                                   )
                                 })}
@@ -5658,10 +5799,15 @@ const ConfirmedCalendarView = ({
               const teacher = data.teachers.find((t) => t.id === a.teacherId)
               const subj = getStudentSubject(a, personId)
               const isGroupSlot = s === 0
+              const isRegAtSlot = a.isRegular && findRegularLessonsForSlot(data.regularLessons, `${date}_${s}`).some(r => r.studentIds.includes(personId))
+              const mkInfo = a.regularMakeupInfo?.[personId]
+              const isRegularStudent = isRegAtSlot || !!mkInfo
+              const DAY_LABELS_PS = ['日', '月', '火', '水', '木', '金', '土']
+              const makeupHint = mkInfo ? ` (${DAY_LABELS_PS[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限の振替)` : ''
               cells.push({
-                label: isGroupSlot ? `■ ${subj}` : a.isRegular ? `★ ${subj}` : subj,
-                detail: `${teacher?.name ?? '?'}${isGroupSlot ? ' (集団授業)' : a.isRegular ? ' (通常)' : ' (特別講習)'}`,
-                color: isGroupSlot ? '#e0e7ff' : a.isRegular ? '#dcfce7' : '#fef3c7',
+                label: isGroupSlot ? `■ ${subj}` : isRegularStudent ? `★ ${subj}` : subj,
+                detail: `${teacher?.name ?? '?'}${isGroupSlot ? ' (集団授業)' : isRegularStudent ? ` (通常${makeupHint})` : ' (特別講習)'}`,
+                color: isGroupSlot ? '#e0e7ff' : isRegularStudent ? '#dcfce7' : '#fef3c7',
               })
             }
           }

@@ -89,6 +89,10 @@ export type Assignment = {
   studentSubjects?: Record<string, string>
   isRegular?: boolean
   isGroupLesson?: boolean
+  /** Per-student regular-lesson makeup info.
+   *  Key: studentId → which regular lesson slot this student is making up.
+   *  Present when a student was absent from their regular lesson and assigned elsewhere. */
+  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number }>
 }
 
 /** Actual result for a single pair in a slot (recorded after the lesson). */
