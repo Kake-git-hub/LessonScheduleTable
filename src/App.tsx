@@ -4468,11 +4468,11 @@ service cloud.firestore {
                                       }}
                                       onDragEnd={() => setDragInfo(null)}
                                     >
-                                    {currentStudentId && !assignment.isRegular && (
+                                    {currentStudentId && !assignment.isGroupLesson && (
                                       <span className="student-drag-handle" title="ドラッグで移動">⠿</span>
                                     )}                                    <select
                                       value={currentStudentId}
-                                      disabled={assignment.isRegular}
+                                      disabled={assignment.isGroupLesson}
                                       onChange={(e) => {
                                         const selectedId = e.target.value
                                         if (selectedId && !isMendan) {

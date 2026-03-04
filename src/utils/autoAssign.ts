@@ -6,7 +6,6 @@ import { evaluateSlotConstraints } from './slotConstraints'
 import {
   getSlotNumber,
   getIsoDayOfWeek,
-  getSlotDayOfWeek,
   getStudentSubject,
   countTeacherLoad,
   getTeacherAssignedDates,
@@ -21,7 +20,6 @@ import {
   hasMeaningfulManualAssignment,
   getTeacherStudentSlotsOnDate,
   getStudentSubjectsOnAdjacentSlots,
-  findRegularLessonsForSlot,
 } from './assignments'
 
 export interface ChangeLogEntry {
@@ -149,51 +147,6 @@ export const buildIncrementalAutoAssignments = async (
   }
   // Students who haven't submitted get lowest priority
   const maxRank = submissionOrderMap.size
-
-  // Compute regular lesson absences: students unavailable for their regular lesson slots
-  type RegularAbsenceInfo = { subject: string; teacherId: string; dayOfWeek: number; slotNumber: number }
-  const regularAbsenceMap = new Map<string, RegularAbsenceInfo[]>()
-  for (const slot of slots) {
-    const regularLessons = findRegularLessonsForSlot(data.regularLessons, slot)
-    for (const lesson of regularLessons) {
-      for (const studentId of lesson.studentIds) {
-        const student = data.students.find((s) => s.id === studentId)
-        if (!student) continue
-        if (!isStudentAvailable(student, slot)) {
-          const dayOfWeek = getSlotDayOfWeek(slot)
-          const slotNumber = getSlotNumber(slot)
-          const subject = lesson.studentSubjects?.[studentId] ?? lesson.subject
-          const existing = regularAbsenceMap.get(studentId) ?? []
-          if (!existing.some((a) => a.dayOfWeek === dayOfWeek && a.slotNumber === slotNumber && a.subject === subject)) {
-            existing.push({ subject, teacherId: lesson.teacherId, dayOfWeek, slotNumber })
-            regularAbsenceMap.set(studentId, existing)
-          }
-        }
-      }
-    }
-  }
-
-  // Virtual subjectSlots including regular absence demand
-  const getVirtualSubjectSlots = (studentId: string): Record<string, number> => {
-    const student = data.students.find((s) => s.id === studentId)
-    const base = { ...(student?.subjectSlots ?? {}) }
-    const absences = regularAbsenceMap.get(studentId) ?? []
-    for (const absence of absences) {
-      base[absence.subject] = (base[absence.subject] ?? 0) + 1
-    }
-    return base
-  }
-
-  // Virtual subjects list including regular absence subjects
-  const getVirtualSubjects = (studentId: string): string[] => {
-    const student = data.students.find((s) => s.id === studentId)
-    const subjects = [...(student?.subjects ?? [])]
-    const absences = regularAbsenceMap.get(studentId) ?? []
-    for (const absence of absences) {
-      if (!subjects.includes(absence.subject)) subjects.push(absence.subject)
-    }
-    return subjects
-  }
 
   // Phase 1: Clean up existing assignments — handle deleted teachers/students (skip regular lessons)
   for (const slot of slots) {
@@ -338,7 +291,7 @@ export const buildIncrementalAutoAssignments = async (
       for (const studentId of assignment.studentIds) {
         const student = data.students.find((s) => s.id === studentId)
         const subj = getStudentSubject(assignment, studentId)
-        const requested = getVirtualSubjectSlots(studentId)[subj] ?? 0
+        const requested = (student?.subjectSlots ?? {})[subj] ?? 0
         const key = `${studentId}|${subj}`
         const currentLoad = specialLoadMap.get(key) ?? 0
 
@@ -384,11 +337,9 @@ export const buildIncrementalAutoAssignments = async (
         // Check student-student constraints with existing students in this assignment
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand
-        const virtualSubjects = getVirtualSubjects(student.id)
-        const virtualSlots = getVirtualSubjectSlots(student.id)
-        return virtualSubjects.some((baseSubj) => {
+        return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
-          const requested = virtualSlots[baseSubj] ?? 0
+          const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
           return allocated < requested
         })
@@ -396,16 +347,14 @@ export const buildIncrementalAutoAssignments = async (
 
       if (candidates.length > 0 && assignment.studentIds.length < 2) {
         const best = candidates.sort((a, b) => {
-          const aRem = Object.values(getVirtualSubjectSlots(a.id)).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
-          const bRem = Object.values(getVirtualSubjectSlots(b.id)).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
+          const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
+          const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
           return bRem - aRem
         })[0]
         // Pick the best viable subject for this new student
-        const bestVirtualSubjects = getVirtualSubjects(best.id)
-        const bestVirtualSlots = getVirtualSubjectSlots(best.id)
         const bestSubj = teachableBaseSubjects(teacher.subjects, best.grade).find((baseSubj) => {
-          if (!bestVirtualSubjects.includes(baseSubj)) return false
-          const requested = bestVirtualSlots[baseSubj] ?? 0
+          if (!best.subjects.includes(baseSubj)) return false
+          const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
           return allocated < requested
         }) ?? assignment.subject
@@ -483,8 +432,7 @@ export const buildIncrementalAutoAssignments = async (
         if (usedStudentIdsInSlot.has(student.id)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        const virtualSubjects = getVirtualSubjects(student.id)
-        return virtualSubjects.some((baseSubj) => {
+        return student.subjects.some((baseSubj) => {
           return canTeachSubject(teacher.subjects, student.grade, baseSubj)
         })
       })
@@ -519,11 +467,11 @@ export const buildIncrementalAutoAssignments = async (
         // --- Determine subject assignment (same or mixed) ---
         // Find base subjects ALL students in combo can learn and teacher can teach to ALL of them
         const commonBaseSubjects = (BASE_SUBJECTS as readonly string[]).filter((baseSubj) =>
-          combo.every((student) => getVirtualSubjects(student.id).includes(baseSubj) && canTeachSubject(teacher.subjects, student.grade, baseSubj)),
+          combo.every((student) => student.subjects.includes(baseSubj) && canTeachSubject(teacher.subjects, student.grade, baseSubj)),
         )
         const viableCommonSubjects = commonBaseSubjects.filter((baseSubj) =>
           combo.every((student) => {
-            const requested = getVirtualSubjectSlots(student.id)[baseSubj] ?? 0
+            const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
             const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
             return allocated < requested
           }),
@@ -541,19 +489,15 @@ export const buildIncrementalAutoAssignments = async (
         // Add mixed-subject plans for 2-student combos
         if (combo.length === 2) {
           const [s1, s2] = combo
-          const s1VirtualSubjects = getVirtualSubjects(s1.id)
-          const s1VirtualSlots = getVirtualSubjectSlots(s1.id)
           const s1Viable = teachableBaseSubjects(teacher.subjects, s1.grade).filter((baseSubj) => {
-            if (!s1VirtualSubjects.includes(baseSubj)) return false
-            const req = s1VirtualSlots[baseSubj] ?? 0
+            if (!s1.subjects.includes(baseSubj)) return false
+            const req = (s1.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
             return alloc < req
           })
-          const s2VirtualSubjects = getVirtualSubjects(s2.id)
-          const s2VirtualSlots = getVirtualSubjectSlots(s2.id)
           const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
-            if (!s2VirtualSubjects.includes(baseSubj)) return false
-            const req = s2VirtualSlots[baseSubj] ?? 0
+            if (!s2.subjects.includes(baseSubj)) return false
+            const req = (s2.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
             return alloc < req
           })
@@ -595,7 +539,7 @@ export const buildIncrementalAutoAssignments = async (
           }
 
           // Prefer students with more remaining slots (even distribution)
-          const totalRequested = Object.values(getVirtualSubjectSlots(st.id)).reduce((s, c) => s + c, 0)
+          const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
           const totalAssigned = countStudentLoad(result, st.id)
           studentScore += (totalRequested - totalAssigned) * 10
 
@@ -614,19 +558,6 @@ export const buildIncrementalAutoAssignments = async (
         // Regular lesson pair bonus: prefer assigning regular-lesson teacher-student combos
         const regularPairBonus = combo.reduce((s, st) =>
           s + (isRegularLessonPair(data.regularLessons, teacher.id, st.id) ? 30 : 0), 0)
-
-        // Regular makeup teacher bonus: when student is absent from regular lesson,
-        // strongly prefer their regular teacher for the makeup subject
-        let regularMakeupBonus = 0
-        for (const st of combo) {
-          const absences = regularAbsenceMap.get(st.id) ?? []
-          const planSubj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
-          for (const absence of absences) {
-            if (absence.subject === planSubj && absence.teacherId === teacher.id) {
-              regularMakeupBonus += 80
-            }
-          }
-        }
 
         // Same-day same-pair consecutive bonus
         // → Suppressed for students with slot constraints (constraint card controls placement pattern)
@@ -708,7 +639,6 @@ export const buildIncrementalAutoAssignments = async (
           comboLateSlotBonus +
           ju3GroupBonus +
           regularPairBonus +
-          regularMakeupBonus +
           pairConsecutiveBonus +
           (combo.length === 2 ? 30 : 0) +
           mixedSubjectPenalty +
@@ -718,20 +648,9 @@ export const buildIncrementalAutoAssignments = async (
           teacherLoad * 2
 
         if (!bestPlan || score > bestPlan.score) {
-          // Build regularMakeupInfo for students absent from regular lessons
-          const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number }> = {}
-          for (const st of combo) {
-            const absences = regularAbsenceMap.get(st.id) ?? []
-            const planSubj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
-            const matchingAbsence = absences.find((a) => a.subject === planSubj)
-            if (matchingAbsence) {
-              regularMakeupInfo[st.id] = { dayOfWeek: matchingAbsence.dayOfWeek, slotNumber: matchingAbsence.slotNumber }
-            }
-          }
-          const makeupInfoProp = Object.keys(regularMakeupInfo).length > 0 ? { regularMakeupInfo } : {}
           const assignment: Assignment = plan.isMixed
-            ? { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.primarySubject, studentSubjects: plan.studentSubjects, ...makeupInfoProp }
-            : { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.subject, ...makeupInfoProp }
+            ? { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.primarySubject, studentSubjects: plan.studentSubjects }
+            : { teacherId: teacher.id, studentIds: combo.map((s) => s.id), subject: plan.subject }
           bestPlan = { score, assignment }
         }
         } // end for plan
