@@ -3995,13 +3995,15 @@ service cloud.firestore {
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
             <div style={{ position: 'relative' }}>
             {autoAssignLoading && (
-              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '18px', borderRadius: '8px' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '1em', color: '#334155', fontWeight: 600, background: '#fff', padding: '10px 24px', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
-                  <span className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />
-                  自動コマ割り実行中...
-                </span>
-                <div style={{ width: '220px', height: '6px', background: '#e2e8f0', borderRadius: '3px', marginTop: '10px', overflow: 'hidden' }}>
-                  <div style={{ width: `${Math.round(autoAssignProgress * 100)}%`, height: '100%', background: '#3b82f6', borderRadius: '3px', transition: 'width 0.2s ease' }} />
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', background: '#fff', padding: '16px 28px', borderRadius: '10px', boxShadow: '0 2px 12px rgba(0,0,0,0.15)' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '1em', color: '#334155', fontWeight: 600 }}>
+                    <span className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />
+                    自動コマ割り実行中...
+                  </span>
+                  <div style={{ width: '200px', height: '6px', background: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ width: `${Math.round(autoAssignProgress * 100)}%`, height: '100%', background: '#3b82f6', borderRadius: '3px', transition: 'width 0.2s ease' }} />
+                  </div>
                 </div>
               </div>
             )}
