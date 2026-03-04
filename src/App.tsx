@@ -4332,6 +4332,7 @@ service cloud.firestore {
                           <div
                             key={idx}
                             className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
+                            style={isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : undefined}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
                             {isStudentDropValid && (
@@ -4438,8 +4439,10 @@ service cloud.firestore {
                                     if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
                                     return null
                                   })()
+                                  const isSourceStudent = isDragActive && isStudentDrag && isSourceSlot && dragInfo.sourceIdx === idx && dragInfo.studentDragId === currentStudentId
                                   return (
                                     <div key={pos} className="student-select-row"
+                                      style={isSourceStudent ? { background: '#dbeafe', borderRadius: '4px', outline: '2px solid #3b82f6', outlineOffset: '-1px' } : undefined}
                                     >
                                     <div className="star-badge-col">{starBadge}</div>
                                     <select
@@ -5381,7 +5384,7 @@ const StudentInputPage = ({
                       return (
                         <td key={slotNum}>
                           <button
-                            className={`teacher-slot-btn ${isUnavail ? 'unavail' : ''} ${hasRegular && !isUnavail ? 'regular' : ''}`}
+                            className={`teacher-slot-btn ${isUnavail && hasRegular ? 'unavail-regular' : isUnavail ? 'unavail' : ''} ${hasRegular && !isUnavail ? 'regular' : ''}`}
                             onClick={() => toggleSlot(slotKey)}
                             type="button"
                             style={hasRegular && !isUnavail ? { fontSize: '11px', lineHeight: '1.1', padding: '2px 1px' } : undefined}

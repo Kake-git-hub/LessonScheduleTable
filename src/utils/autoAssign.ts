@@ -135,6 +135,25 @@ export const buildIncrementalAutoAssignments = async (
   const studentIds = new Set(data.students.map((s) => s.id))
   const result: Record<string, Assignment[]> = {}
 
+  // Pre-compute makeup student IDs: regular lesson students who are unavailable for their regular slot
+  const makeupStudentIds = new Set<string>()
+  for (const rl of data.regularLessons) {
+    for (const sid of rl.studentIds) {
+      const student = data.students.find((s) => s.id === sid)
+      if (!student) continue
+      // Check if any session slot matching this regular lesson is unavailable for the student
+      for (const slot of slots) {
+        const [date] = slot.split('_')
+        const dow = getIsoDayOfWeek(date)
+        if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
+          if (!isStudentAvailable(student, slot)) {
+            makeupStudentIds.add(sid)
+          }
+        }
+      }
+    }
+  }
+
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
   if (data.actualResults) {
     for (const [slot, results] of Object.entries(data.actualResults)) {
@@ -696,11 +715,9 @@ export const buildIncrementalAutoAssignments = async (
         if (tChange) detailParts.push(`[講師] ${tChange}`)
         if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
         const fullDetail = detailParts.join(' | ')
-        // Check if any student in this assignment has a regular lesson → mark as makeup (振替)
-        const hasRegularStudent = a.studentIds.some((sid) =>
-          data.regularLessons.some((rl) => rl.studentIds.includes(sid)),
-        )
-        if (hasRegularStudent) {
+        // Check if any student is a makeup student (regular lesson student whose regular slot is unavailable)
+        const hasMakeupStudent = a.studentIds.some((sid) => makeupStudentIds.has(sid))
+        if (hasMakeupStudent) {
           markMakeupPair(slot, a, fullDetail)
         } else {
           markAddedPair(slot, a, fullDetail)
