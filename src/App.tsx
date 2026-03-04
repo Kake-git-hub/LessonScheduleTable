@@ -2134,6 +2134,8 @@ const AdminPage = () => {
   const [showSalary, setShowSalary] = useState(false)
   const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
+  // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
+  const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
   const [constraintEditStudentId, setConstraintEditStudentId] = useState<string | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -2580,7 +2582,8 @@ const AdminPage = () => {
         continue
       }
 
-      // Don't overwrite manual (non-regular) assignments
+      // Don't overwrite manual (non-regular) assignments or manually modified slots
+      if (manuallyModifiedSlots.has(slot)) continue
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
 
       const expectedRegulars = slotRegularLessons.map((lesson) => {
@@ -2788,6 +2791,7 @@ const AdminPage = () => {
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
     setAutoAssignLoading(true)
+    setManuallyModifiedSlots(new Set()) // Clear manual modifications on auto-assign
     // Yield to let React render the spinner
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
@@ -2922,6 +2926,7 @@ const AdminPage = () => {
 
   const resetAssignments = async (): Promise<void> => {
     if (!window.confirm('コマ割りをリセットしますか？\n（手動割当と自動提案結果を全てクリアします）')) return
+    setManuallyModifiedSlots(new Set())
     await updateAssignments((current) => ({
       ...current,
       assignments: {},
@@ -2933,6 +2938,8 @@ const AdminPage = () => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       if (!teacherId) {
+        // Mark slot as manually modified so auto-fill won't recreate the deleted pair
+        setManuallyModifiedSlots((prev) => new Set(prev).add(slot))
         slotAssignments.splice(idx, 1)
         const nextAssignments = { ...current.assignments }
         if (slotAssignments.length === 0) {
@@ -3176,9 +3183,13 @@ const AdminPage = () => {
         ? !isParentAvailableForMendan(current.availability, student.id, targetSlot)
         : !isStudentAvailable(student, targetSlot))) return current
 
-      // Check student not already in target slot
+      // Check student not already in target slot (when same slot, exclude the source assignment being modified)
+      const isSameSlotMove = sourceSlot === targetSlot
       const targetAssignments = [...(current.assignments[targetSlot] ?? [])]
-      if (targetAssignments.some((a) => a.studentIds.includes(studentId))) return current
+      if (targetAssignments.some((a, aIdx) => {
+        if (isSameSlotMove && aIdx === sourceIdx) return false // source will be modified
+        return a.studentIds.includes(studentId)
+      })) return current
 
       // Determine if this student is a regular student being moved (needs regularMakeupInfo)
       const isRegularSource = srcAssignment.isRegular
@@ -3256,13 +3267,38 @@ const AdminPage = () => {
         }
       }
 
+      // Mark both source and target slots as manually modified
+      setManuallyModifiedSlots((prev) => {
+        const next = new Set(prev)
+        next.add(sourceSlot)
+        next.add(targetSlot)
+        return next
+      })
+
       const nextAssignments = { ...current.assignments }
-      if (srcAssignments.length === 0) {
-        delete nextAssignments[sourceSlot]
+      if (isSameSlotMove) {
+        // Same slot: merge source and target changes into one array
+        const mergedAssignments = [...targetAssignments]
+        // Apply source changes (student removed) to the merged array
+        if (updatedSrcStudentIds.length === 0) {
+          mergedAssignments.splice(sourceIdx, 1)
+        } else {
+          mergedAssignments[sourceIdx] = {
+            ...srcAssignment,
+            studentIds: updatedSrcStudentIds,
+            studentSubjects: updatedSrcStudentSubjects,
+            isRegular: false,
+          }
+        }
+        nextAssignments[sourceSlot] = mergedAssignments
       } else {
-        nextAssignments[sourceSlot] = srcAssignments
+        if (srcAssignments.length === 0) {
+          delete nextAssignments[sourceSlot]
+        } else {
+          nextAssignments[sourceSlot] = srcAssignments
+        }
+        nextAssignments[targetSlot] = targetAssignments
       }
-      nextAssignments[targetSlot] = targetAssignments
 
       // Highlight moved student's target assignment as UPDATE
       // Find the target assignment that contains the student
@@ -3771,12 +3807,6 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
                 {isMendan ? '自動割当（先着順）' : '自動提案'}
               </button>
-              {autoAssignLoading && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85em', color: '#334155', fontWeight: 600 }}>
-                  <span className="spinner" style={{ width: 18, height: 18, borderWidth: 3 }} />
-                  実行中...
-                </span>
-              )}
               <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
                 ↩ 戻す
               </button>
@@ -3951,6 +3981,15 @@ service cloud.firestore {
               </div>
             )}
             {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
+            <div style={{ position: 'relative' }}>
+            {autoAssignLoading && (
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18px', borderRadius: '8px' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', fontSize: '1em', color: '#334155', fontWeight: 600, background: '#fff', padding: '10px 24px', borderRadius: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
+                  <span className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />
+                  実行中...
+                </span>
+              </div>
+            )}
             <div className="grid-slots">
               {(isMendan ? effectiveSlotKeys : slotKeys).map((slot) => {
                 const slotAssignments = data.assignments[slot] ?? []
@@ -4492,6 +4531,7 @@ service cloud.firestore {
                 )
               })}
             </div>
+            </div>{/* close loading overlay wrapper */}
           </div>
         </>
       )}
