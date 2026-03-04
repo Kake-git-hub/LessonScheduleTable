@@ -4006,6 +4006,23 @@ service cloud.firestore {
                 const isDropValid = isDragActive && !isRecorded && (!isSameSlot || isStudentDragSameSlotOk) && !isDeskFull && !isTeacherConflict && !hasUnavailableStudent && !hasStudentConflict && !hasTeacherUnavailable && !studentDragNoTarget
                 const slotDragClass = isDragActive ? (isSameSlot && !isStudentDragSameSlotOk ? '' : isDropValid ? ' drag-valid' : ' drag-invalid') : ''
                 const isSourceSlot = isDragActive && dragInfo.sourceSlot === slot
+                // For student drag: check if an unused compatible teacher exists for creating a new pair in this slot
+                const hasUnusedCompatibleTeacher = (() => {
+                  if (!isStudentDrag || isSameSlot) return false
+                  const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
+                  const dragSubject = dragInfo.studentDragSubject ?? ''
+                  const dCount = data.settings.deskCount ?? 0
+                  if (dCount > 0 && slotAssignments.length >= dCount) return false
+                  for (const inst of instructors) {
+                    if (usedTeacherIds.has(inst.id)) continue
+                    if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
+                    if (!isMendan && draggedStudent) {
+                      if (!canTeachSubject(inst.subjects ?? [], draggedStudent.grade, dragSubject)) continue
+                    }
+                    return true
+                  }
+                  return false
+                })()
 
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
@@ -4065,30 +4082,15 @@ service cloud.firestore {
                           onClick={() => { setDragInfo(null); setTransferSlot(null) }}>キャンセル</button>
                       </div>
                     )}
-                    {isDragActive && !isSourceSlot && isDropValid && (
+                    {isDragActive && !isSourceSlot && isDropValid && (!isStudentDrag || hasUnusedCompatibleTeacher) && (
                       <button
                         className="btn"
                         type="button"
                         style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                         onClick={() => {
                           if (dragInfo.studentDragId) {
-                            // Find the best target: first try an existing compatible block with a teacher, otherwise create new pair
-                            const draggedStudent = data.students.find(s => s.id === dragInfo.studentDragId)
-                            const dragSubject = dragInfo.studentDragSubject ?? ''
-                            const bestIdx = slotAssignments.findIndex((a) => {
-                              if (a.isGroupLesson || a.studentIds.length >= 2) return false
-                              if (!a.teacherId) return false // skip blocks without teacher
-                              if (!isMendan && draggedStudent && dragSubject) {
-                                const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
-                                if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
-                              }
-                              return true
-                            })
-                            if (bestIdx >= 0) {
-                              void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot, bestIdx)
-                            } else {
-                              void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
-                            }
+                            // Always create a new pair with auto-assigned compatible teacher
+                            void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
                           } else {
                             void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
                           }
@@ -4326,11 +4328,26 @@ service cloud.firestore {
                                   const studentSubjectOptions = selectedTeacher && currentStudent
                                     ? teachableBaseSubjects(selectedTeacher.subjects, currentStudent.grade).filter((subj) => currentStudent.subjects.includes(subj))
                                     : (selectedTeacher ? [...new Set(selectedTeacher.subjects.map(s => getSubjectBase(s)))] : [])
+                                  // Ensure currently assigned subject is always in the options (e.g. regular lessons)
+                                  if (studentSubject && !studentSubjectOptions.includes(studentSubject)) {
+                                    studentSubjectOptions.unshift(studentSubject)
+                                  }
                                   // For student dropdown filter: base subjects the teacher can teach
                                   const teacherSubjects = selectedTeacher?.subjects ?? []
+                                  // Compute ★ badge for this student (shown in left column)
+                                  const starBadge = (() => {
+                                    if (!currentStudentId || isMendan) return null
+                                    const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
+                                    const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
+                                    const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
+                                    if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
+                                    if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
+                                    return null
+                                  })()
                                   return (
                                     <div key={pos} className="student-select-row"
                                     >
+                                    <div className="star-badge-col">{starBadge}</div>
                                     <select
                                       value={currentStudentId}
                                       disabled={assignment.isGroupLesson}
@@ -4420,14 +4437,6 @@ service cloud.firestore {
                                     {currentStudentId && assignment.isGroupLesson && !isMendan && (
                                       <span className="subject-label-inline">{studentSubject}</span>
                                     )}
-                                    {currentStudentId && !isMendan && (() => {
-                                      const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
-                                      const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
-                                      const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
-                                      if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', marginLeft: 3, verticalAlign: 'middle' }} title="通常授業">★</span>
-                                      if (mkInfo) return <span className="badge regular-badge" style={{ fontSize: '0.7em', marginLeft: 3, verticalAlign: 'middle' }} title={`通常授業(${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限)の振替`}>★</span>
-                                      return null
-                                    })()}
                                     {currentStudentId && !assignment.isGroupLesson && !isDragActive && !isRecorded && (
                                       <button
                                         type="button"
