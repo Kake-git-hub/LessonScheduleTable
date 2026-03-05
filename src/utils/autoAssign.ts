@@ -155,6 +155,7 @@ export const buildIncrementalAutoAssignments = async (
 
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
   if (data.actualResults) {
+    const seededSlots: string[] = []
     for (const [slot, results] of Object.entries(data.actualResults)) {
       const origSlot = data.assignments[slot] ?? []
       result[slot] = results.map((r) => {
@@ -169,7 +170,9 @@ export const buildIncrementalAutoAssignments = async (
           ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
         }
       })
+      seededSlots.push(slot)
     }
+    console.log('[AutoAssign] Seeded', seededSlots.length, 'recorded slots into result')
   }
 
   // Build submission order map: earlier initial submission → higher priority (lower rank number)
@@ -300,6 +303,8 @@ export const buildIncrementalAutoAssignments = async (
     }
   }
 
+  console.log('[AutoAssign] After Phase 1: result has', Object.keys(result).length, 'slots')
+
   // Phase 1.5: Remove excess assignments when requested slots were reduced
   // Include seeded recorded slot load so we correctly detect over-allocation
   const specialLoadMap = new Map<string, number>()
@@ -417,6 +422,17 @@ export const buildIncrementalAutoAssignments = async (
         changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
       }
     }
+  }
+
+  // Log demand summary before Phase 3
+  {
+    const demandSummary = data.students.map((s) => {
+      const rem = Object.entries(s.subjectSlots)
+        .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj) }))
+        .filter((x) => x.rem > 0)
+      return rem.length > 0 ? `${s.name}: ${rem.map((x) => `${x.subj}残${x.rem}`).join(',')}` : null
+    }).filter(Boolean)
+    console.log('[AutoAssign] Before Phase 3: unmet demand:', demandSummary.length > 0 ? demandSummary.join('; ') : '(none)')
   }
 
   // Phase 3: Fill empty slots — minimize total teacher attendance dates, distribute students evenly
@@ -752,6 +768,8 @@ export const buildIncrementalAutoAssignments = async (
       delete result[slot]
     }
   }
+
+  console.log('[AutoAssign] Done: result has', Object.keys(result).length, 'slots,', changeLog.length, 'changes')
 
   return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot }
 }

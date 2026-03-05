@@ -2822,9 +2822,12 @@ const AdminPage = () => {
     // Yield to let React render the spinner
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
+    try {
+
     // Filter out slots with actual results
     const recordedSlots = new Set(Object.keys(data.actualResults ?? {}))
     const availableSlotKeys = slotKeys.filter((s) => !recordedSlots.has(s))
+    console.log('[AutoAssign] totalSlots:', slotKeys.length, 'recordedSlots:', recordedSlots.size, 'availableSlots:', availableSlotKeys.length)
 
     // Mendan FCFS auto-assign
     if (isMendan) {
@@ -2971,7 +2974,13 @@ const AdminPage = () => {
     } else {
       alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
     }
-    setAutoAssignLoading(false)
+
+    } catch (err) {
+      console.error('[AutoAssign] Error:', err)
+      alert(`自動割当エラー: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setAutoAssignLoading(false)
+    }
   }
 
   const resetAssignments = async (): Promise<void> => {
