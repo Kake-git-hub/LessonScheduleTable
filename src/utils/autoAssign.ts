@@ -301,15 +301,24 @@ export const buildIncrementalAutoAssignments = async (
   }
 
   // Phase 1.5: Remove excess assignments when requested slots were reduced
+  // Include seeded recorded slot load so we correctly detect over-allocation
   const specialLoadMap = new Map<string, number>()
-  for (const slot of slots) {
-    const slotAssignments = result[slot] ?? []
+  for (const [, slotAssignments] of Object.entries(result)) {
     for (const assignment of slotAssignments) {
       if (assignment.isRegular) continue
-      for (const studentId of assignment.studentIds) {
-        const subj = getStudentSubject(assignment, studentId)
-        const key = `${studentId}|${subj}`
-        specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
+      if (assignment.regularMakeupInfo) {
+        for (const studentId of assignment.studentIds) {
+          if (assignment.regularMakeupInfo[studentId]) continue
+          const subj = getStudentSubject(assignment, studentId)
+          const key = `${studentId}|${subj}`
+          specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
+        }
+      } else {
+        for (const studentId of assignment.studentIds) {
+          const subj = getStudentSubject(assignment, studentId)
+          const key = `${studentId}|${subj}`
+          specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
+        }
       }
     }
   }
