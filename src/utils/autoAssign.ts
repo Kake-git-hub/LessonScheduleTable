@@ -156,12 +156,19 @@ export const buildIncrementalAutoAssignments = async (
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
   if (data.actualResults) {
     for (const [slot, results] of Object.entries(data.actualResults)) {
-      result[slot] = results.map((r) => ({
-        teacherId: r.teacherId,
-        studentIds: [...r.studentIds],
-        subject: r.subject,
-        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-      }))
+      const origSlot = data.assignments[slot] ?? []
+      result[slot] = results.map((r) => {
+        const orig = origSlot.find((a) => a.teacherId === r.teacherId)
+        return {
+          teacherId: r.teacherId,
+          studentIds: [...r.studentIds],
+          subject: r.subject,
+          studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+          ...(orig?.isRegular ? { isRegular: true } : {}),
+          ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+          ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+        }
+      })
     }
   }
 
