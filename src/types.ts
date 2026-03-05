@@ -4,32 +4,15 @@ export type ConstraintType = 'incompatible' | 'recommended'
 
 export type SubjectSlotRequest = Record<string, number>
 
-// ── Slot constraint cards ─────────────────────────────────
-export type SlotConstraintType =
-  | 'consecutive'           // N コマ連続
-  | 'gap-then-consecutive'  // M コマ空けて N コマ連続
-  | 'with-regular'          // 通常授業に連結して配置
-  | 'single-only'           // 単独授業のみ（ペア不可）
-  | 'same-day-limit'        // 同日最大コマ数制限
-
-export type SlotConstraintPriority = 'must' | 'prefer'
-
-export type SlotConstraint = {
-  id: string
-  type: SlotConstraintType
-  /** Priority: 'must' = hard constraint (block), 'prefer' = soft (scoring bonus) */
-  priority: SlotConstraintPriority
-  params: {
-    /** Number of consecutive slots (for 'consecutive' and 'gap-then-consecutive') */
-    count?: number
-    /** Whether consecutive slots should use different subjects */
-    diffSubject?: boolean
-    /** Number of gap slots before the consecutive block (for 'gap-then-consecutive') */
-    gapSlots?: number
-    /** Maximum slots per day (for 'same-day-limit') */
-    sameDayMax?: number
-  }
-}
+// ── Constraint cards ─────────────────────────────────
+export type ConstraintCardType =
+  | 'lateSlotNonExam'       // 受験生以外の後半コマ優先 (default)
+  | 'groupContinuous'       // 集団後連続 (default)
+  | 'preferRegularTeacher'  // 通常講師優先
+  | 'twoConsecutive'        // 2コマ連続
+  | 'twoWithGap'            // 2コマ連続(一コマ空け)
+  | 'oneSlotOnly'           // 一コマ限定
+  | 'regularLink'           // 通常授業連結
 
 export type Manager = {
   id: string
@@ -57,8 +40,8 @@ export type Student = {
   unavailableSlots: string[]
   memo: string
   submittedAt: number
-  /** Per-student slot scheduling constraints (e.g. "2コマ連続", "1コマ空けて連続") */
-  slotConstraints?: SlotConstraint[]
+  /** Per-student constraint cards (e.g. "twoConsecutive", "oneSlotOnly") */
+  constraintCards?: ConstraintCardType[]
 }
 
 export type PairConstraintPersonType = 'teacher' | 'student'

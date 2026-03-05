@@ -1,408 +1,267 @@
 /**
- * Slot constraint evaluation for auto-assign scoring.
+ * Constraint card system for auto-assign scoring.
  *
- * Each student can have SlotConstraint cards that describe desired scheduling patterns
- * (e.g. "2コマ連続", "1コマ空けて2コマ").
+ * Each student can have ConstraintCardType[] that describe desired scheduling patterns.
+ * Constraint cards have HIGHER priority than shared rules.
  *
- * - 'must' constraints: applied as hard filters (block invalid placements) AND a large scoring bonus
- * - 'prefer' constraints: applied only as scoring bonuses/penalties
+ * Default cards (auto-enabled unless removed):
+ *   - lateSlotNonExam: 受験生以外の後半コマ優先
+ *   - groupContinuous: 集団後連続
+ *
+ * Conflict group (mutually exclusive per student):
+ *   twoConsecutive / twoWithGap / oneSlotOnly / regularLink
  */
-import type { Assignment, RegularLesson, SlotConstraint, Student } from '../types'
+import type { Assignment, ConstraintCardType, RegularLesson, Student } from '../types'
 import { getSlotNumber, getIsoDayOfWeek, getStudentSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
+
+/** Labels for each constraint card type (UI display). */
+export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
+  lateSlotNonExam: '受験生以外の後半コマ優先',
+  groupContinuous: '集団後連続',
+  preferRegularTeacher: '通常講師優先',
+  twoConsecutive: '2コマ連続',
+  twoWithGap: '2コマ連続(一コマ空け)',
+  oneSlotOnly: '一コマ限定',
+  regularLink: '通常授業連結',
+}
+
+/** Short descriptions for each card type. */
+export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = {
+  lateSlotNonExam: '高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
+  groupContinuous: '集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
+  preferRegularTeacher: '通常授業の講師を優先して配置',
+  twoConsecutive: '生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  twoWithGap: '生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  oneSlotOnly: '生徒を1日1コマに限定する',
+  regularLink: '通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+}
+
+/** Cards enabled by default when creating new sessions. */
+export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['lateSlotNonExam', 'groupContinuous']
+
+/** All constraint card types in display order. */
+export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
+  'lateSlotNonExam',
+  'groupContinuous',
+  'preferRegularTeacher',
+  'twoConsecutive',
+  'twoWithGap',
+  'oneSlotOnly',
+  'regularLink',
+]
+
+/** Conflict group: these cards are mutually exclusive for a single student. */
+export const CONSTRAINT_CARD_CONFLICT_GROUP: ConstraintCardType[] = [
+  'twoConsecutive', 'twoWithGap', 'oneSlotOnly', 'regularLink',
+]
+
+/** Check if a grade is "exam grade" (受験生): 高3 or 中3 */
+export const isExamGrade = (grade: string): boolean => grade === '高3' || grade === '中3'
+
+/**
+ * Validate that a set of constraint cards have no conflicts.
+ * Returns warning messages (empty = no conflicts).
+ */
+export const validateConstraintCards = (cards: ConstraintCardType[]): string[] => {
+  const warnings: string[] = []
+  const conflicting = cards.filter((c) => CONSTRAINT_CARD_CONFLICT_GROUP.includes(c))
+  if (conflicting.length > 1) {
+    const labels = conflicting.map((c) => CONSTRAINT_CARD_LABELS[c]).join('、')
+    warnings.push(`${labels} は競合しています。どれか1つだけ選択してください。`)
+  }
+  return warnings
+}
+
+/**
+ * Summarize constraint cards as a short display string.
+ */
+export const summarizeConstraintCards = (cards: ConstraintCardType[]): string => {
+  if (cards.length === 0) return ''
+  return cards.map((c) => CONSTRAINT_CARD_LABELS[c]).join(', ')
+}
 
 export interface ConstraintEvalResult {
   /** Total score adjustment from all constraints */
   score: number
-  /** Descriptions of violated 'must' constraints (empty if all OK) */
-  mustViolations: string[]
+  /** Whether placement is blocked (hard constraint violation) */
+  blocked: boolean
+  /** Reason for blocking */
+  blockReason?: string
 }
 
 /**
- * Labels for constraint types (UI display).
- */
-export const SLOT_CONSTRAINT_LABELS: Record<string, string> = {
-  'consecutive': '連続コマ',
-  'gap-then-consecutive': '空けて連続',
-  'with-regular': '通常授業連結',
-  'single-only': '単独のみ',
-  'same-day-limit': '同日上限',
-}
-
-/**
- * Default params for each constraint type.
- */
-export const defaultConstraintParams = (type: string): SlotConstraint['params'] => {
-  switch (type) {
-    case 'consecutive':
-      return { count: 2, diffSubject: false }
-    case 'gap-then-consecutive':
-      return { count: 2, gapSlots: 1, diffSubject: false }
-    case 'with-regular':
-      return { count: 2, diffSubject: false }
-    case 'single-only':
-      return {}
-    case 'same-day-limit':
-      return { sameDayMax: 2 }
-    default:
-      return {}
-  }
-}
-
-/**
- * Evaluate all slot constraints for a student being placed in a candidate slot.
+ * Evaluate constraint cards for a student being placed in a candidate slot.
  *
  * @param student        The student being evaluated
  * @param candidateSlot  The slot key being considered (e.g. "2026-03-15_2")
  * @param assignments    Current assignment state
  * @param slotsPerDay    Total slots per day (from session settings)
- * @param regularLessons Regular lessons (for 'with-regular' constraint)
- * @returns Score adjustment and any must-violations
+ * @param regularLessons Regular lessons (for 'regularLink' and 'preferRegularTeacher')
+ * @param groupLessons   Group lessons (for 'groupContinuous')
+ * @param teacherId      The teacher being considered (for 'preferRegularTeacher')
  */
-export const evaluateSlotConstraints = (
+export const evaluateConstraintCards = (
   student: Student,
   candidateSlot: string,
   assignments: Record<string, Assignment[]>,
   slotsPerDay: number,
-  regularLessons?: RegularLesson[],
+  regularLessons: RegularLesson[],
+  groupLessons: Array<{ studentIds: string[]; dayOfWeek: number; slotNumber: number }>,
+  teacherId?: string,
 ): ConstraintEvalResult => {
-  const constraints = student.slotConstraints ?? []
-  if (constraints.length === 0) return { score: 0, mustViolations: [] }
+  const cards = student.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
+  if (cards.length === 0) return { score: 0, blocked: false }
 
   let score = 0
-  const mustViolations: string[] = []
   const date = candidateSlot.split('_')[0]
   const slotNum = getSlotNumber(candidateSlot)
-
-  // Student's already-assigned slot numbers on this date
   const existingSlotNums = getStudentSlotNumbersOnDate(assignments, student.id, date)
+  const dayOfWeek = getIsoDayOfWeek(date)
 
-  for (const c of constraints) {
-    const weight = c.priority === 'must' ? 150 : 40
+  for (const card of cards) {
+    switch (card) {
+      case 'lateSlotNonExam': {
+        // Non-exam students get bonus for slots 3+, penalty for early slots
+        if (!isExamGrade(student.grade)) {
+          if (slotNum >= 3) {
+            score += 800
+          } else if (slotNum <= 1) {
+            score -= 400
+          }
+        }
+        break
+      }
 
-    switch (c.type) {
-      case 'consecutive': {
-        // Desired: student has N consecutive slots on a single day
-        const count = c.params.count ?? 2
-        const result = evaluateConsecutive(slotNum, existingSlotNums, count, slotsPerDay)
-        if (result.satisfied) {
-          score += weight
-          // Bonus for different subjects if requested
-          if (c.params.diffSubject && result.adjacentSlotNum !== undefined) {
+      case 'groupContinuous': {
+        // 中3 students with group lesson on this date → early consecutive from slot 1 or 2
+        if (student.grade !== '中3') break
+        const hasGroupOnDate = groupLessons.some(
+          (gl) => gl.dayOfWeek === dayOfWeek && gl.studentIds.includes(student.id),
+        )
+        if (!hasGroupOnDate) break
+
+        // Strong preference for slots 1 and 2
+        if (slotNum === 1 || slotNum === 2) {
+          score += 2000
+        } else if (slotNum === 3) {
+          score += 500
+        } else {
+          score -= 1000
+        }
+
+        // Consecutive bonus
+        if (existingSlotNums.length > 0 && existingSlotNums.length < 2) {
+          const isConsecutive = existingSlotNums.some((n) => Math.abs(n - slotNum) === 1)
+          score += isConsecutive ? 2000 : -1500
+        }
+        // Already has 2+ individual slots → block
+        if (existingSlotNums.length >= 2) {
+          return { score: -99999, blocked: true, blockReason: '集団後連続: 既に2コマ配置済み' }
+        }
+        break
+      }
+
+      case 'preferRegularTeacher': {
+        // Bonus if this teacher is the student's regular teacher
+        if (teacherId) {
+          const isRegular = regularLessons.some(
+            (rl) => rl.teacherId === teacherId && rl.studentIds.includes(student.id),
+          )
+          if (isRegular) {
+            score += 1500
+          }
+        }
+        break
+      }
+
+      case 'twoConsecutive': {
+        // Student should be in 2 consecutive slots per day
+        // Hard limit: max 2 slots per day
+        if (existingSlotNums.length >= 2) {
+          return { score: -99999, blocked: true, blockReason: '2コマ連続: 既に2コマ配置済み' }
+        }
+
+        if (existingSlotNums.length === 1) {
+          // Must be consecutive to existing slot
+          const isConsecutive = existingSlotNums.some((n) => Math.abs(n - slotNum) === 1)
+          if (isConsecutive) {
+            score += 3000
+            // Bonus for different subject in adjacent slots
             const adjSubjects = getStudentSubjectsOnAdjacentSlots(assignments, student.id, date, slotNum)
             if (adjSubjects.length > 0) {
-              // Having adjacent slots with subjects is what we want — the actual subject choice
-              // is handled by autoAssign's subject selection. Just add a small bonus here.
-              score += 10
-            }
-          }
-        } else {
-          // Not consecutive — penalty or violation
-          if (existingSlotNums.length > 0) {
-            // Already have slots but not consecutive — bad
-            score -= weight
-            if (c.priority === 'must') {
-              mustViolations.push(`${count}コマ連続が必要`)
+              score += 200 // Having subjects means we can differentiate
             }
           } else {
-            // First slot on this date — check if forming a consecutive block is still possible
-            if (canFormConsecutiveBlock(slotNum, count, slotsPerDay)) {
-              score += weight / 4 // Small bonus: good starting position
-            }
+            return { score: -99999, blocked: true, blockReason: '2コマ連続: 連続していないコマ' }
+          }
+        } else {
+          // First slot — prefer positions where consecutive is still possible
+          if (slotNum < slotsPerDay) {
+            score += 500 // Can still add consecutive after
           }
         }
         break
       }
 
-      case 'gap-then-consecutive': {
-        // Desired: gap of M slots, then N consecutive slots
-        // e.g. gapSlots=1, count=2 → slot 1, skip 2, slots 3-4
-        const gapSlots = c.params.gapSlots ?? 1
-        const count = c.params.count ?? 2
-        const result = evaluateGapThenConsecutive(slotNum, existingSlotNums, gapSlots, count, slotsPerDay)
-        if (result.satisfied) {
-          score += weight
-          if (c.params.diffSubject) {
+      case 'twoWithGap': {
+        // Student should be in 2 slots with exactly 1 gap between them
+        if (existingSlotNums.length >= 2) {
+          return { score: -99999, blocked: true, blockReason: '2コマ連続(一コマ空け): 既に2コマ配置済み' }
+        }
+
+        if (existingSlotNums.length === 1) {
+          const existing = existingSlotNums[0]
+          const gap = Math.abs(slotNum - existing)
+          if (gap === 2) {
+            score += 3000 // Exactly 1 slot gap
             const adjSubjects = getStudentSubjectsOnAdjacentSlots(assignments, student.id, date, slotNum)
-            if (adjSubjects.length > 0) score += 10
+            if (adjSubjects.length > 0) score += 200
+          } else {
+            return { score: -99999, blocked: true, blockReason: '2コマ連続(一コマ空け): 間隔が正しくありません' }
           }
         } else {
-          if (existingSlotNums.length > 0) {
-            score -= weight
-            if (c.priority === 'must') {
-              mustViolations.push(`${gapSlots}コマ空けて${count}コマ連続が必要`)
-            }
-          } else {
-            if (canFormGapConsecutiveBlock(slotNum, gapSlots, count, slotsPerDay)) {
-              score += weight / 4
-            }
+          // First slot — check if gap pattern is still possible
+          if (slotNum + 2 <= slotsPerDay || slotNum - 2 >= 1) {
+            score += 500
           }
         }
         break
       }
 
-      case 'with-regular': {
-        // Desired: special lesson slots should be adjacent to student's regular lesson on this day-of-week
-        const count = c.params.count ?? 2
-        const dayOfWeek = getIsoDayOfWeek(date)
-        const studentRegularSlots = (regularLessons ?? [])
+      case 'oneSlotOnly': {
+        // Hard limit: 1 slot per day
+        if (existingSlotNums.length >= 1) {
+          return { score: -99999, blocked: true, blockReason: '一コマ限定: 既に1コマ配置済み' }
+        }
+        score += 100 // Small bonus for being placed (since no more can be added)
+        break
+      }
+
+      case 'regularLink': {
+        // Link special lesson adjacent to regular lesson on this day-of-week
+        const studentRegularSlots = regularLessons
           .filter((rl) => rl.dayOfWeek === dayOfWeek && rl.studentIds.includes(student.id))
           .map((rl) => rl.slotNumber)
-        if (studentRegularSlots.length > 0) {
-          const isAdjacent = studentRegularSlots.some((n) => Math.abs(n - slotNum) === 1)
-          const allSlots = [...existingSlotNums, slotNum, ...studentRegularSlots].sort((a, b) => a - b)
-          const unique = [...new Set(allSlots)]
-          // Check if we can form a consecutive block of `count` including regular slots
-          let hasBlock = false
-          for (let start = 0; start <= unique.length - count; start++) {
-            let isRun = true
-            for (let i = 1; i < count; i++) {
-              if (unique[start + i] !== unique[start] + i) { isRun = false; break }
-            }
-            if (isRun) { hasBlock = true; break }
-          }
-          if (hasBlock) {
-            score += weight
-          } else if (isAdjacent) {
-            score += weight / 2
-          } else {
-            score -= weight / 2
-            if (c.priority === 'must') {
-              mustViolations.push(`通常授業に連結して${count}コマ連続が必要`)
-            }
-          }
+
+        if (studentRegularSlots.length === 0) break // No regular on this day — N/A
+
+        // Max 1 special slot per day for regularLink (forming 2コマ: regular + special)
+        if (existingSlotNums.length >= 1) {
+          return { score: -99999, blocked: true, blockReason: '通常授業連結: 既に特別講習コマ配置済み' }
         }
-        // If no regular lesson on this day-of-week, constraint is N/A (no effect)
-        break
-      }
 
-      case 'single-only': {
-        // This constraint does NOT affect slot evaluation scoring.
-        // It's enforced in autoAssign by filtering out 2-student combos.
-        // Just a small bonus to confirm the constraint is considered.
-        score += 0
-        break
-      }
-
-      case 'same-day-limit': {
-        // Desired: student should not exceed N slots per day
-        const maxSlots = c.params.sameDayMax ?? 2
-        const totalOnDate = existingSlotNums.length + 1 // including candidate
-        if (totalOnDate > maxSlots) {
-          score -= weight
-          if (c.priority === 'must') {
-            mustViolations.push(`同日${maxSlots}コマまでの制限を超過`)
-          }
-        } else if (totalOnDate === maxSlots) {
-          score += weight / 4 // Exactly at limit — neutral to slightly positive
+        const isAdjacent = studentRegularSlots.some((n) => Math.abs(n - slotNum) === 1)
+        if (isAdjacent) {
+          score += 3000
+          const adjSubjects = getStudentSubjectsOnAdjacentSlots(assignments, student.id, date, slotNum)
+          if (adjSubjects.length > 0) score += 200
+        } else {
+          score -= 2000 // Not adjacent to regular → strong penalty
         }
         break
       }
     }
   }
 
-  return { score, mustViolations }
-}
-
-// ── Internal helpers ──────────────────────────────────────
-
-interface ConsecutiveResult {
-  satisfied: boolean
-  adjacentSlotNum?: number
-}
-
-/**
- * Check if placing at slotNum forms (or extends) a consecutive block of `count` slots.
- */
-const evaluateConsecutive = (
-  slotNum: number,
-  existingSlots: number[],
-  count: number,
-  _slotsPerDay: number,
-): ConsecutiveResult => {
-  if (existingSlots.length === 0) {
-    // First slot — can't be consecutive yet, but is OK
-    return { satisfied: false }
-  }
-
-  // Build the set including the candidate
-  const allSlots = [...existingSlots, slotNum].sort((a, b) => a - b)
-
-  // Check if there's a consecutive run of `count` that includes slotNum
-  for (let start = 0; start <= allSlots.length - count; start++) {
-    let isRun = true
-    for (let i = 1; i < count; i++) {
-      if (allSlots[start + i] !== allSlots[start] + i) { isRun = false; break }
-    }
-    if (isRun) {
-      const runSlots = allSlots.slice(start, start + count)
-      if (runSlots.includes(slotNum)) {
-        // Find an adjacent existing slot
-        const adj = existingSlots.find((n) => Math.abs(n - slotNum) === 1)
-        return { satisfied: true, adjacentSlotNum: adj }
-      }
-    }
-  }
-
-  // Even without a full run, being adjacent to existing is partially good
-  const isAdj = existingSlots.some((n) => Math.abs(n - slotNum) === 1)
-  if (isAdj && existingSlots.length + 1 < count) {
-    // Building towards the target — partial satisfaction
-    return { satisfied: false, adjacentSlotNum: existingSlots.find((n) => Math.abs(n - slotNum) === 1) }
-  }
-
-  return { satisfied: false }
-}
-
-/**
- * Check if slotNum can be the start of a consecutive block of `count` within the day.
- */
-const canFormConsecutiveBlock = (slotNum: number, count: number, slotsPerDay: number): boolean => {
-  // Check if there's room for a block starting at or before slotNum
-  for (let start = Math.max(1, slotNum - count + 1); start <= slotNum; start++) {
-    if (start + count - 1 <= slotsPerDay) return true
-  }
-  return false
-}
-
-/**
- * Evaluate gap-then-consecutive pattern.
- * Pattern: [existing slot] → [gapSlots empty] → [count consecutive slots]
- * OR: [count consecutive slots] → [gapSlots empty] → [existing slot]
- */
-const evaluateGapThenConsecutive = (
-  slotNum: number,
-  existingSlots: number[],
-  gapSlots: number,
-  count: number,
-  slotsPerDay: number,
-): ConsecutiveResult => {
-  if (existingSlots.length === 0) return { satisfied: false }
-
-  const allSlots = [...existingSlots, slotNum].sort((a, b) => a - b)
-
-  // Look for the pattern: a group of isolated slot(s), then exactly `gapSlots` gap, then `count` consecutive
-  // We need to find if the candidate slot fits into such a pattern
-
-  // Check all possible consecutive blocks that include slotNum
-  for (let blockStart = Math.max(1, slotNum - count + 1); blockStart <= slotNum; blockStart++) {
-    const blockEnd = blockStart + count - 1
-    if (blockEnd > slotsPerDay) continue
-
-    // Check that all positions in the block are filled
-    const blockSlots = Array.from({ length: count }, (_, i) => blockStart + i)
-    if (!blockSlots.every((s) => allSlots.includes(s))) continue
-
-    // Check for a slot exactly gapSlots before the block or after the block
-    const slotBeforeGap = blockStart - gapSlots - 1
-    const slotAfterGap = blockEnd + gapSlots + 1
-
-    if ((slotBeforeGap >= 1 && allSlots.includes(slotBeforeGap)) ||
-        (slotAfterGap <= slotsPerDay && allSlots.includes(slotAfterGap))) {
-      return { satisfied: true }
-    }
-  }
-
-  // Check if we're building towards the pattern
-  const isAdj = existingSlots.some((n) => Math.abs(n - slotNum) === 1)
-  if (isAdj) return { satisfied: false }
-
-  // Check if this slot is exactly gapSlots away from an existing slot
-  const isGapAway = existingSlots.some((n) => Math.abs(n - slotNum) === gapSlots + 1)
-  if (isGapAway) return { satisfied: false }
-
-  return { satisfied: false }
-}
-
-/**
- * Check if a gap-then-consecutive block can still be formed starting from/around slotNum.
- */
-const canFormGapConsecutiveBlock = (
-  slotNum: number,
-  gapSlots: number,
-  count: number,
-  slotsPerDay: number,
-): boolean => {
-  const totalNeeded = 1 + gapSlots + count // e.g. 1 + 1 + 2 = 4 slots span
-  // Check if there's enough room in either direction
-  return (slotNum + totalNeeded - 1 <= slotsPerDay) || (slotNum - totalNeeded + 1 >= 1)
-}
-
-/**
- * Summarize a student's constraints as a short display string.
- */
-export const summarizeConstraints = (constraints: SlotConstraint[]): string => {
-  return constraints.map((c) => {
-    const priority = c.priority === 'must' ? '必須' : '希望'
-    switch (c.type) {
-      case 'consecutive':
-        return `${c.params.count ?? 2}コマ連続${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
-      case 'gap-then-consecutive':
-        return `${c.params.gapSlots ?? 1}コマ空け→${c.params.count ?? 2}コマ連続${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
-      case 'with-regular':
-        return `通常授業連結${c.params.count ?? 2}コマ${c.params.diffSubject ? '(別教科)' : ''}[${priority}]`
-      case 'single-only':
-        return `単独のみ[${priority}]`
-      case 'same-day-limit':
-        return `同日最大${c.params.sameDayMax ?? 2}コマ[${priority}]`
-      default:
-        return `${c.type}[${priority}]`
-    }
-  }).join(', ')
-}
-
-/**
- * Validate that a set of constraints don't conflict with each other.
- * Returns an array of warning messages (empty = no conflicts).
- */
-export const validateConstraints = (constraints: SlotConstraint[]): string[] => {
-  const warnings: string[] = []
-  if (constraints.length <= 1) return warnings
-
-  const types = constraints.map((c) => c.type)
-  const hasConsecutive = types.includes('consecutive')
-  const hasGapConsecutive = types.includes('gap-then-consecutive')
-  const hasWithRegular = types.includes('with-regular')
-
-  // consecutive + gap-then-consecutive conflict: both dictate placement pattern
-  if (hasConsecutive && hasGapConsecutive) {
-    warnings.push('「連続コマ」と「空けて連続」は同時に設定できません。どちらか一方にしてください。')
-  }
-
-  // with-regular + gap-then-consecutive conflict
-  if (hasWithRegular && hasGapConsecutive) {
-    warnings.push('「通常授業連結」と「空けて連続」は同時に設定できません。')
-  }
-
-  // Multiple of the same type
-  const consecutiveCards = constraints.filter((c) => c.type === 'consecutive')
-  if (consecutiveCards.length > 1) {
-    const counts = consecutiveCards.map((c) => c.params.count ?? 2)
-    if (new Set(counts).size > 1) {
-      warnings.push('複数の「連続コマ」制約のコマ数が異なります。1つにまとめてください。')
-    } else {
-      warnings.push('「連続コマ」制約が重複しています。1つにまとめてください。')
-    }
-  }
-
-  const gapCards = constraints.filter((c) => c.type === 'gap-then-consecutive')
-  if (gapCards.length > 1) {
-    warnings.push('「空けて連続」制約が重複しています。1つにまとめてください。')
-  }
-
-  const singleOnlyCards = constraints.filter((c) => c.type === 'single-only')
-  if (singleOnlyCards.length > 1) {
-    warnings.push('「単独のみ」制約が重複しています。')
-  }
-
-  const sameDayLimitCards = constraints.filter((c) => c.type === 'same-day-limit')
-  if (sameDayLimitCards.length > 1) {
-    warnings.push('「同日上限」制約が重複しています。')
-  }
-
-  const withRegularCards = constraints.filter((c) => c.type === 'with-regular')
-  if (withRegularCards.length > 1) {
-    warnings.push('「通常授業連結」制約が重複しています。')
-  }
-
-  return warnings
+  return { score, blocked: false }
 }

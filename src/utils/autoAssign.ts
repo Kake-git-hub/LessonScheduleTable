@@ -1,8 +1,8 @@
 import type { Assignment, SessionData } from '../types'
 import { personKey } from './schedule'
-import { constraintFor, hasAvailability, isStudentAvailable, isRegularLessonPair } from './constraints'
+import { constraintFor, hasAvailability, isStudentAvailable } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
-import { evaluateSlotConstraints } from './slotConstraints'
+import { evaluateConstraintCards, DEFAULT_CONSTRAINT_CARDS } from './slotConstraints'
 import {
   getSlotNumber,
   getIsoDayOfWeek,
@@ -12,13 +12,10 @@ import {
   getTeacherSlotNumbersOnDate,
   getTeacherPrevSlotStudentIds,
   countStudentSlotsOnDate,
-  getStudentSlotNumbersOnDate,
-  countStudentAssignedDates,
   countStudentLoad,
   countStudentSubjectLoad,
   assignmentSignature,
   hasMeaningfulManualAssignment,
-  getTeacherStudentSlotsOnDate,
   getStudentSubjectsOnAdjacentSlots,
 } from './assignments'
 
@@ -435,11 +432,7 @@ export const buildIncrementalAutoAssignments = async (
       continue
     }
 
-    // Late-slot bias: non-高3/中3 students prefer slot 3+ to encourage 2-student pairing
-    // Slots 3,4,5 get a bonus; slots 1,2 get no bonus or slight penalty
-    const lateSlotBonusForSlot = currentSlotNum >= 3 ? 25 : (currentSlotNum === 2 ? 5 : 0)
-
-    // Determine which students have a group lesson on this date (for 中3 special rule)
+    // Determine which students have a group lesson on this date (for groupContinuous card)
     const currentDayOfWeek = getIsoDayOfWeek(currentDate)
     const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === currentDayOfWeek)
 
@@ -478,10 +471,8 @@ export const buildIncrementalAutoAssignments = async (
       const isExistingDate = teacherDates.has(currentDate)
       const teacherLoad = countTeacherLoad(result, teacher.id)
 
-      // Teacher consecutive slot bonus
       const teacherSlotsOnDate = getTeacherSlotNumbersOnDate(result, teacher.id, currentDate)
       const teacherIsConsecutive = teacherSlotsOnDate.some((n) => Math.abs(n - currentSlotNum) === 1)
-      const teacherConsecutiveBonus = teacherIsConsecutive ? 20 : 0
 
       // Students that the teacher taught in the immediately previous slot (avoid same student consecutive)
       const prevSlotStudentIds = new Set(getTeacherPrevSlotStudentIds(result, teacher.id, currentDate, currentSlotNum))
@@ -489,8 +480,6 @@ export const buildIncrementalAutoAssignments = async (
       let bestPlan: { score: number; assignment: Assignment } | null = null
 
       for (const combo of [...candidates.map((s) => [s]), ...candidates.flatMap((l, i) => candidates.slice(i + 1).map((r) => [l, r]))]) {
-        // Enforce single-only constraint: skip 2-student combos if any student has single-only
-        if (combo.length === 2 && combo.some((st) => (st.slotConstraints ?? []).some((c) => c.type === 'single-only'))) continue
 
         // Avoid assigning the same student to this teacher's consecutive slot
         const hasSameStudentConsecutive = combo.some((st) => prevSlotStudentIds.has(st.id))
@@ -498,6 +487,27 @@ export const buildIncrementalAutoAssignments = async (
 
         // Check student-student constraints within this combo
         if (combo.length === 2 && constraintFor(data.constraints, combo[0].id, combo[1].id) === 'incompatible') continue
+
+        // ── Hard filters ──
+        // 一日上限2コマ (shared rule) — block if any student already has 2 slots today
+        const anyOver2 = combo.some((st) => {
+          const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
+          return slotsOnDate >= 2
+        })
+        if (anyOver2) continue
+
+        // ── Constraint card hard filters ──
+        let cardBlocked = false
+        let totalCardScore = 0
+        for (const st of combo) {
+          const evalResult = evaluateConstraintCards(
+            st, slot, result, data.settings.slotsPerDay,
+            data.regularLessons, groupLessonsOnDate, teacher.id,
+          )
+          if (evalResult.blocked) { cardBlocked = true; break }
+          totalCardScore += evalResult.score
+        }
+        if (cardBlocked) continue
 
         // --- Determine subject assignment (same or mixed) ---
         // Find base subjects ALL students in combo can learn and teacher can teach to ALL of them
@@ -552,119 +562,44 @@ export const buildIncrementalAutoAssignments = async (
         if (subjectPlans.length === 0) continue
 
         for (const plan of subjectPlans) {
-        // --- Student distribution scoring ---
-        let studentScore = 0
+        // ── Shared rule scoring (priority order) ──
+
+        // 1. 2人ペアボーナス → 講師稼働率の最大化
+        const pairBonus = combo.length === 2 ? 1000 : 0
+
+        // 2. 既出勤日に追加 → 講師の出勤日数を最小化
+        const attendanceBonus = isExistingDate ? 500 : -200
+
+        // 3. 残コマ多数優先 → 生徒競合の場合残コマ数が多い生徒を優先
+        let remainingSlotScore = 0
         for (const st of combo) {
-          const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
-          const existingSlotNums = getStudentSlotNumbersOnDate(result, st.id, currentDate)
-          const hasSlotConstraints = (st.slotConstraints ?? []).length > 0
-
-          // Penalty for same-day multiple slots (avoid if possible)
-          // → Suppressed when student has slot constraints (constraints control same-day placement)
-          if (slotsOnDate > 0 && !hasSlotConstraints) {
-            studentScore -= 60
-            const isConsecutive = existingSlotNums.some(
-              (n) => Math.abs(n - currentSlotNum) === 1,
-            )
-            if (isConsecutive) {
-              studentScore += 50
-            } else {
-              studentScore -= 30
-            }
-          }
-
-          // Prefer students with more remaining slots (even distribution)
           const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
           const totalAssigned = countStudentLoad(result, st.id)
-          studentScore += (totalRequested - totalAssigned) * 10
-
-          // Prefer students with fewer assigned dates (spread across days)
-          // → Suppressed when student has slot constraints (consecutive constraints prefer same-day concentration)
-          if (!hasSlotConstraints) {
-            const assignedDates = countStudentAssignedDates(result, st.id)
-            studentScore -= assignedDates * 5
-          }
-
-          // Submission order bonus: earlier submitters get priority (max +15)
-          const submissionRank = submissionOrderMap.get(st.id) ?? maxRank
-          studentScore += Math.max(0, 15 - submissionRank * 2)
+          remainingSlotScore += (totalRequested - totalAssigned) * 20
         }
 
-        // Regular lesson pair bonus: prefer assigning regular-lesson teacher-student combos
-        const regularPairBonus = combo.reduce((s, st) =>
-          s + (isRegularLessonPair(data.regularLessons, teacher.id, st.id) ? 30 : 0), 0)
+        // ── Additional scoring factors (lower priority) ──
 
-        // Same-day same-pair consecutive bonus
-        // → Suppressed for students with slot constraints (constraint card controls placement pattern)
-        let pairConsecutiveBonus = 0
-        for (const st of combo) {
-          if ((st.slotConstraints ?? []).length > 0) continue // constraint card takes priority
-          const existingPairSlots = getTeacherStudentSlotsOnDate(result, teacher.id, st.id, currentDate)
-          if (existingPairSlots.length > 0) {
-            const isConsecutive = existingPairSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
-            pairConsecutiveBonus += isConsecutive ? 60 : -40
-          }
-        }
+        // Teacher consecutive slot bonus
+        const teacherConsecBonus = teacherIsConsecutive ? 50 : 0
 
         // Mixed-subject penalty: same subject pairs are slightly preferred
         const mixedSubjectPenalty = plan.isMixed ? -15 : 0
 
         // Consecutive same-subject penalty: avoid same student having the same subject in adjacent slots
-        // → Suppressed for students with slot constraints that have diffSubject: false
         let consecutiveSameSubjectPenalty = 0
         for (const st of combo) {
           const subj = plan.isMixed ? (plan.studentSubjects[st.id] ?? '') : plan.subject
           const adjacentSubjects = getStudentSubjectsOnAdjacentSlots(result, st.id, currentDate, currentSlotNum)
           if (adjacentSubjects.includes(subj)) {
-            // Check if student has a constraint with diffSubject: false — if so, same-subject consecutive is OK
-            const stConstraints = st.slotConstraints ?? []
-            const wantsSameSubject = stConstraints.some((c) => !c.params.diffSubject)
-            if (!wantsSameSubject) {
+            // Cards that control multi-slot placement (twoConsecutive/twoWithGap/regularLink) want different subjects
+            const cards = st.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
+            const hasMultiSlotCard = cards.some((c) => c === 'twoConsecutive' || c === 'twoWithGap' || c === 'regularLink')
+            if (hasMultiSlotCard) {
+              consecutiveSameSubjectPenalty -= 100 // Stronger penalty when card wants diff subjects
+            } else {
               consecutiveSameSubjectPenalty -= 20
             }
-          }
-        }
-
-        // Slot constraint card evaluation
-        let constraintCardScore = 0
-        let hasMustViolation = false
-        for (const st of combo) {
-          const evalResult = evaluateSlotConstraints(st, slot, result, data.settings.slotsPerDay, data.regularLessons)
-          constraintCardScore += evalResult.score
-          if (evalResult.mustViolations.length > 0) {
-            hasMustViolation = true
-            break
-          }
-        }
-        if (hasMustViolation) continue // Skip combos that violate must-constraints
-
-        // Late-slot bonus: non-高3/中3 students get a bonus for slots 3+ to fill later slots first for better pairing
-        const comboLateSlotBonus = combo.some((st) => st.grade === '高3' || st.grade === '中3') ? 0 : lateSlotBonusForSlot
-
-        // 中3 group-lesson special rule: 中3 students with a group lesson on this date
-        // should be placed in 2 consecutive slots starting from slot 1 or 2 (特別講習)
-        let ju3GroupBonus = 0
-        for (const st of combo) {
-          if (st.grade !== '中3') continue
-          const hasGroupOnDate = groupLessonsOnDate.some((gl) => gl.studentIds.includes(st.id))
-          if (!hasGroupOnDate) continue
-          const existingSlots = getStudentSlotNumbersOnDate(result, st.id, currentDate).filter((n) => n >= 1)
-          // Strong preference for slots 1 and 2 (adjacent to 午前 group lesson)
-          if (currentSlotNum === 1 || currentSlotNum === 2) {
-            ju3GroupBonus += 80
-          } else if (currentSlotNum === 3) {
-            ju3GroupBonus += 20 // still OK if starting from slot 2
-          } else {
-            ju3GroupBonus -= 50 // discourage later slots
-          }
-          // Consecutive bonus: if already has a slot on this date, prefer consecutive
-          if (existingSlots.length > 0 && existingSlots.length < 2) {
-            const isConsecutive = existingSlots.some((n) => Math.abs(n - currentSlotNum) === 1)
-            ju3GroupBonus += isConsecutive ? 100 : -60
-          }
-          // Already has 2+ individual slots — don't add more (fulfilled)
-          if (existingSlots.length >= 2) {
-            ju3GroupBonus -= 200
           }
         }
 
@@ -677,20 +612,27 @@ export const buildIncrementalAutoAssignments = async (
           }
         }
 
-        const score = 100 +
-          (isExistingDate ? 80 : -50) +
-          teacherConsecutiveBonus +
-          comboLateSlotBonus +
-          ju3GroupBonus +
-          regularPairBonus +
-          pairConsecutiveBonus +
-          makeupBonus +
-          (combo.length === 2 ? 30 : 0) +
-          mixedSubjectPenalty +
-          consecutiveSameSubjectPenalty +
-          constraintCardScore +
-          studentScore -
-          teacherLoad * 2
+        // Submission order bonus: earlier submitters get priority (max +15)
+        let submissionBonus = 0
+        for (const st of combo) {
+          const submissionRank = submissionOrderMap.get(st.id) ?? maxRank
+          submissionBonus += Math.max(0, 15 - submissionRank * 2)
+        }
+
+        // Teacher load balancing
+        const teacherLoadPenalty = teacherLoad * 2
+
+        const score =
+          totalCardScore +            // Constraint cards (highest priority)
+          pairBonus +                  // 2人ペアボーナス
+          attendanceBonus +            // 既出勤日追加
+          remainingSlotScore +         // 残コマ多数優先
+          teacherConsecBonus +         // 講師連続コマ
+          mixedSubjectPenalty +        // 混合科目
+          consecutiveSameSubjectPenalty + // 隣接同科目
+          makeupBonus +                // 振替ボーナス
+          submissionBonus -            // 提出順
+          teacherLoadPenalty           // 講師負荷
 
         if (!bestPlan || score > bestPlan.score) {
           const assignment: Assignment = plan.isMixed

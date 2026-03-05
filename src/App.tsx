@@ -6,6 +6,7 @@ import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteC
 import type {
   ActualResult,
   Assignment,
+  ConstraintCardType,
   ConstraintType,
   GroupLesson,
   Manager,
@@ -15,8 +16,6 @@ import type {
   PersonType,
   RegularLesson,
   SessionData,
-  SlotConstraint,
-  SlotConstraintType,
   Student,
   SubmissionLogEntry,
   Teacher,
@@ -27,7 +26,7 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { SLOT_CONSTRAINT_LABELS, defaultConstraintParams, summarizeConstraints, validateConstraints } from './utils/slotConstraints'
+import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DEFAULT_CONSTRAINT_CARDS, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
 const APP_VERSION = '1.0.0'
 
@@ -3542,7 +3541,7 @@ service cloud.firestore {
               <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}{!isMendan && <th>コマ制約</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => {
-                  const constraints = student.slotConstraints ?? []
+                  const cards = student.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
                   const isEditing = constraintEditStudentId === student.id
                   return (
                   <tr key={student.id}>
@@ -3555,135 +3554,56 @@ service cloud.firestore {
                     {!isMendan && <td>{student.grade}</td>}
                     {!isMendan && (
                       <td>
-                        {constraints.length > 0 && !isEditing && (
+                        {cards.length > 0 && !isEditing && (
                           <span style={{ fontSize: '0.8em', color: '#475569', marginRight: 6 }}>
-                            {summarizeConstraints(constraints)}
+                            {summarizeConstraintCards(cards)}
                           </span>
                         )}
                         {isEditing ? (
-                          <div style={{ minWidth: 320 }}>
-                            {constraints.map((c, ci) => (
-                              <div key={c.id} style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
-                                <select value={c.type} style={{ fontSize: '0.85em' }}
-                                  onChange={(e) => {
-                                    const newType = e.target.value as SlotConstraintType
-                                    const updated = [...constraints]
-                                    updated[ci] = { ...c, type: newType, params: defaultConstraintParams(newType) }
-                                    void update((cur) => ({
-                                      ...cur,
-                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
-                                    }))
-                                  }}>
-                                  {Object.entries(SLOT_CONSTRAINT_LABELS).map(([k, v]) => (
-                                    <option key={k} value={k}>{v}</option>
-                                  ))}
-                                </select>
-                                {(c.type === 'consecutive' || c.type === 'gap-then-consecutive' || c.type === 'with-regular') && (
-                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
-                                  <input type="number" min={2} max={6} value={c.params.count ?? 2} style={{ width: 40, fontSize: '0.85em' }}
+                          <div style={{ minWidth: 280 }}>
+                            {ALL_CONSTRAINT_CARDS.map((cardType) => {
+                              const isChecked = cards.includes(cardType)
+                              const isConflicting = !isChecked && CONSTRAINT_CARD_CONFLICT_GROUP.includes(cardType) &&
+                                cards.some((c) => CONSTRAINT_CARD_CONFLICT_GROUP.includes(c) && c !== cardType)
+                              return (
+                                <label key={cardType} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, fontSize: '0.85em', opacity: isConflicting ? 0.5 : 1, cursor: isConflicting ? 'not-allowed' : 'pointer' }}
+                                  title={isConflicting ? '競合するカードが選択済みです' : CONSTRAINT_CARD_DESCRIPTIONS[cardType]}>
+                                  <input type="checkbox" checked={isChecked} disabled={isConflicting}
                                     onChange={(e) => {
-                                      const updated = [...constraints]
-                                      updated[ci] = { ...c, params: { ...c.params, count: Number(e.target.value) || 2 } }
+                                      let updated: ConstraintCardType[]
+                                      if (e.target.checked) {
+                                        // Remove conflicting cards when adding from conflict group
+                                        const withoutConflicts = CONSTRAINT_CARD_CONFLICT_GROUP.includes(cardType)
+                                          ? cards.filter((c) => !CONSTRAINT_CARD_CONFLICT_GROUP.includes(c))
+                                          : [...cards]
+                                        updated = [...withoutConflicts, cardType]
+                                      } else {
+                                        updated = cards.filter((c) => c !== cardType)
+                                      }
                                       void update((cur) => ({
                                         ...cur,
-                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
+                                        students: cur.students.map((s) => s.id === student.id ? { ...s, constraintCards: updated } : s),
                                       }))
-                                    }} />コマ
+                                    }} />
+                                  <span>{CONSTRAINT_CARD_LABELS[cardType]}</span>
                                 </label>
-                                )}
-                                {c.type === 'gap-then-consecutive' && (
-                                  <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
-                                    <input type="number" min={1} max={4} value={c.params.gapSlots ?? 1} style={{ width: 40, fontSize: '0.85em' }}
-                                      onChange={(e) => {
-                                        const updated = [...constraints]
-                                        updated[ci] = { ...c, params: { ...c.params, gapSlots: Number(e.target.value) || 1 } }
-                                        void update((cur) => ({
-                                          ...cur,
-                                          students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
-                                        }))
-                                      }} />コマ空け
-                                  </label>
-                                )}
-                                {(c.type === 'consecutive' || c.type === 'gap-then-consecutive' || c.type === 'with-regular') && (
-                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
-                                  <input type="checkbox" checked={!!c.params.diffSubject}
-                                    onChange={(e) => {
-                                      const updated = [...constraints]
-                                      updated[ci] = { ...c, params: { ...c.params, diffSubject: e.target.checked } }
-                                      void update((cur) => ({
-                                        ...cur,
-                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
-                                      }))
-                                    }} />別教科
-                                </label>
-                                )}
-                                {c.type === 'same-day-limit' && (
-                                <label style={{ fontSize: '0.8em', display: 'flex', alignItems: 'center', gap: 2 }}>
-                                  最大<input type="number" min={1} max={6} value={c.params.sameDayMax ?? 2} style={{ width: 40, fontSize: '0.85em' }}
-                                    onChange={(e) => {
-                                      const updated = [...constraints]
-                                      updated[ci] = { ...c, params: { ...c.params, sameDayMax: Number(e.target.value) || 2 } }
-                                      void update((cur) => ({
-                                        ...cur,
-                                        students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
-                                      }))
-                                    }} />コマ/日
-                                </label>
-                                )}
-                                <select value={c.priority} style={{ fontSize: '0.8em' }}
-                                  onChange={(e) => {
-                                    const updated = [...constraints]
-                                    updated[ci] = { ...c, priority: e.target.value as 'must' | 'prefer' }
-                                    void update((cur) => ({
-                                      ...cur,
-                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated } : s),
-                                    }))
-                                  }}>
-                                  <option value="prefer">希望</option>
-                                  <option value="must">必須</option>
-                                </select>
-                                <button type="button" className="btn secondary" style={{ fontSize: '0.75em', padding: '2px 6px' }}
-                                  onClick={() => {
-                                    const updated = constraints.filter((_, i) => i !== ci)
-                                    void update((cur) => ({
-                                      ...cur,
-                                      students: cur.students.map((s) => s.id === student.id ? { ...s, slotConstraints: updated.length > 0 ? updated : undefined } : s),
-                                    }))
-                                  }}>✕</button>
-                              </div>
-                            ))}
+                              )
+                            })}
                             {(() => {
-                              const warnings = validateConstraints(constraints)
+                              const warnings = validateConstraintCards(cards)
                               return warnings.length > 0 ? (
                                 <div style={{ color: '#dc2626', fontSize: '0.8em', margin: '4px 0', padding: '4px 8px', background: '#fef2f2', borderRadius: 4 }}>
                                   {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
                                 </div>
                               ) : null
                             })()}
-                            <div style={{ display: 'flex', gap: 4 }}>
-                              <button type="button" className="btn secondary" style={{ fontSize: '0.75em' }}
-                                onClick={() => {
-                                  const newConstraint: SlotConstraint = {
-                                    id: `sc_${Date.now()}`,
-                                    type: 'consecutive',
-                                    priority: 'prefer',
-                                    params: defaultConstraintParams('consecutive'),
-                                  }
-                                  void update((cur) => ({
-                                    ...cur,
-                                    students: cur.students.map((s) => s.id === student.id
-                                      ? { ...s, slotConstraints: [...(s.slotConstraints ?? []), newConstraint] }
-                                      : s),
-                                  }))
-                                }}>+ 制約追加</button>
-                              <button type="button" className="btn secondary" style={{ fontSize: '0.75em' }}
-                                onClick={() => setConstraintEditStudentId(null)}>閉じる</button>
-                            </div>
+                            <button type="button" className="btn secondary" style={{ fontSize: '0.75em', marginTop: 4 }}
+                              onClick={() => setConstraintEditStudentId(null)}>閉じる</button>
                           </div>
                         ) : (
                           <button type="button" className="btn secondary" style={{ fontSize: '0.75em', padding: '2px 8px' }}
                             onClick={() => setConstraintEditStudentId(student.id)}>
-                            {constraints.length > 0 ? '編集' : '+ 設定'}
+                            {cards.length > 0 ? '編集' : '+ 設定'}
                           </button>
                         )}
                       </td>
@@ -3735,11 +3655,12 @@ service cloud.firestore {
                       if (idx < 0 || idx >= otherSessions.length) { alert('無効な番号です'); return }
                       const sourceSession = await loadSession(classroomId, otherSessions[idx].id)
                       if (!sourceSession) { alert('セッションデータの読み込みに失敗しました'); return }
-                      // Build a map of student id → slotConstraints from the source session
-                      const constraintMap = new Map<string, typeof sourceSession.students[0]['slotConstraints']>()
+                      // Build a map of student id → constraintCards from the source session
+                      const constraintMap = new Map<string, ConstraintCardType[]>()
                       for (const s of sourceSession.students) {
-                        if (s.slotConstraints && s.slotConstraints.length > 0) {
-                          constraintMap.set(s.id, s.slotConstraints)
+                        const cards = s.constraintCards ?? (s as Record<string, unknown>).slotConstraints as ConstraintCardType[] | undefined
+                        if (cards && cards.length > 0) {
+                          constraintMap.set(s.id, cards)
                         }
                       }
                       if (constraintMap.size === 0) { alert(`「${otherSessions[idx].name}」にはコマ制約が設定されていません`); return }
@@ -3751,7 +3672,7 @@ service cloud.firestore {
                         students: cur.students.map((s) => {
                           const inherited = constraintMap.get(s.id)
                           if (!inherited) return s
-                          return { ...s, slotConstraints: inherited.map((c) => ({ ...c, id: `sc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` })) }
+                          return { ...s, constraintCards: [...inherited] }
                         }),
                       }))
                       alert(`${matchCount}名のコマ制約を引き継ぎました`)
@@ -4014,21 +3935,26 @@ service cloud.firestore {
                       <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。★=通常授業生徒（マスタから自動配置）。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
-                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>自動提案 スコアリング（優先順）</h4>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>共通ルール（自動提案スコアリング・優先順）</h4>
                       <ol style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
-                        <li><b>既出勤日に追加 +80</b> / 新規出勤日 −50 → 講師の出勤日数を最小化</li>
-                        <li><b>同日同ペア連続コマ +60</b> / 非連続 −40 → ペアの連続配置を優先</li>
-                        <li><b>通常授業ペアボーナス +30</b> → 普段のペアを優先</li>
-                        <li><b>2人ペアボーナス +30</b> → 1人より2人ペアを優先</li>
-                        <li><b>後半コマ優先 最大+25</b> → 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
-                        <li><b>中3特別講習</b> → 集団授業がある日の中3は、午前の後に1限か2限から2コマ連続で配置</li>
-                        <li><b>講師連続コマ +20</b> → 同日の連続コマに配置</li>
-                        <li><b>生徒配分スコア</b> → 残コマ数が多い生徒を優先、同日複数回を抑制</li>
-                        <li><b>混合科目 −15</b> → 同科目ペアを優先</li>
-                        <li><b>隣接同科目 −20</b> → 同じ生徒の連続コマで科目を変える</li>
-                        <li><b>講師負荷 −2/コマ</b> → 講師の負荷を均等化</li>
-                        <li><b>コマ制約カード</b> → 連続・空けて連続・通常授業連結・単独のみ・同日上限（必須=±150 / 希望=±40）</li>
+                        <li><b>2人ペアボーナス +1000</b> → 講師稼働率の最大化</li>
+                        <li><b>既出勤日に追加 +500</b> / 新規出勤日 −200 → 講師の出勤日数を最小化</li>
+                        <li><b>残コマ多数優先 ×20</b> → 生徒競合の場合残コマ数が多い生徒を優先</li>
+                        <li><b>生徒は一日上限2コマまで</b>（ハードフィルタ）</li>
                       </ol>
+                    </section>
+                    <section>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>コマ制約カード（共通ルールより優先）</h4>
+                      <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
+                        <li><b>(デフォルト) 受験生以外の後半コマ優先</b> → 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
+                        <li><b>(デフォルト) 集団後連続</b> → 集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置</li>
+                        <li><b>通常講師優先</b> → 通常授業の講師を優先</li>
+                        <li><b>2コマ連続</b> → 生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後で分ける）</li>
+                        <li><b>2コマ連続(一コマ空け)</b> → 生徒を2コマ連続で配置するが、間に1コマ入れる</li>
+                        <li><b>一コマ限定</b> → 生徒を1日1コマに限定する</li>
+                        <li><b>通常授業連結</b> → 通常授業の前後に特別講習のコマをつなげ2コマ連続とする</li>
+                      </ul>
+                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>※ 2コマ連続 / 2コマ連続(一コマ空け) / 一コマ限定 / 通常授業連結 は競合（同一生徒に1つのみ選択可）</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>制約</h4>
