@@ -1805,13 +1805,13 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const myAssignments = allSlotAssignments.filter((e) =>
         e.assignment.studentIds.includes(student.id),
       )
-      const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular).length
+      const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id]).length
       const regularSlots = myAssignments.filter((e) => e.assignment.isRegular).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
-      // Per-subject desired vs assigned (using per-student subjects)
+      // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
       const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
-        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && getStudentSubject(e.assignment, student.id) === subj).length
+        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && getStudentSubject(e.assignment, student.id) === subj).length
         return { subject: subj, desired, assigned, diff: assigned - desired }
       })
 
@@ -1865,8 +1865,9 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
     }
     for (const e of allSlotAssignments) {
       if (e.assignment.isRegular) continue
-      // Count per-student subjects
+      // Count per-student subjects (exclude makeup assignments)
       for (const sid of e.assignment.studentIds) {
+        if (e.assignment.regularMakeupInfo?.[sid]) continue
         const subj = getStudentSubject(e.assignment, sid)
         const entry = subjectMap.get(subj)
         if (!entry) continue
@@ -1986,7 +1987,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                 <th>希望計</th>
                 <th>割当計</th>
                 <th>充足率</th>
-                <th>科目別（希望/割当）</th>
+                <th>科目別（割当/希望）</th>
                 <th>通常</th>
                 <th>出席日数</th>
                 <th>担当講師数</th>
@@ -2012,7 +2013,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                       const color = sd.diff > 0 ? '#dc2626' : sd.diff < 0 ? '#d97706' : '#16a34a'
                       return (
                         <span key={sd.subject} style={{ marginRight: '8px' }}>
-                          {sd.subject}:<span style={{ color, fontWeight: 500 }}>{sd.desired}/{sd.assigned}</span>
+                          {sd.subject}:<span style={{ color, fontWeight: 500 }}>{sd.assigned}/{sd.desired}</span>
                         </span>
                       )
                     })}
