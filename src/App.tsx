@@ -2713,7 +2713,7 @@ const AdminPage = () => {
         teacherId: a.teacherId,
         studentIds: [...a.studentIds],
         subject: a.subject,
-        studentSubjects: a.studentSubjects ? { ...a.studentSubjects } : undefined,
+        ...(a.studentSubjects ? { studentSubjects: { ...a.studentSubjects } } : {}),
         _uid: ++editingResultUid,
       })))
     }
@@ -2722,8 +2722,14 @@ const AdminPage = () => {
 
   const saveActualResults = async (): Promise<void> => {
     if (!data || !recordingSlot) return
-    // Strip _uid before persisting
-    const cleaned: ActualResult[] = editingResults.map(({ _uid: _, ...rest }) => rest)
+    // Strip _uid and undefined fields before persisting (Firestore rejects undefined)
+    const cleaned: ActualResult[] = editingResults.map(({ _uid: _, ...rest }) => {
+      const result: ActualResult = { teacherId: rest.teacherId, studentIds: rest.studentIds, subject: rest.subject }
+      if (rest.studentSubjects && Object.keys(rest.studentSubjects).length > 0) {
+        result.studentSubjects = rest.studentSubjects
+      }
+      return result
+    })
     const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: cleaned }
     setRecordingSlot(null)
     setEditingResults([])
@@ -2844,7 +2850,7 @@ const AdminPage = () => {
                   teacherId: r.teacherId,
                   studentIds: [...r.studentIds],
                   subject: r.subject,
-                  studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+                  ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
                   ...(orig?.isRegular ? { isRegular: true } : {}),
                   ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
                   ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
@@ -2938,7 +2944,7 @@ const AdminPage = () => {
                 teacherId: r.teacherId,
                 studentIds: [...r.studentIds],
                 subject: r.subject,
-                studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+                ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
                 ...(orig?.isRegular ? { isRegular: true } : {}),
                 ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
                 ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
@@ -3104,7 +3110,7 @@ const AdminPage = () => {
         ...assignment,
         studentIds,
         subject: primarySubject,
-        studentSubjects: studentIds.length > 0 ? newStudentSubjects : undefined,
+        studentSubjects: studentIds.length > 0 ? newStudentSubjects : {},
       }
 
       return {
@@ -3137,7 +3143,7 @@ const AdminPage = () => {
         for (const sid of assignment.studentIds) {
           studentSubjects[sid] = subject
         }
-        slotAssignments[idx] = { ...assignment, subject, studentSubjects: assignment.studentIds.length > 0 ? studentSubjects : undefined }
+        slotAssignments[idx] = { ...assignment, subject, studentSubjects: assignment.studentIds.length > 0 ? studentSubjects : {} }
       }
       return {
         ...current,

@@ -164,7 +164,7 @@ export const buildIncrementalAutoAssignments = async (
           teacherId: r.teacherId,
           studentIds: [...r.studentIds],
           subject: r.subject,
-          studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+          ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
           ...(orig?.isRegular ? { isRegular: true } : {}),
           ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
           ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
