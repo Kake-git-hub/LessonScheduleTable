@@ -4219,6 +4219,14 @@ service cloud.firestore {
                                             ))}
                                           </select>
                                         )}
+                                        {sid && (
+                                          <button type="button" className="student-clear-btn" title="この生徒を未選択にする"
+                                            onClick={() => {
+                                              const newIds = [...result.studentIds]
+                                              newIds[pos] = ''
+                                              updateEditingResult(rIdx, 'studentIds', newIds)
+                                            }}>×</button>
+                                        )}
                                       </div>
                                     )
                                   })}
@@ -4261,8 +4269,12 @@ service cloud.firestore {
                         const hl = data.autoAssignHighlights ?? {}
                         const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
                         const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
-                        const isAutoMakeup = (hl.makeup?.[slot] ?? []).includes(sig)
-                        const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeup
+                        const isAutoMakeupHighlight = (hl.makeup?.[slot] ?? []).includes(sig)
+                        // 振替 badge is permanent: show if regularMakeupInfo exists OR if auto-assign just detected it
+                        const hasMakeupInfo = !!(assignment.regularMakeupInfo && Object.keys(assignment.regularMakeupInfo).length > 0)
+                        const isAutoMakeup = hasMakeupInfo || isAutoMakeupHighlight
+                        // Red border only for transient auto-assign highlights (not for permanent 振替)
+                        const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeupHighlight
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
 
                         // Compute student-drag drop validity for this specific assignment block
@@ -4333,8 +4345,8 @@ service cloud.firestore {
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                                 {isAutoMakeup && <span className="badge auto-diff-badge" style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }} title={changeDetail || '通常授業の振替'}>振替</span>}
-                                {isAutoAdded && !isAutoMakeup && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
-                                {isAutoChanged && !isAutoMakeup && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
+                                {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
+                                {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
                               </div>
                             )}
                             {/* Teacher row: select + pair move + delete */}
