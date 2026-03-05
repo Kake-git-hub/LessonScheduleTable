@@ -2611,6 +2611,8 @@ const AdminPage = () => {
       // Don't overwrite manual (non-regular) assignments or manually modified slots
       if (manuallyModifiedSlots.has(slot)) continue
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
+      // Don't overwrite slots where a student was manually transferred out (regularMakeupInfo present)
+      if (existing && existing.some((a) => a.regularMakeupInfo && Object.keys(a.regularMakeupInfo).length > 0)) continue
 
       const expectedRegulars = slotRegularLessons.map((lesson) => {
         // Exclude students who are unavailable for this slot (absent)
@@ -2637,6 +2639,15 @@ const AdminPage = () => {
         .sort()
 
       if (expectedSig.length === existingSig.length && expectedSig.every((sigItem, idx) => sigItem === existingSig[idx])) {
+        continue
+      }
+
+      // Don't overwrite if existing regular assignments are a subset of expected
+      // (students may have been manually transferred out via drag)
+      const existingRegulars = (existing ?? []).filter((a) => a.isRegular && !a.isGroupLesson)
+      const existingRegularStudentIds = new Set(existingRegulars.flatMap((a) => a.studentIds))
+      const expectedStudentIds = new Set(expectedRegulars.flatMap((a) => a.studentIds))
+      if (existingRegulars.length > 0 && [...existingRegularStudentIds].every((sid) => expectedStudentIds.has(sid)) && existingRegularStudentIds.size < expectedStudentIds.size) {
         continue
       }
 
@@ -3334,11 +3345,15 @@ const AdminPage = () => {
       if (updatedSrcStudentIds.length === 0) {
         srcAssignments.splice(sourceIdx, 1)
       } else {
+        // Remove moved student's regularMakeupInfo but keep isRegular for remaining students
+        const updatedSrcMakeupInfo = { ...(srcAssignment.regularMakeupInfo ?? {}) }
+        delete updatedSrcMakeupInfo[studentId]
         srcAssignments[sourceIdx] = {
           ...srcAssignment,
           studentIds: updatedSrcStudentIds,
           studentSubjects: updatedSrcStudentSubjects,
-          isRegular: false, // Mark as manual so auto-fill won't overwrite
+          // Keep isRegular if the source was regular — remaining students are still regular
+          ...(Object.keys(updatedSrcMakeupInfo).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo } : {}),
         }
       }
 
@@ -3358,11 +3373,13 @@ const AdminPage = () => {
         if (updatedSrcStudentIds.length === 0) {
           mergedAssignments.splice(sourceIdx, 1)
         } else {
+          const updatedSrcMakeupInfo2 = { ...(srcAssignment.regularMakeupInfo ?? {}) }
+          delete updatedSrcMakeupInfo2[studentId]
           mergedAssignments[sourceIdx] = {
             ...srcAssignment,
             studentIds: updatedSrcStudentIds,
             studentSubjects: updatedSrcStudentSubjects,
-            isRegular: false,
+            ...(Object.keys(updatedSrcMakeupInfo2).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo2 } : {}),
           }
         }
         nextAssignments[sourceSlot] = mergedAssignments
