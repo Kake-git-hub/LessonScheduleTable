@@ -31,12 +31,20 @@ export const buildEffectiveAssignments = (
   const effective: Record<string, Assignment[]> = { ...assignments }
   if (actualResults) {
     for (const [slot, results] of Object.entries(actualResults)) {
-      effective[slot] = results.map((r) => ({
-        teacherId: r.teacherId,
-        studentIds: [...r.studentIds],
-        subject: r.subject,
-        studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-      }))
+      const originals = assignments[slot] ?? []
+      effective[slot] = results.map((r) => {
+        // Preserve isRegular/isGroupLesson/regularMakeupInfo from the original assignment
+        const orig = originals.find((a) => a.teacherId === r.teacherId)
+        return {
+          teacherId: r.teacherId,
+          studentIds: [...r.studentIds],
+          subject: r.subject,
+          studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+          ...(orig?.isRegular ? { isRegular: true } : {}),
+          ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+          ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+        }
+      })
     }
   }
   return effective

@@ -807,6 +807,7 @@
 .subject-select-inline {
   width: 62px;
   min-width: 62px;
+  flex: 0 0 auto;
   padding: 3px 2px;
   font-size: 0.85em;
   text-align: center;

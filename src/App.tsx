@@ -2833,14 +2833,21 @@ const AdminPage = () => {
       // For recorded slots with empty actual results, set empty array (all absent)
       for (const slot of recordedSlots) {
         if (!nextAssignments[slot]) {
+          const origSlot = data.assignments[slot] ?? []
           nextAssignments[slot] = data.actualResults?.[slot]
-            ? data.actualResults[slot].map((r) => ({
-                teacherId: r.teacherId,
-                studentIds: [...r.studentIds],
-                subject: r.subject,
-                studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-              }))
-            : (data.assignments[slot] ?? [])
+            ? data.actualResults[slot].map((r) => {
+                const orig = origSlot.find((a) => a.teacherId === r.teacherId)
+                return {
+                  teacherId: r.teacherId,
+                  studentIds: [...r.studentIds],
+                  subject: r.subject,
+                  studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+                  ...(orig?.isRegular ? { isRegular: true } : {}),
+                  ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+                  ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+                }
+              })
+            : origSlot
         }
       }
       const submittedCount = data.students.filter((s) => s.submittedAt > 0).length
@@ -2920,14 +2927,21 @@ const AdminPage = () => {
     // For recorded slots with empty actual results, set empty array (all absent)
     for (const slot of recordedSlots) {
       if (!nextAssignments[slot]) {
+        const origSlot = data.assignments[slot] ?? []
         nextAssignments[slot] = data.actualResults?.[slot]
-          ? data.actualResults[slot].map((r) => ({
-              teacherId: r.teacherId,
-              studentIds: [...r.studentIds],
-              subject: r.subject,
-              studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
-            }))
-          : (data.assignments[slot] ?? [])
+          ? data.actualResults[slot].map((r) => {
+              const orig = origSlot.find((a) => a.teacherId === r.teacherId)
+              return {
+                teacherId: r.teacherId,
+                studentIds: [...r.studentIds],
+                subject: r.subject,
+                studentSubjects: r.studentSubjects ? { ...r.studentSubjects } : undefined,
+                ...(orig?.isRegular ? { isRegular: true } : {}),
+                ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+                ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+              }
+            })
+          : origSlot
       }
     }
 
