@@ -36,7 +36,22 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   regularLink: '通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
 }
 
-/** Cards enabled by default when creating new sessions. */
+/** Get default constraint cards for a student based on grade.
+ *  - lateSlotNonExam: default for non-exam grades (not 中3/高3)
+ *  - groupContinuous: default for 中3 only
+ */
+export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] => {
+  const cards: ConstraintCardType[] = []
+  if (!isExamGrade(grade)) {
+    cards.push('lateSlotNonExam')
+  }
+  if (grade === '中3') {
+    cards.push('groupContinuous')
+  }
+  return cards
+}
+
+/** Static fallback (used when grade is unknown). */
 export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['lateSlotNonExam', 'groupContinuous']
 
 /** All constraint card types in display order. */
@@ -109,7 +124,7 @@ export const evaluateConstraintCards = (
   groupLessons: Array<{ studentIds: string[]; dayOfWeek: number; slotNumber: number }>,
   teacherId?: string,
 ): ConstraintEvalResult => {
-  const cards = student.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
+  const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
   if (cards.length === 0) return { score: 0, blocked: false }
 
   let score = 0

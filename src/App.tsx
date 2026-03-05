@@ -26,7 +26,7 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DEFAULT_CONSTRAINT_CARDS, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
 const APP_VERSION = '1.0.0'
 
@@ -3541,7 +3541,7 @@ service cloud.firestore {
               <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}{!isMendan && <th>コマ制約</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
                 {data.students.map((student) => {
-                  const cards = student.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
+                  const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
                   const isEditing = constraintEditStudentId === student.id
                   return (
                   <tr key={student.id}>

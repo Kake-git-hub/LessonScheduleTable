@@ -2,7 +2,7 @@ import type { Assignment, SessionData } from '../types'
 import { personKey } from './schedule'
 import { constraintFor, hasAvailability, isStudentAvailable } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
-import { evaluateConstraintCards, DEFAULT_CONSTRAINT_CARDS } from './slotConstraints'
+import { evaluateConstraintCards, getDefaultConstraintCards } from './slotConstraints'
 import {
   getSlotNumber,
   getIsoDayOfWeek,
@@ -568,7 +568,9 @@ export const buildIncrementalAutoAssignments = async (
         const pairBonus = combo.length === 2 ? 1000 : 0
 
         // 2. 既出勤日に追加 → 講師の出勤日数を最小化
-        const attendanceBonus = isExistingDate ? 500 : -200
+        // NOTE: Teacher pre-sort already strongly prefers existing dates,
+        // so scoring delta is kept moderate to avoid front-loading early dates.
+        const attendanceBonus = isExistingDate ? 80 : -30
 
         // 3. 残コマ多数優先 → 生徒競合の場合残コマ数が多い生徒を優先
         let remainingSlotScore = 0
@@ -593,7 +595,7 @@ export const buildIncrementalAutoAssignments = async (
           const adjacentSubjects = getStudentSubjectsOnAdjacentSlots(result, st.id, currentDate, currentSlotNum)
           if (adjacentSubjects.includes(subj)) {
             // Cards that control multi-slot placement (twoConsecutive/twoWithGap/regularLink) want different subjects
-            const cards = st.constraintCards ?? DEFAULT_CONSTRAINT_CARDS
+            const cards = st.constraintCards ?? getDefaultConstraintCards(st.grade)
             const hasMultiSlotCard = cards.some((c) => c === 'twoConsecutive' || c === 'twoWithGap' || c === 'regularLink')
             if (hasMultiSlotCard) {
               consecutiveSameSubjectPenalty -= 100 // Stronger penalty when card wants diff subjects
