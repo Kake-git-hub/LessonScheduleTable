@@ -2986,26 +2986,11 @@ const AdminPage = () => {
 
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
 
-    // Preserve recorded slot assignments from actual results (already seeded in builder)
-    // For recorded slots with empty actual results, set empty array (all absent)
+    // Preserve original planned assignments for recorded slots (not actual results)
+    // Auto-assign seeds actual data into result for load counting, but we must keep
+    // the original planned data in assignments so tooltip can detect absences (planned vs actual)
     for (const slot of recordedSlots) {
-      if (!nextAssignments[slot]) {
-        const origSlot = data.assignments[slot] ?? []
-        nextAssignments[slot] = data.actualResults?.[slot]
-          ? data.actualResults[slot].map((r) => {
-              const orig = origSlot.find((a) => a.teacherId === r.teacherId)
-              return {
-                teacherId: r.teacherId,
-                studentIds: [...r.studentIds],
-                subject: r.subject,
-                ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
-                ...(orig?.isRegular ? { isRegular: true } : {}),
-                ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
-                ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
-              }
-            })
-          : origSlot
-      }
+      nextAssignments[slot] = data.assignments[slot] ?? []
     }
 
     // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
