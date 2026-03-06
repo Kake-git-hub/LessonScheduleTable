@@ -258,6 +258,11 @@
   background: #fef2f2;
 }
 
+.assignment-block-manual-warning {
+  border-color: #f59e0b;
+  background: #fffaf0;
+}
+
 .incompatible-badge {
   background: #ef4444;
   color: #fff;
@@ -267,6 +272,31 @@
   border-radius: 4px;
   display: inline-block;
   font-weight: 600;
+}
+
+.manual-constraint-badge {
+  background: #f59e0b;
+  color: #fff;
+  font-size: 0.72em;
+  margin-bottom: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  display: inline-block;
+  font-weight: 600;
+}
+
+.manual-constraint-note {
+  margin-top: 6px;
+  border-top: 1px dashed #fdba74;
+  padding-top: 6px;
+  color: #9a3412;
+  font-size: 0.78em;
+  line-height: 1.45;
+}
+
+.manual-constraint-note strong {
+  display: block;
+  margin-bottom: 2px;
 }
 
 .slot-title {

@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.19'
+const APP_VERSION = '1.3.20'
 
 type StatusDetail = {
   label: string
@@ -3359,6 +3359,59 @@ const AdminPage = () => {
     }))
   }
 
+  const getManualConstraintWarnings = (slot: string, assignment: Assignment, assignmentIdx: number): string[] => {
+    if (!data || isMendan || !assignment.teacherId || assignment.studentIds.length === 0) {
+      return []
+    }
+
+    const slotAssignments = data.assignments[slot] ?? []
+    const warnings: string[] = []
+
+    for (const studentId of assignment.studentIds) {
+      const student = data.students.find((item) => item.id === studentId)
+      if (!student) continue
+
+      const reducedSlotAssignments = slotAssignments.flatMap((item, index) => {
+        if (index !== assignmentIdx) return [item]
+
+        const remainingIds = item.studentIds.filter((id) => id !== studentId)
+        if (remainingIds.length === 0) return []
+
+        const nextStudentSubjects = Object.entries(item.studentSubjects ?? {}).reduce<Record<string, string>>((acc, [id, subject]) => {
+          if (id !== studentId) acc[id] = subject
+          return acc
+        }, {})
+        const nextMakeupInfo = Object.entries(item.regularMakeupInfo ?? {}).reduce<Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>>((acc, [id, info]) => {
+          if (id !== studentId) acc[id] = info
+          return acc
+        }, {})
+
+        return [{
+          ...item,
+          studentIds: remainingIds,
+          ...(Object.keys(nextStudentSubjects).length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
+          ...(Object.keys(nextMakeupInfo).length > 0 ? { regularMakeupInfo: nextMakeupInfo } : {}),
+        }]
+      })
+
+      const evalResult = evaluateConstraintCards(
+        student,
+        slot,
+        { ...data.assignments, [slot]: reducedSlotAssignments },
+        data.settings.slotsPerDay,
+        data.regularLessons,
+        data.groupLessons,
+        assignment.teacherId,
+      )
+
+      if (evalResult.blocked) {
+        warnings.push(`${student.name}: ${evalResult.blockReason ?? '制約カード違反'}`)
+      }
+    }
+
+    return warnings
+  }
+
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
@@ -4842,6 +4895,8 @@ service cloud.firestore {
                         // 振替 badge is permanent: show if regularMakeupInfo exists OR if auto-assign just detected it
                         const hasMakeupInfo = !!(assignment.regularMakeupInfo && Object.keys(assignment.regularMakeupInfo).length > 0)
                         const isAutoMakeup = hasMakeupInfo || isAutoMakeupHighlight
+                        const manualConstraintWarnings = !isRecorded ? getManualConstraintWarnings(slot, assignment, idx) : []
+                        const hasManualConstraintWarning = manualConstraintWarnings.length > 0
                         // Red border only for transient auto-assign highlights (not for permanent 振替)
                         const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeupHighlight
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
@@ -4891,7 +4946,7 @@ service cloud.firestore {
                         return (
                           <div
                             key={idx}
-                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${hasManualConstraintWarning ? ' assignment-block-manual-warning' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
                             style={isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : undefined}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
@@ -4910,9 +4965,10 @@ service cloud.firestore {
                               </button>
                             )}
                             {/* Badges row above teacher */}
-                            {(isIncompatiblePair || isAutoAdded || isAutoChanged) && (
+                            {(isIncompatiblePair || hasManualConstraintWarning || isAutoAdded || isAutoChanged) && (
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
+                                {hasManualConstraintWarning && <span className="badge manual-constraint-badge" title={manualConstraintWarnings.join('\n')}>注意</span>}
                                 {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
                                 {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
                               </div>
@@ -4986,8 +5042,6 @@ service cloud.firestore {
                                   if (studentSubject && !studentSubjectOptions.includes(studentSubject)) {
                                     studentSubjectOptions.unshift(studentSubject)
                                   }
-                                  // For student dropdown filter: base subjects the teacher can teach
-                                  const teacherSubjects = selectedTeacher?.subjects ?? []
                                   // Compute ★ badge for this student (shown in left column)
                                   const starBadge = (() => {
                                     if (!currentStudentId || isMendan) return null
@@ -5053,18 +5107,7 @@ service cloud.firestore {
                                           if (!student.submittedAt) return false
                                           // Filter out students unavailable for this specific slot
                                           if (!isStudentAvailable(student, slot)) return false
-                                          // Subject compatibility: student must share at least one subject with the teacher
-                                          if (teacherSubjects.length > 0 && !student.subjects.some((subj) => canTeachSubject(teacherSubjects, student.grade, subj))) return false
-                                          // Remaining slots for at least one teacher-compatible subject must be > 0
-                                          const hasRemainingSlots = student.subjects.some((baseSubj) => {
-                                            if (!canTeachSubject(teacherSubjects, student.grade, baseSubj)) return false
-                                            const desired = student.subjectSlots[baseSubj] ?? 0
-                                            const assigned = countStudentSubjectLoad(data.assignments, student.id, baseSubj)
-                                            const currentlySelected = currentStudentId === student.id
-                                            const adjustedAssigned = currentlySelected ? Math.max(0, assigned - 1) : assigned
-                                            return desired - adjustedAssigned > 0
-                                          })
-                                          return hasRemainingSlots
+                                          return true
                                         })
                                         .map((student) => {
                                         const pairTag = isMendan ? null : constraintFor(data.constraints, assignment.teacherId, student.id)
@@ -5129,6 +5172,15 @@ service cloud.firestore {
                                   )
                                 })}
                               </>
+                            )}
+
+                            {hasManualConstraintWarning && (
+                              <div className="manual-constraint-note">
+                                <strong>手動割当で制約カードを超過中</strong>
+                                {manualConstraintWarnings.map((warning) => (
+                                  <div key={warning}>{warning}</div>
+                                ))}
+                              </div>
                             )}
 
                           </div>
