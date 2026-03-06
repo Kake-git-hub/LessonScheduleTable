@@ -26,9 +26,9 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.15'
+const APP_VERSION = '1.3.16'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2969,12 +2969,17 @@ const AdminPage = () => {
       }
     }
 
+    // Build effective assignments including recorded slots for accurate demand counting
+    const effectiveForCounting = buildEffectiveAssignments(
+      { ...nextAssignments, ...Object.fromEntries([...recordedSlots].map((s) => [s, data.assignments[s] ?? []])) },
+      data.actualResults,
+    )
+
     const remainingStudents = data.students
       .map((student) => {
         const remaining = Object.entries(student.subjectSlots)
           .map(([subject, desired]) => {
-            const assigned = countStudentSubjectLoad(nextAssignments, student.id, subject)
-            // actualResults are already in nextAssignments via builder seeding
+            const assigned = countStudentSubjectLoad(effectiveForCounting, student.id, subject)
             return { subject, remaining: desired - assigned }
           })
           .filter((item) => item.remaining > 0)
@@ -2987,7 +2992,7 @@ const AdminPage = () => {
       .map((student) => {
         const over = Object.entries(student.subjectSlots)
           .map(([subject, desired]) => {
-            const assigned = countStudentSubjectLoad(nextAssignments, student.id, subject)
+            const assigned = countStudentSubjectLoad(effectiveForCounting, student.id, subject)
             return { subject, over: assigned - desired }
           })
           .filter((item) => item.over > 0)
@@ -3066,12 +3071,15 @@ const AdminPage = () => {
           if (slotAssigns.some((a) => a.studentIds.includes(um.studentId))) {
             reasons.push('同コマに既に割当済み')
           }
-          // 1日2コマ上限
+          // 1日コマ上限 (per-student constraint card)
           const [fsDate] = fs.split('_')
           const slotsOnDate = Object.keys(nextAssignments).filter((k) => k.startsWith(fsDate + '_')).reduce((count, k) => 
             count + (nextAssignments[k]?.some((a) => a.studentIds.includes(um.studentId)) ? 1 : 0), 0)
-          if (slotsOnDate >= 2) {
-            reasons.push('1日2コマ上限')
+          const umStudent = data.students.find((s) => s.id === um.studentId)
+          const umCards = umStudent?.constraintCards ?? getDefaultConstraintCards(umStudent?.grade ?? '')
+          const dailyLimit = umCards.includes('oneSlotOnly') ? 1 : umCards.includes('threeSlotLimit') ? 3 : 2
+          if (slotsOnDate >= dailyLimit) {
+            reasons.push(`1日${dailyLimit}コマ上限`)
           }
           if (reasons.length > 0) {
             for (const r of reasons) {
@@ -3116,6 +3124,12 @@ const AdminPage = () => {
           .map((item) => `${item.studentName}: ${item.over.map((r) => `${r.subject}+${r.over}`).join(', ')}`)
           .join('\n')}`
       : ''
+    const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
+    const overRemovedMessage = overRemovedEntries.length > 0
+      ? `\n\n過割当解除:\n${overRemovedEntries
+          .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail.replace(/\n/g, ' / ')}`)
+          .join('\n')}`
+      : ''
     const shortageMessage = shortageEntries.length > 0
       ? `\n\n講師不足:\n${shortageEntries
           .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail}`)
@@ -3127,9 +3141,9 @@ const AdminPage = () => {
           .join('\n')}`
       : ''
     if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${shortageMessage}`)
+      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${overRemovedMessage}${shortageMessage}`)
     } else {
-      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${shortageMessage}`)
+      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${overRemovedMessage}${shortageMessage}`)
     }
 
     } catch (err) {
@@ -3749,8 +3763,10 @@ service cloud.firestore {
                           <div style={{ minWidth: 280 }}>
                             {ALL_CONSTRAINT_CARDS.map((cardType) => {
                               const isChecked = cards.includes(cardType)
-                              const isConflicting = !isChecked && CONSTRAINT_CARD_CONFLICT_GROUP.includes(cardType) &&
-                                cards.some((c) => CONSTRAINT_CARD_CONFLICT_GROUP.includes(c) && c !== cardType)
+                              const conflictGroups = [CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP]
+                              const isConflicting = !isChecked && conflictGroups.some((group) =>
+                                group.includes(cardType) && cards.some((c) => group.includes(c) && c !== cardType)
+                              )
                               return (
                                 <label key={cardType} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, fontSize: '0.85em', opacity: isConflicting ? 0.5 : 1, cursor: isConflicting ? 'not-allowed' : 'pointer' }}
                                   title={isConflicting ? '競合するカードが選択済みです' : CONSTRAINT_CARD_DESCRIPTIONS[cardType]}>
@@ -3758,10 +3774,13 @@ service cloud.firestore {
                                     onChange={(e) => {
                                       let updated: ConstraintCardType[]
                                       if (e.target.checked) {
-                                        // Remove conflicting cards when adding from conflict group
-                                        const withoutConflicts = CONSTRAINT_CARD_CONFLICT_GROUP.includes(cardType)
-                                          ? cards.filter((c) => !CONSTRAINT_CARD_CONFLICT_GROUP.includes(c))
-                                          : [...cards]
+                                        // Remove conflicting cards from all conflict groups this card belongs to
+                                        let withoutConflicts = [...cards]
+                                        for (const group of conflictGroups) {
+                                          if (group.includes(cardType)) {
+                                            withoutConflicts = withoutConflicts.filter((c) => !group.includes(c))
+                                          }
+                                        }
                                         updated = [...withoutConflicts, cardType]
                                       } else {
                                         updated = cards.filter((c) => c !== cardType)

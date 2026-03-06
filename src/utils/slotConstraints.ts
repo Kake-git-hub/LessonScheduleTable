@@ -5,11 +5,13 @@
  * Constraint cards have HIGHER priority than shared rules.
  *
  * Default cards (auto-enabled unless removed):
+ *   - twoSlotLimit: 1日2コマ上限
  *   - lateSlotNonExam: 受験生以外の後半コマ優先
  *   - groupContinuous: 集団後連続
  *
- * Conflict group (mutually exclusive per student):
- *   twoConsecutive / twoWithGap / oneSlotOnly / regularLink
+ * Conflict groups (mutually exclusive per student):
+ *   pattern: twoConsecutive / twoWithGap / regularLink
+ *   daily-limit: oneSlotOnly / twoSlotLimit / threeSlotLimit
  */
 import type { Assignment, ConstraintCardType, RegularLesson, Student } from '../types'
 import { getSlotNumber, getIsoDayOfWeek, getStudentSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
@@ -22,6 +24,8 @@ export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
   twoConsecutive: '2コマ連続',
   twoWithGap: '2コマ連続(一コマ空け)',
   oneSlotOnly: '一コマ限定',
+  twoSlotLimit: '二コマ限定',
+  threeSlotLimit: '三コマ限定',
   regularLink: '通常授業連結',
 }
 
@@ -33,6 +37,8 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   twoConsecutive: '生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   twoWithGap: '生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   oneSlotOnly: '生徒を1日1コマに限定する',
+  twoSlotLimit: '生徒を1日2コマまでに限定する（デフォルト）',
+  threeSlotLimit: '生徒を1日3コマまでに限定する',
   regularLink: '通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
 }
 
@@ -41,7 +47,7 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
  *  - groupContinuous: default for 中3 only
  */
 export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] => {
-  const cards: ConstraintCardType[] = []
+  const cards: ConstraintCardType[] = ['twoSlotLimit']
   if (!isExamGrade(grade)) {
     cards.push('lateSlotNonExam')
   }
@@ -52,7 +58,7 @@ export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] =
 }
 
 /** Static fallback (used when grade is unknown). */
-export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['lateSlotNonExam', 'groupContinuous']
+export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous']
 
 /** All constraint card types in display order. */
 export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
@@ -62,12 +68,19 @@ export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
   'twoConsecutive',
   'twoWithGap',
   'oneSlotOnly',
+  'twoSlotLimit',
+  'threeSlotLimit',
   'regularLink',
 ]
 
-/** Conflict group: these cards are mutually exclusive for a single student. */
+/** Conflict group: scheduling pattern cards are mutually exclusive for a single student. */
 export const CONSTRAINT_CARD_CONFLICT_GROUP: ConstraintCardType[] = [
-  'twoConsecutive', 'twoWithGap', 'oneSlotOnly', 'regularLink',
+  'twoConsecutive', 'twoWithGap', 'regularLink',
+]
+
+/** Daily limit conflict group: daily slot limit cards are mutually exclusive. */
+export const DAILY_LIMIT_CONFLICT_GROUP: ConstraintCardType[] = [
+  'oneSlotOnly', 'twoSlotLimit', 'threeSlotLimit',
 ]
 
 /** Check if a grade is "exam grade" (受験生): 高3 or 中3 */
@@ -82,6 +95,11 @@ export const validateConstraintCards = (cards: ConstraintCardType[]): string[] =
   const conflicting = cards.filter((c) => CONSTRAINT_CARD_CONFLICT_GROUP.includes(c))
   if (conflicting.length > 1) {
     const labels = conflicting.map((c) => CONSTRAINT_CARD_LABELS[c]).join('、')
+    warnings.push(`${labels} は競合しています。どれか1つだけ選択してください。`)
+  }
+  const dailyLimitConflicting = cards.filter((c) => DAILY_LIMIT_CONFLICT_GROUP.includes(c))
+  if (dailyLimitConflicting.length > 1) {
+    const labels = dailyLimitConflicting.map((c) => CONSTRAINT_CARD_LABELS[c]).join('、')
     warnings.push(`${labels} は競合しています。どれか1つだけ選択してください。`)
   }
   return warnings
@@ -249,6 +267,22 @@ export const evaluateConstraintCards = (
           return { score: -99999, blocked: true, blockReason: '一コマ限定: 既に1コマ配置済み' }
         }
         score += 100 // Small bonus for being placed (since no more can be added)
+        break
+      }
+
+      case 'twoSlotLimit': {
+        // Hard limit: 2 slots per day (default behavior)
+        if (existingSlotNums.length >= 2) {
+          return { score: -99999, blocked: true, blockReason: '二コマ限定: 既に2コマ配置済み' }
+        }
+        break
+      }
+
+      case 'threeSlotLimit': {
+        // Hard limit: 3 slots per day
+        if (existingSlotNums.length >= 3) {
+          return { score: -99999, blocked: true, blockReason: '三コマ限定: 既に3コマ配置済み' }
+        }
         break
       }
 

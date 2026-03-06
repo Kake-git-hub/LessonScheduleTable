@@ -12,6 +12,8 @@ export type ConstraintCardType =
   | 'twoConsecutive'        // 2コマ連続
   | 'twoWithGap'            // 2コマ連続(一コマ空け)
   | 'oneSlotOnly'           // 一コマ限定
+  | 'twoSlotLimit'          // 二コマ限定 (default)
+  | 'threeSlotLimit'        // 三コマ限定
   | 'regularLink'           // 通常授業連結
 
 export type Manager = {

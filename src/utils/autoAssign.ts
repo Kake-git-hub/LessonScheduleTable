@@ -11,7 +11,6 @@ import {
   getTeacherAssignedDates,
   getTeacherSlotNumbersOnDate,
   getTeacherPrevSlotStudentIds,
-  countStudentSlotsOnDate,
   countStudentLoad,
   countStudentSubjectLoad,
   assignmentSignature,
@@ -383,9 +382,8 @@ export const buildIncrementalAutoAssignments = async (
   // Determine if this is the initial assignment or a re-run
   const isInitialAssignment = !Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
 
-  // Phase 1.5: Remove excess assignments when requested slots were reduced (ONLY on initial assignment)
-  // On re-runs, preserve existing student assignments as-is
-  if (isInitialAssignment) {
+  // Phase 1.5: Remove excess special assignments from later non-recorded slots.
+  // Recorded slots are not included in `slots`, so this only trims movable assignments.
   // Include seeded recorded slot load so we correctly detect over-allocation
   const specialLoadMap = new Map<string, number>()
   for (const [, slotAssignments] of Object.entries(result)) {
@@ -429,8 +427,9 @@ export const buildIncrementalAutoAssignments = async (
           specialLoadMap.set(key, currentLoad - 1)
           removedAny = true
           const changeInfo = describeStudentSubmissionChange(studentId)
-          const reason = changeInfo || `${student?.name ?? studentId}が${subj}の希望コマ数を${requested}コマに減らしたため`
-          changeLog.push({ slot, action: '希望減で解除', detail: `${student?.name ?? studentId} (${subj}) を解除\n理由: ${reason}` })
+          const action = changeInfo ? '希望減で解除' : '過割当解除'
+          const reason = changeInfo || `${student?.name ?? studentId} の${subj}が実績込みで ${currentLoad}コマとなり、希望 ${requested}コマを超えているため`
+          changeLog.push({ slot, action, detail: `${student?.name ?? studentId} (${subj}) を解除\n理由: ${reason}` })
           continue
         }
         remainingStudentIds.push(studentId)
@@ -439,7 +438,7 @@ export const buildIncrementalAutoAssignments = async (
       if (removedAny) {
         assignment.studentIds = remainingStudentIds
         if (remainingStudentIds.length > 0) {
-          markChangedPair(slot, assignment, `希望コマ数減少により一部生徒を解除`)
+          markChangedPair(slot, assignment, `過割当調整により一部生徒を解除`)
         } else {
           // All students removed by excess — remove this assignment entirely
           const slotArr = result[slot]
@@ -451,7 +450,6 @@ export const buildIncrementalAutoAssignments = async (
       }
     }
   }
-  } // end isInitialAssignment (Phase 1.5)
 
   // Phase 2: Fill empty student positions in existing assignments (including regular with empty spots)
   for (const slot of slots) {
@@ -635,12 +633,8 @@ export const buildIncrementalAutoAssignments = async (
         if (combo.length === 2 && constraintFor(data.constraints, combo[0].id, combo[1].id) === 'incompatible') continue
 
         // ── Hard filters ──
-        // 一日上限2コマ (shared rule) — block if any student already has 2 slots today
-        const anyOver2 = combo.some((st) => {
-          const slotsOnDate = countStudentSlotsOnDate(result, st.id, currentDate)
-          return slotsOnDate >= 2
-        })
-        if (anyOver2) continue
+        // Daily slot limit is now enforced by constraint cards (oneSlotOnly/twoSlotLimit/threeSlotLimit)
+        // evaluated below in evaluateConstraintCards
 
         // ── Constraint card hard filters ──
         let cardBlocked = false
