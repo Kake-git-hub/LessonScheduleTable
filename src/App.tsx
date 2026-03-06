@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.8'
+const APP_VERSION = '1.3.9'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -3838,7 +3838,8 @@ service cloud.firestore {
                     // Count slots where student was planned but missing from actual result (both regular and makeup)
                     // Also track which absences have no available makeup slot with the original teacher
                     let missingFromActual = 0
-                    let noMakeupSlotCount = 0
+                    type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
+                    const noMakeupReasons: NoMakeupReason[] = []
                     for (const sk of slotKeys) {
                       if (!(sk in liveActual)) continue
                       const planned = data.assignments[sk] ?? []
@@ -3852,24 +3853,37 @@ service cloud.firestore {
                         if (origAssignment) {
                           const origTeacherId = origAssignment.teacherId
                           const [absentDate] = sk.split('_')
-                          // Check if there's any available slot AFTER the absence date where both teacher and student are free
-                          const hasAvailableSlot = slotKeys.some((futureSlot) => {
-                            if (recordedSlotSet.has(futureSlot)) return false
-                            const [futureDate] = futureSlot.split('_')
-                            if (futureDate <= absentDate) return false
-                            if (getSlotNumber(futureSlot) === 0) return false // skip 午前
-                            if (!hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot)) return false
-                            if (!isStudentAvailable(student, futureSlot)) return false
+                          // Check future slots after the absence date
+                          const futureCandidates = slotKeys.filter((fs) => {
+                            if (recordedSlotSet.has(fs)) return false
+                            const [fd] = fs.split('_')
+                            if (fd <= absentDate) return false
+                            if (getSlotNumber(fs) === 0) return false
                             return true
                           })
-                          if (!hasAvailableSlot) noMakeupSlotCount++
+                          const studentAvailSlots = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
+                          const teacherAvailSlots = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, origTeacherId, fs))
+                          const bothAvailSlots = futureCandidates.filter((fs) =>
+                            isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, origTeacherId, fs)
+                          )
+                          if (bothAvailSlots.length === 0) {
+                            if (studentAvailSlots.length === 0 && teacherAvailSlots.length === 0) {
+                              noMakeupReasons.push('no_match')
+                            } else if (studentAvailSlots.length === 0) {
+                              noMakeupReasons.push('no_student')
+                            } else if (teacherAvailSlots.length === 0) {
+                              noMakeupReasons.push('no_teacher')
+                            } else {
+                              noMakeupReasons.push('no_match')
+                            }
+                          }
                         }
                       }
                     }
                     if (remaining.length === 0 && missingFromActual === 0) return null
-                    return { name: student.name, remaining, missingFromActual, noMakeupSlotCount }
+                    return { name: student.name, remaining, missingFromActual, noMakeupReasons }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number; noMakeupSlotCount: number }[]
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
 
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingFromActual > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
@@ -3882,8 +3896,14 @@ service cloud.firestore {
                     if (specials.length > 0) parts.push(specials.map((r) => `${r.subj}残${r.rem}`).join(', '))
                     if (s.missingFromActual > 0) {
                       const absentText = `欠席${s.missingFromActual}コマ`
-                      if (s.noMakeupSlotCount > 0) {
-                        parts.push(`${absentText}（${s.noMakeupSlotCount}コマ振替可能な日なし）`)
+                      if (s.noMakeupReasons.length > 0) {
+                        const reasonCounts = { no_student: 0, no_teacher: 0, no_match: 0 }
+                        for (const r of s.noMakeupReasons) reasonCounts[r]++
+                        const reasonParts: string[] = []
+                        if (reasonCounts.no_student > 0) reasonParts.push(`生徒の出席可能日なし${reasonCounts.no_student > 1 ? `×${reasonCounts.no_student}` : ''}`)
+                        if (reasonCounts.no_teacher > 0) reasonParts.push(`講師の出席可能日なし${reasonCounts.no_teacher > 1 ? `×${reasonCounts.no_teacher}` : ''}`)
+                        if (reasonCounts.no_match > 0) reasonParts.push(`両者のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
+                        parts.push(`${absentText}（振替不可: ${reasonParts.join(', ')}）`)
                       } else {
                         parts.push(absentText)
                       }
