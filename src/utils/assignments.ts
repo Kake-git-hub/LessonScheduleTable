@@ -40,15 +40,24 @@ export const buildEffectiveAssignments = (
           studentIds: [...r.studentIds],
           subject: r.subject,
           ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
-          ...(orig?.isRegular ? { isRegular: true } : {}),
-          ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+          ...(r.isRegular || orig?.isRegular ? { isRegular: true } : {}),
+          ...(r.isGroupLesson || orig?.isGroupLesson ? { isGroupLesson: true } : {}),
           ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+          ...(r.regularMakeupInfo ? { regularMakeupInfo: { ...r.regularMakeupInfo } } : {}),
+          ...(orig?.regularSubstituteInfo ? { regularSubstituteInfo: { ...orig.regularSubstituteInfo } } : {}),
+          ...(r.regularSubstituteInfo ? { regularSubstituteInfo: { ...r.regularSubstituteInfo } } : {}),
         }
       })
     }
   }
   return effective
 }
+
+export const isStudentRegularSubstituteAssignment = (assignment: Assignment, studentId: string): boolean =>
+  !!assignment.regularSubstituteInfo?.[studentId]
+
+export const isStudentRegularMakeupAssignment = (assignment: Assignment, studentId: string): boolean =>
+  !!assignment.regularMakeupInfo?.[studentId]
 
 /** Get the subject for a specific student in an assignment (supports per-student subjects). */
 export const getStudentSubject = (a: Assignment, studentId: string): string =>
@@ -128,7 +137,7 @@ export const countStudentAssignedDates = (assignments: Record<string, Assignment
 
 /** Count how many SPECIAL (non-regular) slots a student is assigned */
 export const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
-  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular && !a.regularMakeupInfo?.[studentId]).length
+  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId]).length
 
 /** Count how many SPECIAL (non-regular) slots a student is assigned for a specific subject */
 export const countStudentSubjectLoad = (
@@ -137,7 +146,7 @@ export const countStudentSubjectLoad = (
   subject: string,
 ): number =>
   allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId],
+    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId],
   ).length
 
 export type TeacherShortageEntry = {

@@ -173,24 +173,26 @@ export const buildIncrementalAutoAssignments = async (
     }
   }
 
-  // Case 3: Detect makeup assignments (non-regular with regularMakeupInfo) where student was absent from actual results
-  // These generate new makeup demand, just like regular lesson absences
+  // Case 3: Detect makeup/substitute assignments where student was absent from actual results.
+  // These generate new regular-lesson demand again.
   if (data.actualResults) {
     for (const [slot, actualResults] of Object.entries(data.actualResults)) {
       const origAssignments = data.assignments[slot] ?? []
       for (const orig of origAssignments) {
-        if (orig.isRegular || !orig.regularMakeupInfo) continue
+        if (orig.isRegular || (!orig.regularMakeupInfo && !orig.regularSubstituteInfo)) continue
         for (const sid of orig.studentIds) {
-          if (!orig.regularMakeupInfo[sid]) continue // only students who were makeup
+          const mkInfo = orig.regularMakeupInfo?.[sid]
+          const subInfo = orig.regularSubstituteInfo?.[sid]
+          if (!mkInfo && !subInfo) continue
           // Check if this student is absent from actual results in this slot
           const studentInActual = actualResults.some((r) => r.studentIds.includes(sid))
           if (studentInActual) continue
           // Student was absent from their makeup slot — generate new makeup demand
           const [absentDate] = slot.split('_')
-          const mkInfo = orig.regularMakeupInfo[sid]
+          const baseInfo = mkInfo ?? subInfo!
           const subject = orig.studentSubjects?.[sid] ?? orig.subject
           const arr = makeupStudentInfo.get(sid) ?? []
-          arr.push({ teacherId: orig.teacherId, dayOfWeek: mkInfo.dayOfWeek, slotNumber: mkInfo.slotNumber, date: mkInfo.date ?? absentDate, subject, absentDate })
+          arr.push({ teacherId: subInfo?.regularTeacherId ?? orig.teacherId, dayOfWeek: baseInfo.dayOfWeek, slotNumber: baseInfo.slotNumber, date: baseInfo.date ?? absentDate, subject, absentDate })
           makeupStudentInfo.set(sid, arr)
         }
       }
@@ -224,9 +226,12 @@ export const buildIncrementalAutoAssignments = async (
           studentIds: [...r.studentIds],
           subject: r.subject,
           ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
-          ...(orig?.isRegular ? { isRegular: true } : {}),
-          ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+          ...(r.isRegular || orig?.isRegular ? { isRegular: true } : {}),
+          ...(r.isGroupLesson || orig?.isGroupLesson ? { isGroupLesson: true } : {}),
           ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+          ...(r.regularMakeupInfo ? { regularMakeupInfo: { ...r.regularMakeupInfo } } : {}),
+          ...(orig?.regularSubstituteInfo ? { regularSubstituteInfo: { ...orig.regularSubstituteInfo } } : {}),
+          ...(r.regularSubstituteInfo ? { regularSubstituteInfo: { ...r.regularSubstituteInfo } } : {}),
         }
       })
       seededSlots.push(slot)

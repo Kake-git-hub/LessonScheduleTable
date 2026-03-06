@@ -78,6 +78,9 @@ export type Assignment = {
    *  Key: studentId → which regular lesson slot this student is making up.
    *  Present when a student was absent from their regular lesson and assigned elsewhere. */
   regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+  /** Per-student substitute info for a regular lesson handled by a different teacher.
+   *  Key: studentId → original regular teacher + source regular lesson slot. */
+  regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
 }
 
 /** Actual result for a single pair in a slot (recorded after the lesson). */
@@ -86,6 +89,10 @@ export type ActualResult = {
   studentIds: string[]
   subject: string
   studentSubjects?: Record<string, string>
+  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+  regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
+  isRegular?: boolean
+  isGroupLesson?: boolean
 }
 
 export type RegularLesson = {

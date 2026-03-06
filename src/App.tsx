@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import XLSX from 'xlsx-js-style'
 import './App.css'
-import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, findClassroomForSession, initAuth, listBackups, listSessionItems, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupMeta, type ClassroomInfo } from './firebase'
+import { cleanupOldBackups, createBackup, createClassroom, deleteBackup, deleteClassroom, deleteSession, findClassroomForSession, initAuth, listBackups, listSessionItems, loadBackup, loadMasterData, loadSession, restoreBackup, saveAndVerify, saveMasterData, saveSession, watchClassrooms, watchMasterData, watchSession, watchSessionsList, type BackupData, type BackupMeta, type ClassroomInfo } from './firebase'
 import type {
   ActualResult,
   Assignment,
@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.21'
+const APP_VERSION = '1.3.22'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -37,6 +37,7 @@ type ForceAssignAction = {
   studentId: string
   subject: string
   makeupInfo?: { dayOfWeek: number; slotNumber: number; date?: string }
+  substituteInfo?: { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }
 }
 
 type StatusProposal = {
@@ -72,6 +73,7 @@ type PendingMakeupDemand = {
 
 type PlacementAnalysis = {
   force: StatusProposal[]
+  substitute: StatusProposal[]
   teacher: StatusProposal[]
   student: StatusProposal[]
   cards: StatusProposal[]
@@ -1824,7 +1826,9 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
     return data.teachers.map((teacher) => {
       const myAssignments = allSlotAssignments.filter((e) => e.assignment.teacherId === teacher.id)
       const totalSlots = myAssignments.length
-      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular).length
+      const regularSlots = myAssignments.filter((e) =>
+        e.assignment.isRegular || e.assignment.studentIds.some((sid) => !!e.assignment.regularSubstituteInfo?.[sid]),
+      ).length
       const specialSlots = totalSlots - regularSlots
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
       const attendanceDays = dates.size
@@ -1839,6 +1843,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       for (const e of myAssignments) {
         if (!e.assignment.isRegular) {
           for (const sid of e.assignment.studentIds) {
+            if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
             const subj = getStudentSubject(e.assignment, sid)
             subjectMap[subj] = (subjectMap[subj] ?? 0) + 1
           }
@@ -1849,7 +1854,10 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const studentIds = new Set<string>()
       for (const e of myAssignments) {
         if (!e.assignment.isRegular) {
-          for (const sid of e.assignment.studentIds) studentIds.add(sid)
+          for (const sid of e.assignment.studentIds) {
+            if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
+            studentIds.add(sid)
+          }
         }
       }
 
@@ -1874,8 +1882,8 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const myAssignments = allSlotAssignments.filter((e) =>
         e.assignment.studentIds.includes(student.id),
       )
-      const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id]).length
-      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular).length
+      const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]).length
+      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular || !!e.assignment.regularSubstituteInfo?.[student.id]).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
       // Count unsatisfied slots: student was in planned assignment but removed from actual result
@@ -1905,7 +1913,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
 
       // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
       const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
-        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && getStudentSubject(e.assignment, student.id) === subj).length
+        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id] && getStudentSubject(e.assignment, student.id) === subj).length
         return { subject: subj, desired, assigned, diff: assigned - desired }
       })
 
@@ -1915,7 +1923,9 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       // Unique teachers
       const teacherIds = new Set<string>()
       for (const e of myAssignments) {
-        if (!e.assignment.isRegular) teacherIds.add(e.assignment.teacherId)
+        if (!e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]) {
+          teacherIds.add(e.assignment.teacherId)
+        }
       }
 
       return {
@@ -1943,7 +1953,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const entry = daysUsed.get(dow)!
       entry.dates.add(date)
       entry.totalPairs++
-      if (e.assignment.isRegular) entry.regularPairs++
+      if (e.assignment.isRegular || e.assignment.studentIds.some((sid) => !!e.assignment.regularSubstituteInfo?.[sid])) entry.regularPairs++
       else entry.specialPairs++
       if (e.assignment.teacherId) entry.teacherIds.add(e.assignment.teacherId)
       for (const sid of e.assignment.studentIds) entry.studentIds.add(sid)
@@ -1962,7 +1972,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       if (e.assignment.isRegular) continue
       // Count per-student subjects (exclude makeup assignments)
       for (const sid of e.assignment.studentIds) {
-        if (e.assignment.regularMakeupInfo?.[sid]) continue
+        if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
         const subj = getStudentSubject(e.assignment, sid)
         const entry = subjectMap.get(subj)
         if (!entry) continue
@@ -1996,8 +2006,8 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         const pairs = data.assignments[`${date}_${s}`] ?? []
         const cnt = pairs.length
         totalPairs += cnt
-        regularPairs += pairs.filter((a) => a.isRegular).length
-        specialPairs += pairs.filter((a) => !a.isRegular).length
+        regularPairs += pairs.filter((a) => a.isRegular || a.studentIds.some((sid) => !!a.regularSubstituteInfo?.[sid])).length
+        specialPairs += pairs.filter((a) => !a.isRegular && !a.studentIds.some((sid) => !!a.regularSubstituteInfo?.[sid])).length
         if (cnt > maxSlotPairs) maxSlotPairs = cnt
       }
       result.push({ date, dayName: dayNames[dow], totalPairs, regularPairs, specialPairs, maxSlotPairs })
@@ -2831,6 +2841,10 @@ const AdminPage = () => {
         studentIds: [...a.studentIds],
         subject: a.subject,
         ...(a.studentSubjects ? { studentSubjects: { ...a.studentSubjects } } : {}),
+        ...(a.regularMakeupInfo ? { regularMakeupInfo: { ...a.regularMakeupInfo } } : {}),
+        ...(a.regularSubstituteInfo ? { regularSubstituteInfo: { ...a.regularSubstituteInfo } } : {}),
+        ...(a.isRegular ? { isRegular: true } : {}),
+        ...(a.isGroupLesson ? { isGroupLesson: true } : {}),
         _uid: ++editingResultUid,
       })))
     }
@@ -2845,6 +2859,14 @@ const AdminPage = () => {
       if (rest.studentSubjects && Object.keys(rest.studentSubjects).length > 0) {
         result.studentSubjects = rest.studentSubjects
       }
+      if (rest.regularMakeupInfo && Object.keys(rest.regularMakeupInfo).length > 0) {
+        result.regularMakeupInfo = rest.regularMakeupInfo
+      }
+      if (rest.regularSubstituteInfo && Object.keys(rest.regularSubstituteInfo).length > 0) {
+        result.regularSubstituteInfo = rest.regularSubstituteInfo
+      }
+      if (rest.isRegular) result.isRegular = true
+      if (rest.isGroupLesson) result.isGroupLesson = true
       return result
     })
     const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: cleaned }
@@ -3007,17 +3029,18 @@ const AdminPage = () => {
       for (const [slot, results] of Object.entries(actualResults)) {
         const origAssignments = assignmentState[slot] ?? data.assignments[slot] ?? []
         for (const orig of origAssignments) {
-          if (orig.isRegular || !orig.regularMakeupInfo) continue
+          if (orig.isRegular || (!orig.regularMakeupInfo && !orig.regularSubstituteInfo)) continue
           for (const sid of orig.studentIds) {
-            const makeupInfo = orig.regularMakeupInfo[sid]
-            if (!makeupInfo) continue
+            const makeupInfo = orig.regularMakeupInfo?.[sid]
+            const substituteInfo = orig.regularSubstituteInfo?.[sid]
+            if (!makeupInfo && !substituteInfo) continue
             if (results.some((r) => r.studentIds.includes(sid))) continue
             demands.push({
               studentId: sid,
-              teacherId: orig.teacherId,
+              teacherId: substituteInfo?.regularTeacherId ?? orig.teacherId,
               subject: getStudentSubject(orig, sid),
               absentDate: slot.split('_')[0],
-              makeupInfo,
+              makeupInfo: makeupInfo ?? { dayOfWeek: substituteInfo!.dayOfWeek, slotNumber: substituteInfo!.slotNumber, date: substituteInfo!.date },
             })
           }
         }
@@ -3027,16 +3050,18 @@ const AdminPage = () => {
     const pending = [...demands]
     for (const slotAssignments of Object.values(assignmentState)) {
       for (const assignment of slotAssignments) {
-        if (!assignment.regularMakeupInfo) continue
-        for (const [sid, info] of Object.entries(assignment.regularMakeupInfo)) {
-          const subject = getStudentSubject(assignment, sid)
-          const matchedIndex = pending.findIndex((demand) =>
-            demand.studentId === sid
-            && demand.subject === subject
-            && demand.makeupInfo.dayOfWeek === info.dayOfWeek
-            && demand.makeupInfo.slotNumber === info.slotNumber,
-          )
-          if (matchedIndex >= 0) pending.splice(matchedIndex, 1)
+        const regularLikeInfos = [assignment.regularMakeupInfo ?? {}, assignment.regularSubstituteInfo ?? {}]
+        for (const infoMap of regularLikeInfos) {
+          for (const [sid, info] of Object.entries(infoMap)) {
+            const subject = getStudentSubject(assignment, sid)
+            const matchedIndex = pending.findIndex((demand) =>
+              demand.studentId === sid
+              && demand.subject === subject
+              && demand.makeupInfo.dayOfWeek === info.dayOfWeek
+              && demand.makeupInfo.slotNumber === info.slotNumber,
+            )
+            if (matchedIndex >= 0) pending.splice(matchedIndex, 1)
+          }
         }
       }
     }
@@ -3053,9 +3078,10 @@ const AdminPage = () => {
     candidateTeachers: Teacher[],
     options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand },
   ): PlacementAnalysis => {
-    if (!data) return { force: [], teacher: [], student: [], cards: [], blockers: [] }
+    if (!data) return { force: [], substitute: [], teacher: [], student: [], cards: [], blockers: [] }
 
     const forceSuggestions = new Map<string, StatusProposal>()
+    const substituteSuggestions = new Map<string, StatusProposal>()
     const teacherSuggestions = new Map<string, { teacherName: string; subject: string; slots: string[] }>()
     const studentSuggestions = new Map<string, { teacherName: string; subject: string; slots: string[] }>()
     const cardSuggestions = new Map<string, StatusProposal>()
@@ -3157,8 +3183,65 @@ const AdminPage = () => {
       })
       .slice(0, 5)
 
+    const slotFilter = options?.slotFilter
+    const makeupDemand = options?.makeupDemand
+
+    if (force.length === 0 && makeupDemand) {
+      for (const slot of availableSlots) {
+        if (getSlotNumber(slot) === 0) continue
+        if (slotFilter && !slotFilter(slot)) continue
+        if (!isStudentAvailable(student, slot)) continue
+
+        const slotAssignments = assignmentState[slot] ?? []
+        if (slotAssignments.some((a) => a.studentIds.includes(student.id))) continue
+        const deskBlocked = deskLimit > 0 && slotAssignments.length >= deskLimit
+
+        for (const teacher of data.teachers) {
+          if (teacher.id === makeupDemand.teacherId) continue
+          if (!canTeachSubject(teacher.subjects, student.grade, subject)) continue
+          if (!hasAvailability(data.availability, instructorPersonType, teacher.id, slot)) continue
+          if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') continue
+
+          const teacherAssignment = slotAssignments.find((a) => a.teacherId === teacher.id && !a.isGroupLesson)
+          if (!teacherAssignment && deskBlocked) continue
+          if (teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) continue
+          if (teacherAssignment && teacherAssignment.studentIds.length >= 2) continue
+
+          const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
+          const regularTeacher = data.teachers.find((item) => item.id === makeupDemand.teacherId)
+          const label = `通常講師代行案: ${slotLabel(slot, isMendan, mendanStart)} / ${regularTeacher?.name ?? makeupDemand.teacherId} の代行を ${teacher.name} が担当 / ${subject} / ${targetText}`
+          substituteSuggestions.set(
+            `${slot}|${teacher.id}|${student.id}|${subject}`,
+            toStatusProposal(label, {
+              type: 'force-assign',
+              slot,
+              teacherId: teacher.id,
+              studentId: student.id,
+              subject,
+              substituteInfo: {
+                regularTeacherId: makeupDemand.teacherId,
+                dayOfWeek: makeupDemand.makeupInfo.dayOfWeek,
+                slotNumber: makeupDemand.makeupInfo.slotNumber,
+                date: makeupDemand.makeupInfo.date,
+              },
+            }),
+          )
+        }
+      }
+    }
+
+    const substitute = [...substituteSuggestions.values()]
+      .sort((a, b) => {
+        const aExisting = a.label.includes('既存ペアへ追加') ? 0 : 1
+        const bExisting = b.label.includes('既存ペアへ追加') ? 0 : 1
+        if (aExisting !== bExisting) return aExisting - bExisting
+        return a.label.localeCompare(b.label, 'ja')
+      })
+      .slice(0, 5)
+
     return {
       force,
+      substitute,
       teacher: [...teacherSuggestions.values()]
         .map((item) => toStatusProposal(`講師出席追加案: ${item.teacherName} を ${item.slots.join('、')} 出席可にすると ${item.subject} を追加候補`))
         .slice(0, 5),
@@ -3230,12 +3313,16 @@ const AdminPage = () => {
         const nextMakeupInfo = proposal.makeupInfo
           ? { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo }
           : targetAssignment.regularMakeupInfo
+        const nextSubstituteInfo = proposal.substituteInfo
+          ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo }
+          : targetAssignment.regularSubstituteInfo
         slotAssignments[targetIndex] = {
           ...targetAssignment,
           studentIds: nextStudentIds,
           subject: primarySubject,
           studentSubjects: nextStudentSubjects,
           ...(nextMakeupInfo ? { regularMakeupInfo: nextMakeupInfo } : {}),
+          ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
         }
       } else {
         const deskCount = current.settings.deskCount ?? 0
@@ -3249,6 +3336,7 @@ const AdminPage = () => {
           subject: proposal.subject,
           studentSubjects: { [proposal.studentId]: proposal.subject },
           ...(proposal.makeupInfo ? { regularMakeupInfo: { [proposal.studentId]: proposal.makeupInfo } } : {}),
+          ...(proposal.substituteInfo ? { regularSubstituteInfo: { [proposal.studentId]: proposal.substituteInfo } } : {}),
         })
       }
 
@@ -3258,7 +3346,7 @@ const AdminPage = () => {
       const filteredUnplacedMakeup = (currentHighlights.unplacedMakeup ?? []).filter((item) => {
         if (item.studentId !== proposal.studentId) return true
         if (item.subject !== proposal.subject) return true
-        if (proposal.makeupInfo && item.teacherId !== proposal.teacherId) return true
+        if ((proposal.makeupInfo || proposal.substituteInfo) && item.teacherId !== (proposal.substituteInfo?.regularTeacherId ?? proposal.teacherId)) return true
         return false
       })
       return {
@@ -3279,7 +3367,7 @@ const AdminPage = () => {
     if (success) {
       setLatestStatusReport(null)
       setStatusModal(null)
-      alert(`${proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
+      alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
     }
   }
 
@@ -3314,9 +3402,12 @@ const AdminPage = () => {
                   studentIds: [...r.studentIds],
                   subject: r.subject,
                   ...(r.studentSubjects ? { studentSubjects: { ...r.studentSubjects } } : {}),
-                  ...(orig?.isRegular ? { isRegular: true } : {}),
-                  ...(orig?.isGroupLesson ? { isGroupLesson: true } : {}),
+                  ...(r.isRegular || orig?.isRegular ? { isRegular: true } : {}),
+                  ...(r.isGroupLesson || orig?.isGroupLesson ? { isGroupLesson: true } : {}),
                   ...(orig?.regularMakeupInfo ? { regularMakeupInfo: { ...orig.regularMakeupInfo } } : {}),
+                  ...(r.regularMakeupInfo ? { regularMakeupInfo: { ...r.regularMakeupInfo } } : {}),
+                  ...(orig?.regularSubstituteInfo ? { regularSubstituteInfo: { ...orig.regularSubstituteInfo } } : {}),
+                  ...(r.regularSubstituteInfo ? { regularSubstituteInfo: { ...r.regularSubstituteInfo } } : {}),
                 }
               })
             : origSlot
@@ -3519,12 +3610,13 @@ const AdminPage = () => {
               makeupDemand: pendingDemand,
             },
           )
-        : { force: [], teacher: [], cards: [], student: [], blockers: [] }
+        : { force: [], substitute: [], teacher: [], cards: [], student: [], blockers: [] }
       const proposals = dedupeStatusProposals([
         ...analysis.force,
+        ...analysis.substitute,
         ...analysis.teacher,
         ...analysis.student,
-        ...(analysis.force.length === 0 ? analysis.cards : []),
+        ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
       ])
       const causes = [reason, ...analysis.blockers]
       if (proposals.length > 0) {
@@ -3567,9 +3659,10 @@ const AdminPage = () => {
           causes: r.suggestions.blockers.length > 0 ? r.suggestions.blockers : ['希望コマ数に対して割当が不足'],
           proposals: dedupeStatusProposals([
             ...r.suggestions.force,
+            ...r.suggestions.substitute,
             ...r.suggestions.teacher,
             ...r.suggestions.student,
-            ...(r.suggestions.force.length === 0 ? r.suggestions.cards : []),
+            ...(r.suggestions.force.length === 0 && r.suggestions.substitute.length === 0 ? r.suggestions.cards : []),
           ]),
         })),
       ),
@@ -3591,7 +3684,7 @@ const AdminPage = () => {
           const student = data.students.find((s) => s.name === item.studentName)
           const matchedSlots = student
             ? Object.entries(effectiveForCounting)
-                .filter(([, slotAssignments]) => slotAssignments.some((a) => a.studentIds.includes(student.id) && getStudentSubject(a, student.id) === r.subject && !a.isRegular && !a.regularMakeupInfo?.[student.id]))
+                .filter(([, slotAssignments]) => slotAssignments.some((a) => a.studentIds.includes(student.id) && getStudentSubject(a, student.id) === r.subject && !a.isRegular && !a.regularMakeupInfo?.[student.id] && !a.regularSubstituteInfo?.[student.id]))
                 .map(([slot]) => slotLabel(slot, isMendan, mendanStart))
             : []
           return {
@@ -4556,7 +4649,7 @@ service cloud.firestore {
                       if (recordedSlotSet.has(sk)) continue
                       const slotAssigns = effAssignments[sk] ?? []
                       for (const a of slotAssigns) {
-                        if (a.regularMakeupInfo?.[student.id]) {
+                        if (a.regularMakeupInfo?.[student.id] || a.regularSubstituteInfo?.[student.id]) {
                           const subj = getStudentSubject(a, student.id)
                           makeupPlacedBySubj[subj] = (makeupPlacedBySubj[subj] ?? 0) + 1
                         }
@@ -4655,7 +4748,7 @@ service cloud.firestore {
                       if (currentStudent) {
                         for (const special of specials) {
                           const analysis = buildRemainingSuggestions(data.assignments, effAssignments, currentAvailableSlotKeys, currentStudent, special.subj)
-                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 ? analysis.cards : []))
+                          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
                         }
                         const studentMakeups = currentPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
                         for (const demand of studentMakeups) {
@@ -4673,7 +4766,7 @@ service cloud.firestore {
                               makeupDemand: demand,
                             },
                           )
-                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 ? analysis.cards : []))
+                          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
                         }
                       }
                       if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
@@ -4805,7 +4898,7 @@ service cloud.firestore {
               )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '★=通常授業生徒　⚠=制約不可　クリックでペア/生徒を別コマへ移動可'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　赤★=通常講師代行　⚠=制約不可　クリックでペア/生徒を別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
               const rates = data.tierRates ?? { ...defaultTierRates }
@@ -4895,7 +4988,7 @@ service cloud.firestore {
                   <div style={{ display: 'grid', gap: '10px' }}>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
-                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。★=通常授業生徒（マスタから自動配置）。■=集団授業。机数上限あり。</p>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。青★=通常授業、黄★=振替、赤★=通常講師代行。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>共通ルール（自動提案スコアリング・優先順）</h4>
@@ -5376,14 +5469,21 @@ service cloud.firestore {
                                     const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
                                     const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
+                                    const subInfo = assignment.regularSubstituteInfo?.[currentStudentId]
                                     if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
+                                    if (subInfo) {
+                                      const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
+                                      const origLabel = subInfo.date ? `${fmtMkDate(subInfo.date)} ${subInfo.slotNumber}限` : `${DAY_NAMES_STAR[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限`
+                                      const regularTeacherName = data.teachers.find((t) => t.id === subInfo.regularTeacherId)?.name ?? subInfo.regularTeacherId
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#dc2626' }} title={`通常講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
+                                    }
                                     if (mkInfo) {
                                       const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
                                       const origLabel = mkInfo.date ? `${fmtMkDate(mkInfo.date)} ${mkInfo.slotNumber}限` : `${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限`
                                       const [curDate] = slot.split('_')
                                       const curSlotNum = getSlotNumber(slot)
                                       const destLabel = `${fmtMkDate(curDate)} ${curSlotNum}限`
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#16a34a' }} title={`振替（${origLabel} → ${destLabel}）`}>★</span>
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`振替（${origLabel} → ${destLabel}）`}>★</span>
                                     }
                                     return null
                                   })()
@@ -6795,13 +6895,15 @@ const ConfirmedCalendarView = ({
               const isGroupSlot = s === 0
               const isRegAtSlot = a.isRegular && findRegularLessonsForSlot(data.regularLessons, `${date}_${s}`).some(r => r.studentIds.includes(personId))
               const mkInfo = a.regularMakeupInfo?.[personId]
-              const isRegularStudent = isRegAtSlot || !!mkInfo
+              const subInfo = a.regularSubstituteInfo?.[personId]
+              const isRegularStudent = isRegAtSlot || !!mkInfo || !!subInfo
               const DAY_LABELS_PS = ['日', '月', '火', '水', '木', '金', '土']
-              const makeupHint = mkInfo ? ` (${DAY_LABELS_PS[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限の振替)` : ''
+              const makeupHint = mkInfo ? ` (${DAY_LABELS_PS[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限の振替)` : subInfo ? ` (${DAY_LABELS_PS[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限の通常講師代行)` : ''
+              const regularLabel = subInfo ? '★代' : '★'
               cells.push({
-                label: isGroupSlot ? `■ ${subj}` : isRegularStudent ? `★ ${subj}` : subj,
-                detail: `${teacher?.name ?? '?'}${isGroupSlot ? ' (集団授業)' : isRegularStudent ? ` (通常${makeupHint})` : ' (特別講習)'}`,
-                color: isGroupSlot ? '#e0e7ff' : isRegularStudent ? '#dcfce7' : '#fef3c7',
+                label: isGroupSlot ? `■ ${subj}` : isRegularStudent ? `${regularLabel} ${subj}` : subj,
+                detail: `${teacher?.name ?? '?'}${isGroupSlot ? ' (集団授業)' : subInfo ? ` (通常講師代行${makeupHint})` : isRegularStudent ? ` (通常${makeupHint})` : ' (特別講習)'}`,
+                color: isGroupSlot ? '#e0e7ff' : subInfo ? '#fee2e2' : isRegularStudent ? '#dcfce7' : '#fef3c7',
               })
             }
           }
@@ -7266,6 +7368,7 @@ const ClassroomSelectPage = () => {
   const [backups, setBackups] = useState<BackupMeta[]>([])
   const [backupsLoading, setBackupsLoading] = useState(false)
   const [backupBusy, setBackupBusy] = useState(false)
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     const unsub = watchClassrooms((items) => {
@@ -7349,6 +7452,59 @@ const ClassroomSelectPage = () => {
     }
   }
 
+  const downloadBackupJson = async (cId: string, backupId: string, createdAt: number): Promise<void> => {
+    try {
+      const backup = await loadBackup(cId, backupId)
+      if (!backup) {
+        alert('バックアップデータの読み込みに失敗しました。')
+        return
+      }
+      const payload = {
+        schemaVersion: 1,
+        classroomId: cId,
+        backupId,
+        exportedAt: Date.now(),
+        backup,
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      const stamp = new Date(createdAt).toISOString().replace(/[:.]/g, '-')
+      link.href = url
+      link.download = `LessonScheduleTable-backup-${cId}-${stamp}.json`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(`ダウンロードエラー: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  const handleImportBackupFile = async (cId: string, event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text) as BackupData | { backup?: BackupData }
+      const backup = (parsed as { backup?: BackupData }).backup ?? (parsed as BackupData)
+      if (!backup || typeof backup !== 'object' || !('sessions' in backup)) {
+        alert('バックアップJSONの形式が正しくありません。')
+        return
+      }
+      if (!window.confirm(`選択したバックアップファイルを ${cId} に取り込みますか？\n現在のデータは上書きされます。`)) return
+      setBackupBusy(true)
+      await restoreBackup(cId, backup)
+      await refreshBackups(cId)
+      alert('バックアップファイルの取り込みが完了しました。')
+    } catch (e) {
+      alert(`取込エラー: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBackupBusy(false)
+      if (event.target) event.target.value = ''
+    }
+  }
+
   const formatBackupDate = (ts: number): string => new Date(ts).toLocaleString('ja-JP')
 
   return (
@@ -7393,6 +7549,16 @@ const ClassroomSelectPage = () => {
                 <button className="btn" type="button" disabled={backupBusy} onClick={() => void handleManualBackup(backupClassroomId)}>
                   {backupBusy ? '処理中...' : '📸 今すぐバックアップ'}
                 </button>
+                <button className="btn secondary" type="button" disabled={backupBusy} onClick={() => backupImportInputRef.current?.click()}>
+                  ⬆ バックアップ取込
+                </button>
+                <input
+                  ref={backupImportInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  style={{ display: 'none' }}
+                  onChange={(e) => void handleImportBackupFile(backupClassroomId, e)}
+                />
               </div>
               {backupsLoading ? (
                 <p>読み込み中...</p>
@@ -7414,6 +7580,7 @@ const ClassroomSelectPage = () => {
                         </td>
                         <td>
                           <button className="btn secondary" type="button" style={{ marginRight: '4px' }} disabled={backupBusy} onClick={() => void handleRestore(backupClassroomId, b.id, b.createdAt)}>復元</button>
+                          <button className="btn secondary" type="button" style={{ marginRight: '4px' }} disabled={backupBusy} onClick={() => void downloadBackupJson(backupClassroomId, b.id, b.createdAt)}>DL</button>
                           <button className="btn secondary" type="button" style={{ color: '#dc2626' }} onClick={() => void handleDeleteBackup(backupClassroomId, b.id)}>削除</button>
                         </td>
                       </tr>
