@@ -219,6 +219,22 @@
   line-height: 1.45;
 }
 
+.status-proposal-action {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #fdba74;
+  background: #fff7ed;
+  color: #9a3412;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.status-proposal-action:hover {
+  background: #ffedd5;
+}
+
 .grid-slots {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
