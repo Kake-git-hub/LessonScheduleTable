@@ -461,8 +461,8 @@ export const buildIncrementalAutoAssignments = async (
       const assignment = slotAssignments[idx]
       if (assignment.isGroupLesson) continue
       if (assignment.studentIds.length >= 2) continue
-      // On re-assign, preserve existing non-regular assignments as-is to avoid false red borders
-      if (!isInitialAssignment && !assignment.isRegular && assignment.studentIds.length > 0) continue
+      // On re-assign, preserve existing assignments with students to avoid unnecessary changes
+      if (!isInitialAssignment && assignment.studentIds.length > 0) continue
       if (!assignment.teacherId) continue
 
       const teacher = data.teachers.find((t) => t.id === assignment.teacherId)

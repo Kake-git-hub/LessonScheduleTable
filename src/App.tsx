@@ -3835,9 +3835,9 @@ service cloud.firestore {
                         return { subj, rem: desired - assigned }
                       })
                       .filter((r) => r.rem !== 0)
-                    // Count slots where student was planned but missing from actual result (both regular and makeup)
-                    // Also track which absences have no available makeup slot with the original teacher
-                    let missingFromActual = 0
+                    // Count slots where student was planned but missing from actual result (regular and makeup assignments)
+                    // Track per-subject for display, and reasons for no available makeup slot
+                    const missingBySubj: Record<string, number> = {}
                     type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
                     const noMakeupReasons: NoMakeupReason[] = []
                     for (const sk of slotKeys) {
@@ -3847,10 +3847,14 @@ service cloud.firestore {
                       if (!wasPlanned) continue
                       const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
                       if (!isInActual) {
-                        // Only count regular (通常) absences, not special course (特別講習) absences
+                        // Count regular absences and makeup absences, not special course absences
                         const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
-                        if (!origAssignment?.isRegular) continue
-                        missingFromActual++
+                        if (!origAssignment) continue
+                        const isRegularAbsence = origAssignment.isRegular
+                        const isMakeupAbsence = !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
+                        if (!isRegularAbsence && !isMakeupAbsence) continue
+                        const absentSubj = getStudentSubject(origAssignment, student.id)
+                        missingBySubj[absentSubj] = (missingBySubj[absentSubj] ?? 0) + 1
                         const origTeacherId = origAssignment.teacherId
                         const [absentDate] = sk.split('_')
                         // Check future slots after the absence date
@@ -3879,34 +3883,35 @@ service cloud.firestore {
                         }
                       }
                     }
-                    if (remaining.length === 0 && missingFromActual === 0) return null
-                    return { name: student.name, remaining, missingFromActual, noMakeupReasons }
+                    const missingTotal = Object.values(missingBySubj).reduce((a, b) => a + b, 0)
+                    if (remaining.length === 0 && missingTotal === 0) return null
+                    return { name: student.name, remaining, missingBySubj, noMakeupReasons }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
 
-                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingFromActual > 0)
+                const missingTotal = (s: { missingBySubj: Record<string, number> }) => Object.values(s.missingBySubj).reduce((a, b) => a + b, 0)
+                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortages(data, effAssignments)
 
                 const underTooltip = underAssigned
                   .map((s) => {
                     const parts: string[] = []
-                    if (s.missingFromActual > 0) {
-                      const absentText = `通常欠席${s.missingFromActual}コマ`
-                      if (s.noMakeupReasons.length > 0) {
-                        const reasonCounts = { no_student: 0, no_teacher: 0, no_match: 0 }
-                        for (const r of s.noMakeupReasons) reasonCounts[r]++
-                        const reasonParts: string[] = []
-                        if (reasonCounts.no_student > 0) reasonParts.push(`生徒の出席可能日なし${reasonCounts.no_student > 1 ? `×${reasonCounts.no_student}` : ''}`)
-                        if (reasonCounts.no_teacher > 0) reasonParts.push(`講師の出席可能日なし${reasonCounts.no_teacher > 1 ? `×${reasonCounts.no_teacher}` : ''}`)
-                        if (reasonCounts.no_match > 0) reasonParts.push(`講師と生徒のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
-                        parts.push(`${absentText}（振替不可: ${reasonParts.join(', ')}）`)
-                      } else {
-                        parts.push(absentText)
-                      }
+                    const missingEntries = Object.entries(s.missingBySubj).filter(([, c]) => c > 0)
+                    if (missingEntries.length > 0) {
+                      parts.push(missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`).join(', '))
+                    }
+                    if (s.noMakeupReasons.length > 0) {
+                      const reasonCounts = { no_student: 0, no_teacher: 0, no_match: 0 }
+                      for (const r of s.noMakeupReasons) reasonCounts[r]++
+                      const reasonParts: string[] = []
+                      if (reasonCounts.no_student > 0) reasonParts.push(`生徒の出席可能日なし${reasonCounts.no_student > 1 ? `×${reasonCounts.no_student}` : ''}`)
+                      if (reasonCounts.no_teacher > 0) reasonParts.push(`講師の出席可能日なし${reasonCounts.no_teacher > 1 ? `×${reasonCounts.no_teacher}` : ''}`)
+                      if (reasonCounts.no_match > 0) reasonParts.push(`講師と生徒のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
+                      parts.push(`振替不可: ${reasonParts.join(', ')}`)
                     }
                     const specials = s.remaining.filter((r) => r.rem > 0)
-                    if (specials.length > 0) parts.push(specials.map((r) => `特別講習${r.subj}残${r.rem}コマ`).join(', '))
+                    if (specials.length > 0) parts.push(specials.map((r) => `特別${r.subj}残${r.rem}コマ`).join(', '))
                     return `${s.name}: ${parts.join(', ')}`
                   })
                   .join('\n')
