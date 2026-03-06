@@ -3491,20 +3491,19 @@ const AdminPage = () => {
       const newStudentSubjects: Record<string, string> = {}
       for (const sid of studentIds) {
         if (sid === studentId && !prevStudentSubjects[sid]) {
-          // New student: pick a viable subject from teacher's subjects
+          // Manual assignment: allow any subject this teacher can handle for the student's grade.
           const student = current.students.find((s) => s.id === sid)
-          const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade).filter((subj) => student.subjects.includes(subj)) : []
+          const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade) : []
           newStudentSubjects[sid] = viable[0] ?? assignment.subject
         } else {
-          // Keep existing subject, validate it's still available
+          // Manual assignment: keep any subject the teacher can still handle.
           const existingSubj = prevStudentSubjects[sid] ?? assignment.subject
           const student = current.students.find((s) => s.id === sid)
           const teacherCanTeach = student ? canTeachSubject(teacher?.subjects ?? [], student.grade, existingSubj) : false
-          const studentCanLearn = student?.subjects.includes(existingSubj) ?? false
-          if (teacherCanTeach && studentCanLearn) {
+          if (teacherCanTeach) {
             newStudentSubjects[sid] = existingSubj
           } else {
-            const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade).filter((subj) => student.subjects.includes(subj)) : []
+            const viable = student ? teachableBaseSubjects(teacher?.subjects ?? [], student.grade) : []
             newStudentSubjects[sid] = viable[0] ?? existingSubj
           }
         }
@@ -5034,9 +5033,9 @@ service cloud.firestore {
                                   const studentSubject = currentStudentId
                                     ? getStudentSubject(assignment, currentStudentId)
                                     : ''
-                                  // Subject options for THIS student: teacher can teach AND student can learn
+                                  // Manual assignment: show all subjects this teacher can handle for the student's grade.
                                   const studentSubjectOptions = selectedTeacher && currentStudent
-                                    ? teachableBaseSubjects(selectedTeacher.subjects, currentStudent.grade).filter((subj) => currentStudent.subjects.includes(subj))
+                                    ? teachableBaseSubjects(selectedTeacher.subjects, currentStudent.grade)
                                     : (selectedTeacher ? [...new Set(selectedTeacher.subjects.map(s => getSubjectBase(s)))] : [])
                                   // Ensure currently assigned subject is always in the options (e.g. regular lessons)
                                   if (studentSubject && !studentSubjectOptions.includes(studentSubject)) {
