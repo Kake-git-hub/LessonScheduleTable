@@ -3229,9 +3229,21 @@ const AdminPage = () => {
 
       success = true
       setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
+      const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
+      const filteredUnplacedMakeup = (currentHighlights.unplacedMakeup ?? []).filter((item) => {
+        if (item.studentId !== proposal.studentId) return true
+        if (item.subject !== proposal.subject) return true
+        if (proposal.makeupInfo && item.teacherId !== proposal.teacherId) return true
+        return false
+      })
       return {
         ...current,
         assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
+        autoAssignHighlights: {
+          ...currentHighlights,
+          ...(currentHighlights.changeDetails ? { changeDetails: currentHighlights.changeDetails } : {}),
+          unplacedMakeup: filteredUnplacedMakeup,
+        },
       }
     })
 
@@ -3240,6 +3252,7 @@ const AdminPage = () => {
       return
     }
     if (success) {
+      setLatestStatusReport(null)
       setStatusModal(null)
       alert(`${proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
     }
@@ -4546,8 +4559,15 @@ service cloud.firestore {
                   })
                   .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
 
+                const currentPendingMakeupDemands = collectPendingMakeupDemands(data.assignments, liveActual)
+                const currentAvailableSlotKeys = slotKeys.filter((s) => !recordedSlotSet.has(s))
+
                 // Merge unplacedMakeup from autoAssignHighlights into studentsWithRemaining
-                const unplacedMakeupHighlights = data.autoAssignHighlights?.unplacedMakeup ?? []
+                const unresolvedPendingKeys = new Set(currentPendingMakeupDemands.map((demand) => `${demand.studentId}|${demand.teacherId}|${demand.subject}|${demand.absentDate ?? ''}`))
+                const unplacedMakeupHighlights = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((item) =>
+                  unresolvedPendingKeys.has(`${item.studentId}|${item.teacherId}|${item.subject}|`)
+                  || [...unresolvedPendingKeys].some((key) => key.startsWith(`${item.studentId}|${item.teacherId}|${item.subject}|`)),
+                )
                 for (const um of unplacedMakeupHighlights) {
                   const studentName = data.students.find((s) => s.id === um.studentId)?.name
                   if (!studentName) continue
@@ -4563,8 +4583,6 @@ service cloud.firestore {
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortages(data, effAssignments)
-                const currentPendingMakeupDemands = collectPendingMakeupDemands(data.assignments, liveActual)
-                const currentAvailableSlotKeys = slotKeys.filter((s) => !recordedSlotSet.has(s))
 
                 const underTooltip = underAssigned
                   .map((s) => {
