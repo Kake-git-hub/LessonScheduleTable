@@ -150,9 +150,9 @@ export const buildIncrementalAutoAssignments = async (
           // Case 1: student is unavailable for this slot
           const needsMakeup = !isStudentAvailable(student, slot)
           // Case 2: slot has actual results recorded and student was removed (absent)
+          // Use regularLessons as source of truth (not data.assignments which may be corrupted)
           const actualForSlot = data.actualResults?.[slot]
           const absentFromActual = actualForSlot != null
-            && data.assignments[slot]?.some((a) => a.isRegular && a.studentIds.includes(sid))
             && !actualForSlot.some((r) => r.studentIds.includes(sid))
           if (needsMakeup || absentFromActual) {
             const arr = makeupStudentInfo.get(sid) ?? []
@@ -203,6 +203,7 @@ export const buildIncrementalAutoAssignments = async (
   }
 
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
+  const seededSlotKeys = new Set<string>()
   if (data.actualResults) {
     const seededSlots: string[] = []
     for (const [slot, results] of Object.entries(data.actualResults)) {
@@ -220,6 +221,7 @@ export const buildIncrementalAutoAssignments = async (
         }
       })
       seededSlots.push(slot)
+      seededSlotKeys.add(slot)
     }
     console.log('[AutoAssign] Seeded', seededSlots.length, 'recorded slots into result')
   }
@@ -891,6 +893,11 @@ export const buildIncrementalAutoAssignments = async (
     for (const mk of mkInfos) {
       unplacedMakeup.push({ studentId, teacherId: mk.teacherId, subject: mk.subject, absentDate: mk.absentDate })
     }
+  }
+
+  // Remove seeded (recorded) slots from result — they were only for load counting, not for saving
+  for (const slot of seededSlotKeys) {
+    delete result[slot]
   }
 
   console.log('[AutoAssign] Done: result has', Object.keys(result).length, 'slots,', changeLog.length, 'changes,', unplacedMakeup.length, 'unplaced makeup')

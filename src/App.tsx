@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.13'
+const APP_VERSION = '1.3.14'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -3019,16 +3019,59 @@ const AdminPage = () => {
           reason = `講師(${teacherName})と生徒のマッチする日なし`
         }
       } else {
-        reason = `講師(${teacherName})の空き枠に配置不可(他の制約)`
+        // Both available but still not placed — check specific constraints
+        const specificReasons: string[] = []
+        const deskLimit = data.settings.deskCount ?? 0
+        for (const fs of bothAvail) {
+          const slotAssigns = nextAssignments[fs] ?? []
+          const reasons: string[] = []
+          // Desk count limit
+          if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
+            reasons.push('机数上限')
+          }
+          // Teacher already used in slot
+          if (slotAssigns.some((a) => a.teacherId === um.teacherId)) {
+            const teacherAssign = slotAssigns.find((a) => a.teacherId === um.teacherId)
+            if (teacherAssign && teacherAssign.studentIds.length >= 2) {
+              reasons.push(`講師(${teacherName})のペアが満席`)
+            } else if (teacherAssign) {
+              // Teacher has space but student not placed — check student constraints
+              if (teacherAssign.studentIds.some((sid) => constraintFor(data.constraints, sid, um.studentId) === 'incompatible')) {
+                reasons.push('既存生徒との相性不可')
+              }
+            }
+          } else {
+            // Teacher not in slot — would need new pair
+            if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
+              reasons.push('机数上限で新規ペア不可')
+            }
+          }
+          // Teacher-student incompatible
+          if (constraintFor(data.constraints, um.teacherId, um.studentId) === 'incompatible') {
+            reasons.push(`講師(${teacherName})と生徒の相性不可`)
+          }
+          // Student already in another pair in this slot
+          if (slotAssigns.some((a) => a.studentIds.includes(um.studentId))) {
+            reasons.push('同コマに既に割当済み')
+          }
+          // 1日2コマ上限
+          const [fsDate] = fs.split('_')
+          const slotsOnDate = Object.keys(nextAssignments).filter((k) => k.startsWith(fsDate + '_')).reduce((count, k) => 
+            count + (nextAssignments[k]?.some((a) => a.studentIds.includes(um.studentId)) ? 1 : 0), 0)
+          if (slotsOnDate >= 2) {
+            reasons.push('1日2コマ上限')
+          }
+          if (reasons.length > 0) {
+            for (const r of reasons) {
+              if (!specificReasons.includes(r)) specificReasons.push(r)
+            }
+          }
+        }
+        reason = specificReasons.length > 0
+          ? `講師(${teacherName}): ${specificReasons.join(', ')}`
+          : `講師(${teacherName})の空き枠あるが配置されず(原因不明)`
       }
       unplacedMakeupEntries.push({ studentName: student.name, subject: um.subject, reason })
-    }
-
-    // Preserve original planned assignments for recorded slots (not actual results)
-    // Auto-assign seeds actual data into result for load counting, but we must keep
-    // the original planned data in assignments so tooltip can detect absences (planned vs actual)
-    for (const slot of recordedSlots) {
-      nextAssignments[slot] = data.assignments[slot] ?? []
     }
 
     // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
@@ -3038,12 +3081,19 @@ const AdminPage = () => {
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
-    await updateAssignments((current) => ({
-      ...current,
-      assignments: nextAssignments,
-      autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails },
-      settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
-    }))
+    await updateAssignments((current) => {
+      // Merge: auto-assign results for non-recorded slots + preserve current assignments for recorded slots
+      const mergedAssignments = { ...nextAssignments }
+      for (const slot of recordedSlots) {
+        mergedAssignments[slot] = current.assignments[slot] ?? []
+      }
+      return {
+        ...current,
+        assignments: mergedAssignments,
+        autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails },
+        settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
+      }
+    })
     const remainingMessage = remainingStudents.length > 0
       ? `\n\n未充足の生徒:\n${remainingStudents
           .map((item) => `${item.studentName}: ${item.remaining.map((r) => `${r.subject}残${r.remaining}`).join(', ')}`)
@@ -3872,17 +3922,34 @@ service cloud.firestore {
                       if (!(sk in liveActual)) continue
                       const planned = data.assignments[sk] ?? []
                       const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
-                      if (!wasPlanned) continue
+                      // Also check regularLessons as fallback (data.assignments may have been corrupted by previous auto-assign)
+                      const [skDate] = sk.split('_')
+                      const skDow = getIsoDayOfWeek(skDate)
+                      const skSlotNum = getSlotNumber(sk)
+                      const wasRegularLesson = data.regularLessons.some((rl) =>
+                        rl.studentIds.includes(student.id) && rl.dayOfWeek === skDow && rl.slotNumber === skSlotNum
+                      )
+                      if (!wasPlanned && !wasRegularLesson) continue
                       const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
                       if (!isInActual) {
-                        // Count regular absences and makeup absences, not special course absences
+                        // Determine assignment info (from planned or regularLessons)
                         const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
-                        if (!origAssignment) continue
-                        const isRegularAbsence = origAssignment.isRegular
-                        const isMakeupAbsence = !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
+                        const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
+                        const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
                         if (!isRegularAbsence && !isMakeupAbsence) continue
-                        const absentSubj = getStudentSubject(origAssignment, student.id)
-                        const origTeacherId = origAssignment.teacherId
+                        // Get subject from assignment or regularLesson
+                        let absentSubj: string
+                        let origTeacherId: string
+                        if (origAssignment) {
+                          absentSubj = getStudentSubject(origAssignment, student.id)
+                          origTeacherId = origAssignment.teacherId
+                        } else {
+                          const rl = data.regularLessons.find((r) =>
+                            r.studentIds.includes(student.id) && r.dayOfWeek === skDow && r.slotNumber === skSlotNum
+                          )!
+                          absentSubj = rl.studentSubjects?.[student.id] ?? rl.subject
+                          origTeacherId = rl.teacherId
+                        }
                         const [absentDate] = sk.split('_')
                         // Check future slots after the absence date for makeup availability
                         const futureCandidates = slotKeys.filter((fs) => {
