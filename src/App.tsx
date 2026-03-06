@@ -2436,7 +2436,7 @@ const AdminPage = () => {
       for (const date of dates) {
         for (let s = 1; s <= data.settings.slotsPerDay; s++) {
           const sk = `${date}_${s}`
-          if (!regularKeys.has(sk) && Math.random() < 0.6) avail.push(sk)
+          if (!regularKeys.has(sk) && Math.random() < 0.3) avail.push(sk)
         }
       }
       nextAvailability[key] = avail
