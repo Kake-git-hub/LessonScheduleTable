@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.2.0'
+const APP_VERSION = '1.2.1'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2784,7 +2784,8 @@ const AdminPage = () => {
     if (!window.confirm('この実績記録を解除しますか？\n割当は元の計画に戻ります。')) return
     const nextResults = { ...(data.actualResults ?? {}) }
     delete nextResults[slot]
-    await persist({ ...data, actualResults: Object.keys(nextResults).length > 0 ? nextResults : undefined })
+    // Use empty object instead of undefined (Firestore rejects undefined values)
+    await persist({ ...data, actualResults: Object.keys(nextResults).length > 0 ? nextResults : {} })
   }
 
   const updateEditingResult = (idx: number, field: keyof ActualResult, value: string | string[]): void => {
@@ -3810,6 +3811,7 @@ service cloud.firestore {
                   ? { ...(data.actualResults ?? {}), [recordingSlot]: editingResults.map(({ _uid: _, ...rest }) => rest) }
                   : data.actualResults
                 const effAssignments = buildEffectiveAssignments(data.assignments, liveActualResults)
+                const liveActual = liveActualResults ?? {}
                 const studentsWithRemaining = data.students
                   .map((student) => {
                     const remaining = Object.entries(student.subjectSlots)
@@ -3818,17 +3820,33 @@ service cloud.firestore {
                         return { subj, rem: desired - assigned }
                       })
                       .filter((r) => r.rem !== 0)
-                    if (remaining.length === 0) return null
-                    return { name: student.name, remaining }
+                    // Count regular lesson slots where student was planned but missing from actual result
+                    let missingRegular = 0
+                    for (const sk of slotKeys) {
+                      if (!(sk in liveActual)) continue
+                      const planned = data.assignments[sk] ?? []
+                      const wasPlannedRegular = planned.some((a) => a.isRegular && a.studentIds.includes(student.id))
+                      if (!wasPlannedRegular) continue
+                      const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
+                      if (!isInActual) missingRegular++
+                    }
+                    if (remaining.length === 0 && missingRegular === 0) return null
+                    return { name: student.name, remaining, missingRegular }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[] }[]
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingRegular: number }[]
 
-                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0))
+                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingRegular > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortages(data, effAssignments)
 
                 const underTooltip = underAssigned
-                  .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem > 0).map((r) => `${r.subj}残${r.rem}`).join(', ')}`)
+                  .map((s) => {
+                    const parts: string[] = []
+                    const specials = s.remaining.filter((r) => r.rem > 0)
+                    if (specials.length > 0) parts.push(specials.map((r) => `${r.subj}残${r.rem}`).join(', '))
+                    if (s.missingRegular > 0) parts.push(`通常欠席${s.missingRegular}コマ`)
+                    return `${s.name}: ${parts.join(', ')}`
+                  })
                   .join('\n')
                 const overTooltip = overAssigned
                   .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
