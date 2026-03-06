@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.1.0'
+const APP_VERSION = '1.2.0'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -1814,11 +1814,12 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
       // Count unsatisfied slots: student was in planned assignment but removed from actual result
+      // Includes both regular and special lesson students
       let unsatisfiedSlots = 0
       for (const slot of slotKeys) {
         if (!(slot in actualResults)) continue
         const planned = data.assignments[slot] ?? []
-        const wasPlanned = planned.some((a) => !a.isRegular && a.studentIds.includes(student.id))
+        const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
         if (!wasPlanned) continue
         const actual = actualResults[slot]
         const isInActual = actual.some((r) => r.studentIds.includes(student.id))
@@ -4408,10 +4409,9 @@ service cloud.firestore {
                               </button>
                             )}
                             {/* Badges row above teacher */}
-                            {(isIncompatiblePair || isAutoAdded || isAutoChanged || isAutoMakeup) && (
+                            {(isIncompatiblePair || isAutoAdded || isAutoChanged) && (
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
-                                {isAutoMakeup && <span className="badge auto-diff-badge" style={{ background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' }} title={changeDetail || '通常授業の振替'}>振替</span>}
                                 {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
                                 {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
                               </div>
@@ -4500,7 +4500,7 @@ service cloud.firestore {
                                       const [curDate] = slot.split('_')
                                       const curSlotNum = getSlotNumber(slot)
                                       const destLabel = `${fmtMkDate(curDate)} ${curSlotNum}限`
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title={`通常授業の振替（${origLabel} → ${destLabel}）`}>★</span>
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#16a34a' }} title={`振替（${origLabel} → ${destLabel}）`}>★</span>
                                     }
                                     return null
                                   })()
