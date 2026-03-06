@@ -137,6 +137,8 @@ export type SubmissionLogEntry = {
   /** The data snapshot at time of submission (student) */
   subjects?: string[]
   subjectSlots?: SubjectSlotRequest
+  unavailableDates?: string[]
+  preferredSlots?: string[]
   unavailableSlots?: string[]
   /** Teacher availability snapshot */
   availability?: string[]

@@ -76,6 +76,16 @@ export const buildIncrementalAutoAssignments = async (
       const newCount = latest.unavailableSlots.length
       if (oldCount !== newCount) changes.push(`不可コマ数: ${oldCount}→${newCount}`)
     }
+    if (latest.unavailableDates && prev?.unavailableDates) {
+      const oldCount = prev.unavailableDates.length
+      const newCount = latest.unavailableDates.length
+      if (oldCount !== newCount) changes.push(`不可日数: ${oldCount}→${newCount}`)
+    }
+    if (latest.preferredSlots && prev?.preferredSlots) {
+      const oldCount = prev.preferredSlots.length
+      const newCount = latest.preferredSlots.length
+      if (oldCount !== newCount) changes.push(`希望コマ数: ${oldCount}→${newCount}`)
+    }
     const diffStr = changes.length > 0 ? ` [${changes.join(', ')}]` : ''
     return `${student.name}: 前回コマ割り後に希望を変更(${timeStr})${diffStr}`
   }
@@ -493,6 +503,9 @@ export const buildIncrementalAutoAssignments = async (
         const best = candidates.sort((a, b) => {
           const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
           const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
+          const aPreferred = (a.preferredSlots ?? []).includes(slot) ? 1 : 0
+          const bPreferred = (b.preferredSlots ?? []).includes(slot) ? 1 : 0
+          if (aPreferred !== bPreferred) return bPreferred - aPreferred
           return bRem - aRem
         })[0]
         // Pick the best viable subject for this new student
@@ -720,6 +733,12 @@ export const buildIncrementalAutoAssignments = async (
           remainingSlotScore += (totalRequested - totalAssigned) * 20
         }
 
+        // Preferred slot bonus: reflect student hope changes in new proposals
+        let preferredSlotBonus = 0
+        for (const st of combo) {
+          if ((st.preferredSlots ?? []).includes(slot)) preferredSlotBonus += 120
+        }
+
         // ── Additional scoring factors (lower priority) ──
 
         // Teacher consecutive slot bonus
@@ -769,6 +788,7 @@ export const buildIncrementalAutoAssignments = async (
           pairBonus +                  // 2人ペアボーナス
           attendanceBonus +            // 既出勤日追加
           remainingSlotScore +         // 残コマ多数優先
+          preferredSlotBonus +         // 希望コマ優先
           teacherConsecBonus +         // 講師連続コマ
           mixedSubjectPenalty +        // 混合科目
           consecutiveSameSubjectPenalty + // 隣接同科目

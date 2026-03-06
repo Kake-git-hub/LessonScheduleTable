@@ -26,9 +26,9 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.16'
+const APP_VERSION = '1.3.17'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2975,18 +2975,101 @@ const AdminPage = () => {
       data.actualResults,
     )
 
+    const buildConstraintSuggestion = (student: Student, blockReason: string, slot: string, teacherName: string): string | null => {
+      const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
+      if (blockReason.startsWith('一コマ限定') && cards.includes('oneSlotOnly')) {
+        return `制約カード: 一コマ限定 -> 二コマ限定 または 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      if (blockReason.startsWith('二コマ限定') && cards.includes('twoSlotLimit')) {
+        return `制約カード: 二コマ限定 -> 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      if (blockReason.startsWith('2コマ連続') && cards.includes('twoConsecutive')) {
+        return `制約カード: 2コマ連続 を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      if (blockReason.startsWith('2コマ連続(一コマ空け)') && cards.includes('twoWithGap')) {
+        return `制約カード: 2コマ連続(一コマ空け) を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      if (blockReason.startsWith('通常授業連結') && cards.includes('regularLink')) {
+        return `制約カード: 通常授業連結 を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      if (blockReason.startsWith('集団後連続') && cards.includes('groupContinuous')) {
+        return `制約カード: 集団後連続 を外すと ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`
+      }
+      return null
+    }
+
+    const buildRemainingSuggestions = (student: Student, subject: string): { teacher: string[]; cards: string[]; student: string[] } => {
+      const teacherSuggestions = new Set<string>()
+      const cardSuggestions = new Set<string>()
+      const studentSuggestions = new Set<string>()
+      const deskLimit = data.settings.deskCount ?? 0
+
+      const compatibleTeachers = data.teachers.filter((teacher) =>
+        canTeachSubject(teacher.subjects, student.grade, subject)
+        && constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible',
+      )
+
+      for (const slot of availableSlotKeys) {
+        if (getSlotNumber(slot) === 0) continue
+        const slotAssignments = nextAssignments[slot] ?? []
+        const [slotDate] = slot.split('_')
+        const dayOfWeek = getIsoDayOfWeek(slotDate)
+        const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === dayOfWeek)
+
+        for (const teacher of compatibleTeachers) {
+          if (slotAssignments.some((a) => a.studentIds.includes(student.id))) continue
+
+          const teacherAssignment = slotAssignments.find((a) => a.teacherId === teacher.id)
+          if (teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) {
+            continue
+          }
+          if (teacherAssignment && teacherAssignment.studentIds.length >= 2) continue
+          if (!teacherAssignment && deskLimit > 0 && slotAssignments.length >= deskLimit) continue
+
+          const teacherAvailable = hasAvailability(data.availability, instructorPersonType, teacher.id, slot)
+          const studentAvailable = isStudentAvailable(student, slot)
+          const evalResult = evaluateConstraintCards(
+            student,
+            slot,
+            effectiveForCounting,
+            data.settings.slotsPerDay,
+            data.regularLessons,
+            groupLessonsOnDate,
+            teacher.id,
+          )
+
+          if (!teacherAvailable && studentAvailable && !evalResult.blocked) {
+            teacherSuggestions.add(`講師出席追加案: ${teacher.name} を ${slotLabel(slot, isMendan, mendanStart)} 出席可にすると ${subject} を追加候補`)
+          }
+          if (teacherAvailable && studentAvailable && evalResult.blocked) {
+            const suggestion = buildConstraintSuggestion(student, evalResult.blockReason ?? '', slot, teacher.name)
+            if (suggestion) cardSuggestions.add(suggestion)
+          }
+          if (teacherAvailable && !studentAvailable && !evalResult.blocked) {
+            studentSuggestions.add(`生徒不可緩和案: ${slotLabel(slot, isMendan, mendanStart)} を出席可にすると 講師(${teacher.name}) で ${subject} を追加候補`)
+          }
+        }
+      }
+
+      return {
+        teacher: [...teacherSuggestions].slice(0, 5),
+        cards: [...cardSuggestions].slice(0, 5),
+        student: [...studentSuggestions].slice(0, 5),
+      }
+    }
+
     const remainingStudents = data.students
       .map((student) => {
         const remaining = Object.entries(student.subjectSlots)
           .map(([subject, desired]) => {
             const assigned = countStudentSubjectLoad(effectiveForCounting, student.id, subject)
-            return { subject, remaining: desired - assigned }
+            return { subject, remaining: desired - assigned, suggestions: buildRemainingSuggestions(student, subject) }
           })
           .filter((item) => item.remaining > 0)
         if (remaining.length === 0) return null
         return { studentName: student.name, remaining }
       })
-      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number }[] }[]
+      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number; suggestions: { teacher: string[]; cards: string[]; student: string[] } }[] }[]
 
     const overAssignedStudents = data.students
       .map((student) => {
@@ -3116,7 +3199,17 @@ const AdminPage = () => {
     })
     const remainingMessage = remainingStudents.length > 0
       ? `\n\n未充足の生徒:\n${remainingStudents
-          .map((item) => `${item.studentName}: ${item.remaining.map((r) => `${r.subject}残${r.remaining}`).join(', ')}`)
+          .map((item) => `${item.studentName}: ${item.remaining.map((r) => {
+            const suggestionLines = [
+              ...r.suggestions.teacher,
+              ...r.suggestions.cards,
+              ...r.suggestions.student,
+            ]
+            const suggestionText = suggestionLines.length > 0
+              ? `\n  ${suggestionLines.join('\n  ')}`
+              : '\n  提案候補なし: 机数上限や相性不可など他の制約を確認してください'
+            return `${r.subject}残${r.remaining}${suggestionText}`
+          }).join('\n')}`)
           .join('\n')}`
       : ''
     const overAssignedMessage = overAssignedStudents.length > 0
@@ -5544,6 +5637,8 @@ const StudentInputPage = ({
       type: isUpdate ? 'update' : 'initial',
       subjects,
       subjectSlots,
+      unavailableDates: derivedUnavailDates,
+      preferredSlots: [],
       unavailableSlots: Array.from(unavailableSlots),
     }
 
