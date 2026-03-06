@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.6'
+const APP_VERSION = '1.3.7'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -3834,22 +3834,22 @@ service cloud.firestore {
                         return { subj, rem: desired - assigned }
                       })
                       .filter((r) => r.rem !== 0)
-                    // Count regular lesson slots where student was planned but missing from actual result
-                    let missingRegular = 0
+                    // Count slots where student was planned but missing from actual result (both regular and makeup)
+                    let missingFromActual = 0
                     for (const sk of slotKeys) {
                       if (!(sk in liveActual)) continue
                       const planned = data.assignments[sk] ?? []
-                      const wasPlannedRegular = planned.some((a) => a.isRegular && a.studentIds.includes(student.id))
-                      if (!wasPlannedRegular) continue
+                      const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
+                      if (!wasPlanned) continue
                       const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
-                      if (!isInActual) missingRegular++
+                      if (!isInActual) missingFromActual++
                     }
-                    if (remaining.length === 0 && missingRegular === 0) return null
-                    return { name: student.name, remaining, missingRegular }
+                    if (remaining.length === 0 && missingFromActual === 0) return null
+                    return { name: student.name, remaining, missingFromActual }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingRegular: number }[]
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number }[]
 
-                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingRegular > 0)
+                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingFromActual > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortages(data, effAssignments)
 
@@ -3858,7 +3858,7 @@ service cloud.firestore {
                     const parts: string[] = []
                     const specials = s.remaining.filter((r) => r.rem > 0)
                     if (specials.length > 0) parts.push(specials.map((r) => `${r.subj}残${r.rem}`).join(', '))
-                    if (s.missingRegular > 0) parts.push(`通常欠席${s.missingRegular}コマ`)
+                    if (s.missingFromActual > 0) parts.push(`欠席${s.missingFromActual}コマ`)
                     return `${s.name}: ${parts.join(', ')}`
                   })
                   .join('\n')
