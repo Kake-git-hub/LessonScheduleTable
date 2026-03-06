@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.7'
+const APP_VERSION = '1.3.8'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -3826,6 +3826,7 @@ service cloud.firestore {
                   : data.actualResults
                 const effAssignments = buildEffectiveAssignments(data.assignments, liveActualResults)
                 const liveActual = liveActualResults ?? {}
+                const recordedSlotSet = new Set(Object.keys(liveActual))
                 const studentsWithRemaining = data.students
                   .map((student) => {
                     const remaining = Object.entries(student.subjectSlots)
@@ -3835,19 +3836,40 @@ service cloud.firestore {
                       })
                       .filter((r) => r.rem !== 0)
                     // Count slots where student was planned but missing from actual result (both regular and makeup)
+                    // Also track which absences have no available makeup slot with the original teacher
                     let missingFromActual = 0
+                    let noMakeupSlotCount = 0
                     for (const sk of slotKeys) {
                       if (!(sk in liveActual)) continue
                       const planned = data.assignments[sk] ?? []
                       const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
                       if (!wasPlanned) continue
                       const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
-                      if (!isInActual) missingFromActual++
+                      if (!isInActual) {
+                        missingFromActual++
+                        // Find the original teacher for this absent slot
+                        const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
+                        if (origAssignment) {
+                          const origTeacherId = origAssignment.teacherId
+                          const [absentDate] = sk.split('_')
+                          // Check if there's any available slot AFTER the absence date where both teacher and student are free
+                          const hasAvailableSlot = slotKeys.some((futureSlot) => {
+                            if (recordedSlotSet.has(futureSlot)) return false
+                            const [futureDate] = futureSlot.split('_')
+                            if (futureDate <= absentDate) return false
+                            if (getSlotNumber(futureSlot) === 0) return false // skip 午前
+                            if (!hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot)) return false
+                            if (!isStudentAvailable(student, futureSlot)) return false
+                            return true
+                          })
+                          if (!hasAvailableSlot) noMakeupSlotCount++
+                        }
+                      }
                     }
                     if (remaining.length === 0 && missingFromActual === 0) return null
-                    return { name: student.name, remaining, missingFromActual }
+                    return { name: student.name, remaining, missingFromActual, noMakeupSlotCount }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number }[]
+                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingFromActual: number; noMakeupSlotCount: number }[]
 
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || s.missingFromActual > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
@@ -3858,7 +3880,14 @@ service cloud.firestore {
                     const parts: string[] = []
                     const specials = s.remaining.filter((r) => r.rem > 0)
                     if (specials.length > 0) parts.push(specials.map((r) => `${r.subj}残${r.rem}`).join(', '))
-                    if (s.missingFromActual > 0) parts.push(`欠席${s.missingFromActual}コマ`)
+                    if (s.missingFromActual > 0) {
+                      const absentText = `欠席${s.missingFromActual}コマ`
+                      if (s.noMakeupSlotCount > 0) {
+                        parts.push(`${absentText}（${s.noMakeupSlotCount}コマ振替可能な日なし）`)
+                      } else {
+                        parts.push(absentText)
+                      }
+                    }
                     return `${s.name}: ${parts.join(', ')}`
                   })
                   .join('\n')

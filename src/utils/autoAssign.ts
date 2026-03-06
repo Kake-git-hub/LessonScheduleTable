@@ -192,14 +192,12 @@ export const buildIncrementalAutoAssignments = async (
 
   // Helper: check if student has remaining makeup demand for a specific teacher and subject
   // targetDate restricts actual-result-based absences to only match slots AFTER the absence date
-  // For actual-result absences (absentDate set), any compatible teacher is allowed (not locked to original teacher)
+  // Always requires same teacher as original lesson
   const hasMakeupForTeacher = (studentId: string, teacherId: string, baseSubj: string, targetDate?: string): boolean => {
     const mkInfos = makeupStudentInfo.get(studentId)
     if (!mkInfos) return false
     return mkInfos.some((mk) => {
-      if (mk.subject !== baseSubj) return false
-      // For unavailability-based makeup (no absentDate), require same teacher as regular lesson
-      if (!mk.absentDate && mk.teacherId !== teacherId) return false
+      if (mk.teacherId !== teacherId || mk.subject !== baseSubj) return false
       // For actual-result absences, only allow placement on dates strictly after the absence
       if (mk.absentDate && targetDate && targetDate <= mk.absentDate) return false
       return true
@@ -513,7 +511,7 @@ export const buildIncrementalAutoAssignments = async (
         // Check if this is a makeup student being added
         const mkInfos = makeupStudentInfo.get(best.id)
         const [mkDate2] = slot.split('_')
-        const mkMatch = mkInfos?.find(mk => mk.subject === bestSubj && (mk.absentDate ? mkDate2 > mk.absentDate : mk.teacherId === teacher.id))
+        const mkMatch = mkInfos?.find(mk => mk.teacherId === teacher.id && mk.subject === bestSubj && (!mk.absentDate || mkDate2 > mk.absentDate))
         if (mkMatch) {
           // Set regularMakeupInfo so ★ badge appears
           assignment.regularMakeupInfo = { ...(assignment.regularMakeupInfo ?? {}), [best.id]: { dayOfWeek: mkMatch.dayOfWeek, slotNumber: mkMatch.slotNumber, date: mkMatch.date } }
@@ -814,17 +812,17 @@ export const buildIncrementalAutoAssignments = async (
         if (tChange) detailParts.push(`[講師] ${tChange}`)
         if (sChanges) detailParts.push(`[生徒] ${sChanges}`)
         const fullDetail = detailParts.join(' | ')
-        // Check if any student is a makeup student
+        // Check if any student is a makeup student assigned to their teacher
         const makeupSids = a.studentIds.filter((sid) => {
           const mkInfos = makeupStudentInfo.get(sid)
-          return mkInfos && mkInfos.length > 0 && mkInfos.some(mk => (mk.absentDate ? currentDate > mk.absentDate : mk.teacherId === a.teacherId))
+          return mkInfos && mkInfos.length > 0 && mkInfos.some(mk => mk.teacherId === a.teacherId && (!mk.absentDate || currentDate > mk.absentDate))
         })
         if (makeupSids.length > 0) {
           // Set regularMakeupInfo so the ★ badge appears alongside 振替
           const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(a.regularMakeupInfo ?? {}) }
           for (const sid of makeupSids) {
             const mkInfos = makeupStudentInfo.get(sid)!
-            const matchIdx = mkInfos.findIndex(mk => (mk.absentDate ? currentDate > mk.absentDate : mk.teacherId === a.teacherId))
+            const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId && (!mk.absentDate || currentDate > mk.absentDate))
             if (matchIdx >= 0) {
               const match = mkInfos[matchIdx]
               regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber, date: match.date }
