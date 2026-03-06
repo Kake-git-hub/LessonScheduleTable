@@ -2946,8 +2946,8 @@ const AdminPage = () => {
         Object.assign(highlightDetails[slot], changeDetails[slot])
       }
     }
-    // Only show 新規/変更 badges on 2nd+ auto-assign (skip when previous assignments were all regular auto-fill)
-    const hadPreviousAssignments = Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
+    // Only show 新規/変更 badges on 2nd+ auto-assign
+    const hadPreviousAssignments = !!(data.settings?.lastAutoAssignedAt)
     if (hadPreviousAssignments) {
       const allSlotSet = new Set([...Object.keys(addedPairSignatures), ...Object.keys(changedPairSignatures)])
       for (const slot of allSlotSet) {
@@ -3892,10 +3892,8 @@ service cloud.firestore {
                 const underTooltip = underAssigned
                   .map((s) => {
                     const parts: string[] = []
-                    const specials = s.remaining.filter((r) => r.rem > 0)
-                    if (specials.length > 0) parts.push(specials.map((r) => `${r.subj}残${r.rem}`).join(', '))
                     if (s.missingFromActual > 0) {
-                      const absentText = `欠席${s.missingFromActual}コマ`
+                      const absentText = `通常欠席${s.missingFromActual}コマ`
                       if (s.noMakeupReasons.length > 0) {
                         const reasonCounts = { no_student: 0, no_teacher: 0, no_match: 0 }
                         for (const r of s.noMakeupReasons) reasonCounts[r]++
@@ -3908,6 +3906,8 @@ service cloud.firestore {
                         parts.push(absentText)
                       }
                     }
+                    const specials = s.remaining.filter((r) => r.rem > 0)
+                    if (specials.length > 0) parts.push(specials.map((r) => `特別講習${r.subj}残${r.rem}コマ`).join(', '))
                     return `${s.name}: ${parts.join(', ')}`
                   })
                   .join('\n')
