@@ -3902,7 +3902,7 @@ service cloud.firestore {
                         const reasonParts: string[] = []
                         if (reasonCounts.no_student > 0) reasonParts.push(`生徒の出席可能日なし${reasonCounts.no_student > 1 ? `×${reasonCounts.no_student}` : ''}`)
                         if (reasonCounts.no_teacher > 0) reasonParts.push(`講師の出席可能日なし${reasonCounts.no_teacher > 1 ? `×${reasonCounts.no_teacher}` : ''}`)
-                        if (reasonCounts.no_match > 0) reasonParts.push(`両者のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
+                        if (reasonCounts.no_match > 0) reasonParts.push(`講師と生徒のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
                         parts.push(`${absentText}（振替不可: ${reasonParts.join(', ')}）`)
                       } else {
                         parts.push(absentText)
