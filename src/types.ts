@@ -152,7 +152,7 @@ export type SessionData = {
   assignments: Record<string, Assignment[]>
   regularLessons: RegularLesson[]
   groupLessons: GroupLesson[]
-  autoAssignHighlights?: { added?: Record<string, string[]>; changed?: Record<string, string[]>; makeup?: Record<string, string[]>; changeDetails?: Record<string, Record<string, string>> }
+  autoAssignHighlights?: { added?: Record<string, string[]>; changed?: Record<string, string[]>; makeup?: Record<string, string[]>; changeDetails?: Record<string, Record<string, string>>; unplacedMakeup?: { studentId: string; teacherId: string; subject: string; reason: string }[] }
   teacherSubmittedAt?: Record<string, number>
   shareTokens?: Record<string, string>
   submissionLog?: SubmissionLogEntry[]

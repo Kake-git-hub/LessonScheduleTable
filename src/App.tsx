@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.14'
+const APP_VERSION = '1.3.15'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -1820,10 +1820,22 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         if (!(slot in actualResults)) continue
         const planned = data.assignments[slot] ?? []
         const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
-        if (!wasPlanned) continue
+        // Fallback: check regularLessons for corrupted data
+        const [slotDate, slotIdx] = slot.split('_')
+        const skDow = getIsoDayOfWeek(slotDate)
+        const skSlotNum = Number(slotIdx)
+        const wasRegularLesson = data.regularLessons.some((rl) =>
+          rl.studentIds.includes(student.id) && rl.dayOfWeek === skDow && rl.slotNumber === skSlotNum
+        )
+        if (!wasPlanned && !wasRegularLesson) continue
         const actual = actualResults[slot]
         const isInActual = actual.some((r) => r.studentIds.includes(student.id))
         if (!isInActual) unsatisfiedSlots++
+      }
+      // Add unplaced makeup from autoAssignHighlights (for absences not detectable from corrupted data)
+      const unplacedForStudent = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((um) => um.studentId === student.id)
+      if (unplacedForStudent.length > unsatisfiedSlots) {
+        unsatisfiedSlots = unplacedForStudent.length
       }
 
       // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
@@ -3090,7 +3102,7 @@ const AdminPage = () => {
       return {
         ...current,
         assignments: mergedAssignments,
-        autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails },
+        autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails, unplacedMakeup: unplacedMakeup.map((um) => ({ studentId: um.studentId, teacherId: um.teacherId, subject: um.subject, reason: unplacedMakeupEntries.find((e) => e.studentName === (data.students.find((s) => s.id === um.studentId)?.name ?? ''))?.reason ?? '' })) },
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
@@ -4012,6 +4024,19 @@ service cloud.firestore {
                     return { name: student.name, remaining, missingBySubj, noMakeupReasons }
                   })
                   .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
+
+                // Merge unplacedMakeup from autoAssignHighlights into studentsWithRemaining
+                const unplacedMakeupHighlights = data.autoAssignHighlights?.unplacedMakeup ?? []
+                for (const um of unplacedMakeupHighlights) {
+                  const studentName = data.students.find((s) => s.id === um.studentId)?.name
+                  if (!studentName) continue
+                  const existing = studentsWithRemaining.find((s) => s.name === studentName)
+                  if (existing) {
+                    existing.missingBySubj[um.subject] = (existing.missingBySubj[um.subject] ?? 0) + 1
+                  } else {
+                    studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [um.subject]: 1 }, noMakeupReasons: [] })
+                  }
+                }
 
                 const missingTotal = (s: { missingBySubj: Record<string, number> }) => Object.values(s.missingBySubj).reduce((a, b) => a + b, 0)
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
