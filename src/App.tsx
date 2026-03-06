@@ -2655,7 +2655,7 @@ const AdminPage = () => {
           studentSubjects: lesson.studentSubjects,
           isRegular: true,
         }
-      })
+      }).filter((a) => a.studentIds.length > 0) // Skip teacher-only assignments when all students are unavailable
 
       const expectedSig = expectedRegulars
         .map((a) => assignmentSignature(a))

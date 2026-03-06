@@ -476,12 +476,15 @@ export const buildIncrementalAutoAssignments = async (
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand or makeup need
         const [slotDate] = slot.split('_')
-        // On re-assign for regular pairs with existing students, only allow makeup students (not general unfulfilled demand)
+        // On re-assign for regular pairs with existing students, only allow makeup students (any teacher)
         const requireMakeup = !isInitialAssignment && assignment.isRegular && assignment.studentIds.length > 0
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
           if (requireMakeup) {
-            return hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
+            // Allow makeup student from any original teacher to be placed here
+            const mkInfos = makeupStudentInfo.get(student.id)
+            if (!mkInfos || mkInfos.length === 0) return false
+            return mkInfos.some(mk => mk.subject === baseSubj && (!mk.absentDate || slotDate > mk.absentDate))
           }
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
@@ -514,7 +517,9 @@ export const buildIncrementalAutoAssignments = async (
         // Check if this is a makeup student being added
         const mkInfos = makeupStudentInfo.get(best.id)
         const [mkDate2] = slot.split('_')
+        // Match same teacher first, then any teacher for makeup
         const mkMatch = mkInfos?.find(mk => mk.teacherId === teacher.id && mk.subject === bestSubj && (!mk.absentDate || mkDate2 > mk.absentDate))
+          ?? mkInfos?.find(mk => mk.subject === bestSubj && (!mk.absentDate || mkDate2 > mk.absentDate))
         if (mkMatch) {
           // Set regularMakeupInfo so ★ badge appears
           assignment.regularMakeupInfo = { ...(assignment.regularMakeupInfo ?? {}), [best.id]: { dayOfWeek: mkMatch.dayOfWeek, slotNumber: mkMatch.slotNumber, date: mkMatch.date } }
