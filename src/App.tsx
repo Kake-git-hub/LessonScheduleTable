@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.0.0'
+const APP_VERSION = '1.1.0'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -1733,16 +1733,20 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
   const [tab, setTab] = useState<AnalyticsTab>('teacher')
   const dayNames = ['日', '月', '火', '水', '木', '金', '土']
 
-  // Precompute helpers
+  // Precompute helpers (use effective assignments: actual results override planned)
+  const effectiveAssignmentsMap = useMemo(
+    () => buildEffectiveAssignments(data.assignments, data.actualResults),
+    [data.assignments, data.actualResults],
+  )
   const allSlotAssignments = useMemo(() => {
     const entries: { slot: string; assignment: Assignment }[] = []
     for (const slot of slotKeys) {
-      for (const a of data.assignments[slot] ?? []) {
+      for (const a of effectiveAssignmentsMap[slot] ?? []) {
         entries.push({ slot, assignment: a })
       }
     }
     return entries
-  }, [data.assignments, slotKeys])
+  }, [effectiveAssignmentsMap, slotKeys])
 
   const dateSet = useMemo(() => {
     const s = new Set<string>()
@@ -1800,6 +1804,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
 
   // --- Student Analytics ---
   const studentStats = useMemo(() => {
+    const actualResults = data.actualResults ?? {}
     return data.students.filter((s) => s.submittedAt > 0).map((student) => {
       const myAssignments = allSlotAssignments.filter((e) =>
         e.assignment.studentIds.includes(student.id),
@@ -1807,6 +1812,18 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id]).length
       const regularSlots = myAssignments.filter((e) => e.assignment.isRegular).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
+
+      // Count unsatisfied slots: student was in planned assignment but removed from actual result
+      let unsatisfiedSlots = 0
+      for (const slot of slotKeys) {
+        if (!(slot in actualResults)) continue
+        const planned = data.assignments[slot] ?? []
+        const wasPlanned = planned.some((a) => !a.isRegular && a.studentIds.includes(student.id))
+        if (!wasPlanned) continue
+        const actual = actualResults[slot]
+        const isInActual = actual.some((r) => r.studentIds.includes(student.id))
+        if (!isInActual) unsatisfiedSlots++
+      }
 
       // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
       const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
@@ -1833,9 +1850,10 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         attendanceDays: dates.size,
         subjectDetails,
         uniqueTeacherCount: teacherIds.size,
+        unsatisfiedSlots,
       }
     })
-  }, [data, allSlotAssignments])
+  }, [data, allSlotAssignments, slotKeys])
 
   // --- Day of Week Analytics ---
   const dayStats = useMemo(() => {
@@ -1986,6 +2004,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                 <th>希望計</th>
                 <th>割当計</th>
                 <th>充足率</th>
+                <th>不充足</th>
                 <th>科目別（割当/希望）</th>
                 <th>通常</th>
                 <th>出席日数</th>
@@ -2006,6 +2025,13 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                     }}>
                       {ss.fulfillment}%
                     </span>
+                  </td>
+                  <td>
+                    {ss.unsatisfiedSlots > 0 ? (
+                      <span style={{ color: '#dc2626', fontWeight: 600 }}>{ss.unsatisfiedSlots}コマ</span>
+                    ) : (
+                      <span style={{ color: '#6b7280' }}>-</span>
+                    )}
                   </td>
                   <td style={{ fontSize: '0.85em' }}>
                     {ss.subjectDetails.map((sd) => {
@@ -2750,6 +2776,14 @@ const AdminPage = () => {
   const cancelRecording = (): void => {
     setRecordingSlot(null)
     setEditingResults([])
+  }
+
+  const clearActualResults = async (slot: string): Promise<void> => {
+    if (!data) return
+    if (!window.confirm('この実績記録を解除しますか？\n割当は元の計画に戻ります。')) return
+    const nextResults = { ...(data.actualResults ?? {}) }
+    delete nextResults[slot]
+    await persist({ ...data, actualResults: Object.keys(nextResults).length > 0 ? nextResults : undefined })
   }
 
   const updateEditingResult = (idx: number, field: keyof ActualResult, value: string | string[]): void => {
@@ -4148,6 +4182,16 @@ service cloud.firestore {
                             onClick={() => startRecording(slot)}
                           >
                             📝 実績修正
+                          </button>
+                        )}
+                        {isRecorded && recordingSlot !== slot && (
+                          <button
+                            className="btn secondary"
+                            type="button"
+                            style={{ fontSize: '0.7em', padding: '2px 6px', background: '#fee2e2', borderColor: '#fca5a5', color: '#dc2626' }}
+                            onClick={() => void clearActualResults(slot)}
+                          >
+                            🔓 実績解除
                           </button>
                         )}
                         {(!isRecorded || recordingSlot === slot) && (
