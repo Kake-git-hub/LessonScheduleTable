@@ -3847,35 +3847,34 @@ service cloud.firestore {
                       if (!wasPlanned) continue
                       const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
                       if (!isInActual) {
-                        missingFromActual++
-                        // Find the original teacher for this absent slot
+                        // Only count regular (通常) absences, not special course (特別講習) absences
                         const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
-                        if (origAssignment) {
-                          const origTeacherId = origAssignment.teacherId
-                          const [absentDate] = sk.split('_')
-                          // Check future slots after the absence date
-                          const futureCandidates = slotKeys.filter((fs) => {
-                            if (recordedSlotSet.has(fs)) return false
-                            const [fd] = fs.split('_')
-                            if (fd <= absentDate) return false
-                            if (getSlotNumber(fs) === 0) return false
-                            return true
-                          })
-                          const studentAvailSlots = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
-                          const teacherAvailSlots = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, origTeacherId, fs))
-                          const bothAvailSlots = futureCandidates.filter((fs) =>
-                            isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, origTeacherId, fs)
-                          )
-                          if (bothAvailSlots.length === 0) {
-                            if (studentAvailSlots.length === 0 && teacherAvailSlots.length === 0) {
-                              noMakeupReasons.push('no_match')
-                            } else if (studentAvailSlots.length === 0) {
-                              noMakeupReasons.push('no_student')
-                            } else if (teacherAvailSlots.length === 0) {
-                              noMakeupReasons.push('no_teacher')
-                            } else {
-                              noMakeupReasons.push('no_match')
-                            }
+                        if (!origAssignment?.isRegular) continue
+                        missingFromActual++
+                        const origTeacherId = origAssignment.teacherId
+                        const [absentDate] = sk.split('_')
+                        // Check future slots after the absence date
+                        const futureCandidates = slotKeys.filter((fs) => {
+                          if (recordedSlotSet.has(fs)) return false
+                          const [fd] = fs.split('_')
+                          if (fd <= absentDate) return false
+                          if (getSlotNumber(fs) === 0) return false
+                          return true
+                        })
+                        const studentAvailSlots = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
+                        const teacherAvailSlots = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, origTeacherId, fs))
+                        const bothAvailSlots = futureCandidates.filter((fs) =>
+                          isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, origTeacherId, fs)
+                        )
+                        if (bothAvailSlots.length === 0) {
+                          if (studentAvailSlots.length === 0 && teacherAvailSlots.length === 0) {
+                            noMakeupReasons.push('no_match')
+                          } else if (studentAvailSlots.length === 0) {
+                            noMakeupReasons.push('no_student')
+                          } else if (teacherAvailSlots.length === 0) {
+                            noMakeupReasons.push('no_teacher')
+                          } else {
+                            noMakeupReasons.push('no_match')
                           }
                         }
                       }
