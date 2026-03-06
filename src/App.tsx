@@ -28,7 +28,25 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.18'
+const APP_VERSION = '1.3.19'
+
+type StatusDetail = {
+  label: string
+  causes: string[]
+  proposals: string[]
+}
+
+type StatusSection = {
+  key: 'under' | 'makeup' | 'over' | 'shortage' | 'overRemoved'
+  title: string
+  items: StatusDetail[]
+}
+
+type StatusReport = {
+  title: string
+  summary: string
+  sections: StatusSection[]
+}
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2199,6 +2217,8 @@ const AdminPage = () => {
   const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
+  const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
+  const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
@@ -3243,47 +3263,83 @@ const AdminPage = () => {
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
-    const remainingMessage = remainingStudents.length > 0
-      ? `\n\n未充足の生徒:\n${remainingStudents
-          .map((item) => `${item.studentName}: ${item.remaining.map((r) => {
-            const suggestionLines = [
-              ...r.suggestions.teacher,
-              ...r.suggestions.cards,
-              ...r.suggestions.student,
-            ]
-            const suggestionText = suggestionLines.length > 0
-              ? `\n  ${suggestionLines.join('\n  ')}`
-              : `\n  提案候補なし: ${r.suggestions.blockers.length > 0 ? r.suggestions.blockers.join(' / ') : '机数上限や相性不可など他の制約を確認してください'}`
-            return `${r.subject}残${r.remaining}${suggestionText}`
-          }).join('\n')}`)
-          .join('\n')}`
-      : ''
-    const overAssignedMessage = overAssignedStudents.length > 0
-      ? `\n\n過割当の生徒:\n${overAssignedStudents
-          .map((item) => `${item.studentName}: ${item.over.map((r) => `${r.subject}+${r.over}`).join(', ')}`)
-          .join('\n')}`
-      : ''
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
-    const overRemovedMessage = overRemovedEntries.length > 0
-      ? `\n\n過割当解除:\n${overRemovedEntries
-          .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail.replace(/\n/g, ' / ')}`)
-          .join('\n')}`
-      : ''
-    const shortageMessage = shortageEntries.length > 0
-      ? `\n\n講師不足:\n${shortageEntries
-          .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail}`)
-          .join('\n')}`
-      : ''
-    const unplacedMakeupMessage = unplacedMakeupEntries.length > 0
-      ? `\n\n振替未配置:\n${unplacedMakeupEntries
-          .map((item) => `${item.studentName}: ${item.subject}(${item.reason})`)
-          .join('\n')}`
-      : ''
-    if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${overRemovedMessage}${shortageMessage}`)
-    } else {
-      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${overRemovedMessage}${shortageMessage}`)
+    const underSection: StatusSection = {
+      key: 'under',
+      title: '残コマあり',
+      items: remainingStudents.flatMap((item) =>
+        item.remaining.map((r) => ({
+          label: `${item.studentName}: ${r.subject}残${r.remaining}コマ`,
+          causes: r.suggestions.blockers.length > 0 ? r.suggestions.blockers : ['希望コマ数に対して割当が不足'],
+          proposals: [...r.suggestions.teacher, ...r.suggestions.cards, ...r.suggestions.student],
+        })),
+      ),
     }
+    const makeupSection: StatusSection = {
+      key: 'makeup',
+      title: '振替未配置',
+      items: unplacedMakeupEntries.map((item) => {
+        const parts = item.reason.split(' / ').map((x) => x.trim()).filter(Boolean)
+        const causes = parts.filter((p) => !p.startsWith('講師出席追加案:') && !p.startsWith('制約カード:') && !p.startsWith('生徒不可緩和案:') && !p.startsWith('提案候補なし:'))
+        const proposals = parts.filter((p) => p.startsWith('講師出席追加案:') || p.startsWith('制約カード:') || p.startsWith('生徒不可緩和案:'))
+        const noProposal = parts.find((p) => p.startsWith('提案候補なし:'))
+        return {
+          label: `${item.studentName}: ${item.subject}`,
+          causes: causes.length > 0 ? causes : [item.reason],
+          proposals: proposals.length > 0 ? proposals : noProposal ? [noProposal] : [],
+        }
+      }),
+    }
+    const overSection: StatusSection = {
+      key: 'over',
+      title: '過割当',
+      items: overAssignedStudents.flatMap((item) =>
+        item.over.map((r) => {
+          const student = data.students.find((s) => s.name === item.studentName)
+          const matchedSlots = student
+            ? Object.entries(effectiveForCounting)
+                .filter(([, slotAssignments]) => slotAssignments.some((a) => a.studentIds.includes(student.id) && getStudentSubject(a, student.id) === r.subject && !a.isRegular && !a.regularMakeupInfo?.[student.id]))
+                .map(([slot]) => slotLabel(slot, isMendan, mendanStart))
+            : []
+          return {
+            label: `${item.studentName}: ${r.subject} +${r.over}コマ`,
+            causes: [`希望コマ数より ${r.over}コマ多く割り当て済み`],
+            proposals: matchedSlots.length > 0
+              ? [`後ろのコマから調整候補: ${matchedSlots.slice(-r.over).join(', ')}`]
+              : ['自動提案を再実行するか、該当科目の割当を手動で減らしてください'],
+          }
+        }),
+      ),
+    }
+    const shortageSection: StatusSection = {
+      key: 'shortage',
+      title: `${instructorLabel}不足`,
+      items: shortageEntries.map((item) => ({
+        label: slotLabel(item.slot, isMendan, mendanStart),
+        causes: [item.detail],
+        proposals: item.detail.includes('出席不可')
+          ? [`${slotLabel(item.slot, isMendan, mendanStart)} に対応講師の出席可能コマを追加してください`]
+          : item.detail.includes('担当外科目')
+            ? ['担当可能な講師へ差し替えるか、対応講師の出席可能コマを追加してください']
+            : ['講師設定と出席希望を確認してください'],
+      })),
+    }
+    const overRemovedSection: StatusSection = {
+      key: 'overRemoved',
+      title: '過割当解除',
+      items: overRemovedEntries.map((item) => ({
+        label: slotLabel(item.slot, isMendan, mendanStart),
+        causes: item.detail.split('\n').filter(Boolean),
+        proposals: ['必要なら希望コマ数や実績を見直してください'],
+      })),
+    }
+    const report: StatusReport = {
+      title: '自動提案結果',
+      summary: changeLog.length > 0 ? `${changeLog.length}件の変更がありました。` : '変更はありませんでした。',
+      sections: [underSection, makeupSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0),
+    }
+    setLatestStatusReport(report)
+    setStatusModal(report)
 
     } catch (err) {
       console.error('[AutoAssign] Error:', err)
@@ -4228,6 +4284,54 @@ service cloud.firestore {
                 const shortageTooltip = teacherShortages
                   .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)}: ${item.detail}`)
                   .join('\n')
+                const currentSections: StatusSection[] = [
+                  {
+                    key: 'under' as const,
+                    title: '残コマあり',
+                    items: underAssigned.map((s) => {
+                      const causes: string[] = []
+                      const proposals: string[] = []
+                      const missingEntries = Object.entries(s.missingBySubj).filter(([, c]) => c > 0)
+                      if (missingEntries.length > 0) {
+                        causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
+                      }
+                      const specials = s.remaining.filter((r) => r.rem > 0)
+                      if (specials.length > 0) {
+                        causes.push(...specials.map((r) => `特別${r.subj}残${r.rem}コマ`))
+                      }
+                      if (s.noMakeupReasons.includes('no_teacher')) proposals.push('講師の出席可能コマを増やしてください')
+                      if (s.noMakeupReasons.includes('no_student')) proposals.push('生徒の出席不可日・不可コマを減らしてください')
+                      if (s.noMakeupReasons.includes('no_match')) proposals.push('講師出席可能コマと生徒出席可能日が重なるように調整してください')
+                      if (proposals.length === 0) proposals.push('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')
+                      return { label: s.name, causes, proposals }
+                    }),
+                  },
+                  {
+                    key: 'over' as const,
+                    title: '過割当',
+                    items: overAssigned.map((s) => ({
+                      label: s.name,
+                      causes: s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`),
+                      proposals: ['後ろのコマから手動調整するか、自動提案を再実行して過割当解除を確認してください'],
+                    })),
+                  },
+                  {
+                    key: 'shortage' as const,
+                    title: `${instructorLabel}不足`,
+                    items: teacherShortages.map((item) => ({
+                      label: slotLabel(item.slot, isMendan, mendanStart),
+                      causes: [item.detail],
+                      proposals: item.detail.includes('出席不可')
+                        ? [`${slotLabel(item.slot, isMendan, mendanStart)} に対応${instructorLabel}の出席可能コマを追加してください`]
+                        : ['担当可能な講師への差し替え、または出席可能コマの追加を検討してください'],
+                    })),
+                  },
+                ].filter((section) => section.items.length > 0)
+                const currentStatusReport: StatusReport = {
+                  title: '現在のコマ割り状況',
+                  summary: '全員割当以外の項目に対する原因と提案を表示しています。',
+                  sections: currentSections,
+                }
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
                 const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
@@ -4237,19 +4341,19 @@ service cloud.firestore {
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
                     ) : underAssigned.length > 0 ? (
-                      <span className="badge warn" title={underTooltip} style={{ cursor: 'help' }}>
+                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under') })}>
                         残コマあり: {underAssigned.length}名
                       </span>
                     ) : (
                       <span className="badge ok">全員割当完了</span>
                     )}
                     {overAssigned.length > 0 && (
-                      <span className="badge" title={overTooltip} style={{ cursor: 'help', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }}>
+                      <span className="badge" title={overTooltip} style={{ cursor: 'pointer', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'over') })}>
                         過割当: {overAssigned.length}名
                       </span>
                     )}
                     {teacherShortages.length > 0 && (
-                      <span className="badge" title={shortageTooltip} style={{ cursor: 'help', background: '#fff1f2', color: '#be123c', border: '1px solid #fda4af' }}>
+                      <span className="badge" title={shortageTooltip} style={{ cursor: 'pointer', background: '#fff1f2', color: '#be123c', border: '1px solid #fda4af' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'shortage') })}>
                         {instructorLabel}不足: {teacherShortages.length}件
                       </span>
                     )}
@@ -4259,6 +4363,11 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
                 {isMendan ? '自動割当（先着順）' : '自動提案'}
               </button>
+              {latestStatusReport && !autoAssignLoading && (
+                <button className="btn secondary" type="button" onClick={() => setStatusModal(latestStatusReport)}>
+                  結果詳細
+                </button>
+              )}
               <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
                 ↩ 戻す
               </button>
@@ -5050,6 +5159,43 @@ service cloud.firestore {
             </div>
             </div>{/* close loading overlay wrapper */}
           </div>
+          {statusModal && (
+            <div className="status-modal-backdrop" onClick={() => setStatusModal(null)}>
+              <div className="status-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="status-modal-header">
+                  <div>
+                    <h3>{statusModal.title}</h3>
+                    <p>{statusModal.summary}</p>
+                  </div>
+                  <button className="btn secondary" type="button" onClick={() => setStatusModal(null)}>閉じる</button>
+                </div>
+                <div className="status-modal-body">
+                  {statusModal.sections.map((section) => (
+                    <section key={section.key} className="status-section">
+                      <h4>{section.title}</h4>
+                      {section.items.map((item, idx) => (
+                        <div key={`${section.key}-${idx}-${item.label}`} className="status-item-card">
+                          <div className="status-item-title">{item.label}</div>
+                          <div className="status-item-block">
+                            <strong>原因</strong>
+                            <ul>
+                              {item.causes.map((cause, causeIdx) => <li key={causeIdx}>{cause}</li>)}
+                            </ul>
+                          </div>
+                          <div className="status-item-block">
+                            <strong>提案</strong>
+                            <ul>
+                              {(item.proposals.length > 0 ? item.proposals : ['提案候補なし']).map((proposal, proposalIdx) => <li key={proposalIdx}>{proposal}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                      ))}
+                    </section>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
 
