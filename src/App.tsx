@@ -24,11 +24,11 @@ import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel }
 import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
-import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
+import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.22'
+const APP_VERSION = '1.3.23'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -36,13 +36,22 @@ type ForceAssignAction = {
   teacherId: string
   studentId: string
   subject: string
+  assignmentStudentIds?: string[]
+  assignmentStudentSubjects?: Record<string, string>
   makeupInfo?: { dayOfWeek: number; slotNumber: number; date?: string }
   substituteInfo?: { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }
+}
+
+type StatusProposalChoice = {
+  value: string
+  label: string
+  action: ForceAssignAction
 }
 
 type StatusProposal = {
   label: string
   action?: ForceAssignAction
+  choices?: StatusProposalChoice[]
 }
 
 type StatusDetail = {
@@ -80,21 +89,55 @@ type PlacementAnalysis = {
   blockers: string[]
 }
 
-const toStatusProposal = (label: string, action?: ForceAssignAction): StatusProposal => ({ label, ...(action ? { action } : {}) })
+const toStatusProposal = (label: string, action?: ForceAssignAction, choices?: StatusProposalChoice[]): StatusProposal => ({ label, ...(action ? { action } : {}), ...(choices && choices.length > 0 ? { choices } : {}) })
 
 const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] => {
   const seen = new Set<string>()
   const unique: StatusProposal[] = []
   for (const proposal of proposals) {
     const actionKey = proposal.action
-      ? `${proposal.action.type}|${proposal.action.slot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.makeupInfo?.dayOfWeek ?? ''}|${proposal.action.makeupInfo?.slotNumber ?? ''}|${proposal.action.makeupInfo?.date ?? ''}`
+      ? `${proposal.action.type}|${proposal.action.slot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds?.join(',') ?? ''}|${proposal.action.makeupInfo?.dayOfWeek ?? ''}|${proposal.action.makeupInfo?.slotNumber ?? ''}|${proposal.action.makeupInfo?.date ?? ''}`
       : ''
-    const key = `${proposal.label}|${actionKey}`
+    const choiceKey = proposal.choices?.map((choice) => `${choice.value}:${choice.label}:${choice.action.teacherId}`).join('|') ?? ''
+    const key = `${proposal.label}|${actionKey}|${choiceKey}`
     if (seen.has(key)) continue
     seen.add(key)
     unique.push(proposal)
   }
   return unique
+}
+
+const sameStudentSet = (left: string[], right: string[]): boolean => {
+  if (left.length !== right.length) return false
+  const leftSorted = [...left].sort()
+  const rightSorted = [...right].sort()
+  return leftSorted.every((id, index) => id === rightSorted[index])
+}
+
+const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?: Set<string>): SessionData | null => {
+  if (current.settings.sessionType === 'mendan') return null
+
+  let changed = false
+  const nextAssignments: Record<string, Assignment[]> = {}
+  for (const [slot, slotAssignments] of Object.entries(current.assignments)) {
+    nextAssignments[slot] = slotAssignments.map((assignment) => {
+      if (assignment.isRegular || assignment.isGroupLesson || !assignment.teacherId) return assignment
+      if (teacherIds && !teacherIds.has(assignment.teacherId)) return assignment
+
+      const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
+      if (!teacher || hasAvailability(current.availability, 'teacher', teacher.id, slot)) return assignment
+
+      changed = true
+      return {
+        ...assignment,
+        teacherId: '',
+        teacherUnassignedReason: `${teacher.name} が出席不可のため講師未割当`,
+      }
+    })
+  }
+
+  if (!changed) return null
+  return { ...current, assignments: nextAssignments }
 }
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
@@ -2276,38 +2319,13 @@ const AdminPage = () => {
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
+  const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
   const [constraintEditStudentId, setConstraintEditStudentId] = useState<string | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
-
-  const releaseUnavailableTeacherAssignments = useCallback((current: SessionData, teacherIds?: Set<string>): SessionData | null => {
-    if (current.settings.sessionType === 'mendan') return null
-
-    let changed = false
-    const nextAssignments: Record<string, Assignment[]> = {}
-    for (const [slot, slotAssignments] of Object.entries(current.assignments)) {
-      nextAssignments[slot] = slotAssignments.map((assignment) => {
-        if (assignment.isRegular || assignment.isGroupLesson || !assignment.teacherId) return assignment
-        if (teacherIds && !teacherIds.has(assignment.teacherId)) return assignment
-
-        const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
-        if (!teacher || hasAvailability(current.availability, 'teacher', teacher.id, slot)) return assignment
-
-        changed = true
-        return {
-          ...assignment,
-          teacherId: '',
-          teacherUnassignedReason: `${teacher.name} が出席不可のため講師未割当`,
-        }
-      })
-    }
-
-    if (!changed) return null
-    return { ...current, assignments: nextAssignments }
-  }, [])
 
   // Sync master data (regularLessons, constraints) into session on first load
   useEffect(() => {
@@ -2398,7 +2416,7 @@ const AdminPage = () => {
       }, 3000)
       return () => clearTimeout(timer)
     }
-  }, [classroomId, data, releaseUnavailableTeacherAssignments, sessionId])
+  }, [classroomId, data, sessionId])
   const buildInputUrl = (personType: PersonType, personId: string): string => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
     return `${base}/#/c/${classroomId}/availability/${sessionId}/${personType}/${personId}`
@@ -3313,17 +3331,161 @@ const AdminPage = () => {
     return analyzePlacementOptions(assignmentState, effectiveAssignments, availableSlots, student, subject, compatibleTeachers)
   }
 
+  type TeacherShortageItem = {
+    slot: string
+    assignment: Assignment
+    detail: string
+  }
+
+  const collectTeacherShortageItems = (assignmentState: Record<string, Assignment[]>): TeacherShortageItem[] => {
+    if (!data) return []
+    const shortages: TeacherShortageItem[] = []
+    for (const [slot, slotAssignments] of Object.entries(assignmentState)) {
+      for (const assignment of slotAssignments) {
+        if (assignment.isRegular || assignment.isGroupLesson || assignment.studentIds.length === 0) continue
+
+        if (!assignment.teacherId) {
+          shortages.push({ slot, assignment, detail: assignment.teacherUnassignedReason ?? '講師未割当' })
+          continue
+        }
+
+        const teacher = data.teachers.find((item) => item.id === assignment.teacherId)
+        if (!teacher) {
+          shortages.push({ slot, assignment, detail: `講師ID ${assignment.teacherId} が未登録` })
+          continue
+        }
+
+        if (!hasAvailability(data.availability, 'teacher', teacher.id, slot)) {
+          shortages.push({ slot, assignment, detail: `${teacher.name} が出席不可` })
+          continue
+        }
+
+        const subjectMismatches = assignment.studentIds.flatMap((sid) => {
+          const student = data.students.find((item) => item.id === sid)
+          if (!student) return []
+          const subj = assignment.studentSubjects?.[sid] ?? assignment.subject
+          return subj && !canTeachSubject(teacher.subjects, student.grade, subj)
+            ? [`${teacher.name} の担当外科目(${subj}) - ${student.name}`]
+            : []
+        })
+        if (subjectMismatches.length > 0) {
+          shortages.push({ slot, assignment, detail: subjectMismatches.join(' / ') })
+        }
+      }
+    }
+    return shortages
+  }
+
+  const rankTeacherForShortage = (assignmentState: Record<string, Assignment[]>, teacherId: string, slot: string): [number, number, string] => {
+    const [date] = slot.split('_')
+    const targetSlotNum = getSlotNumber(slot)
+    const sameDayAssignedSlots = Object.entries(assignmentState)
+      .filter(([sk, slotAssignments]) => sk.startsWith(`${date}_`) && slotAssignments.some((assignment) => assignment.teacherId === teacherId))
+      .map(([sk]) => getSlotNumber(sk))
+    const nearestDistance = sameDayAssignedSlots.length > 0
+      ? Math.min(...sameDayAssignedSlots.map((slotNum) => Math.abs(slotNum - targetSlotNum)))
+      : Number.MAX_SAFE_INTEGER
+    const teacherName = data?.teachers.find((teacher) => teacher.id === teacherId)?.name ?? teacherId
+    return [sameDayAssignedSlots.length > 0 ? 0 : 1, nearestDistance, teacherName]
+  }
+
+  const buildTeacherShortageProposals = (assignmentState: Record<string, Assignment[]>, item: TeacherShortageItem): StatusProposal[] => {
+    if (!data || isMendan) return [toStatusProposal('講師設定と出席希望を確認してください')]
+
+    const slotAssignments = assignmentState[item.slot] ?? []
+    const usedTeacherIds = new Set(slotAssignments.filter((assignment) => assignment !== item.assignment).map((assignment) => assignment.teacherId).filter(Boolean))
+    const students = item.assignment.studentIds
+      .map((sid) => data.students.find((student) => student.id === sid))
+      .filter(Boolean) as Student[]
+    if (students.length === 0) return [toStatusProposal('講師設定と出席希望を確認してください')]
+
+    const compatibleTeachers = data.teachers.filter((teacher) => {
+      if (usedTeacherIds.has(teacher.id)) return false
+      return students.every((student) => {
+        if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
+        const subject = item.assignment.studentSubjects?.[student.id] ?? item.assignment.subject
+        return canTeachSubject(teacher.subjects, student.grade, subject)
+      })
+    })
+
+    const orderedCompatibleTeachers = [...compatibleTeachers].sort((left, right) => {
+      const leftRank = rankTeacherForShortage(assignmentState, left.id, item.slot)
+      const rightRank = rankTeacherForShortage(assignmentState, right.id, item.slot)
+      if (leftRank[0] !== rightRank[0]) return leftRank[0] - rightRank[0]
+      if (leftRank[1] !== rightRank[1]) return leftRank[1] - rightRank[1]
+      return leftRank[2].localeCompare(rightRank[2], 'ja')
+    })
+
+    const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasAvailability(data.availability, 'teacher', teacher.id, item.slot))
+    if (availableCandidates.length > 0) {
+      return [toStatusProposal(
+        '通常代行候補',
+        undefined,
+        availableCandidates.map((teacher) => ({
+          value: teacher.id,
+          label: teacher.name,
+          action: {
+            type: 'force-assign',
+            slot: item.slot,
+            teacherId: teacher.id,
+            studentId: item.assignment.studentIds[0] ?? '',
+            subject: item.assignment.subject,
+            assignmentStudentIds: [...item.assignment.studentIds],
+            ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
+          },
+        })),
+      )]
+    }
+
+    if (orderedCompatibleTeachers.length > 0) {
+      const adjustmentLabels = orderedCompatibleTeachers.slice(0, 8).map((teacher) => {
+        const [date] = item.slot.split('_')
+        const sameDaySlots = Object.entries(assignmentState)
+          .filter(([sk, slotAssignments]) => sk.startsWith(`${date}_`) && slotAssignments.some((assignment) => assignment.teacherId === teacher.id))
+          .map(([sk]) => slotLabel(sk, isMendan, mendanStart))
+        return sameDaySlots.length > 0
+          ? `${teacher.name}(${sameDaySlots.join('、')})`
+          : teacher.name
+      })
+      return [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
+    }
+
+    return [toStatusProposal('担当可能な講師候補なし: 講師科目設定または出席可能コマを確認してください')]
+  }
+
+  const buildShortageOnlyReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
+    const shortageItems = collectTeacherShortageItems(assignmentState)
+    if (shortageItems.length === 0) return null
+    return {
+      title: '現在のコマ割り状況',
+      summary: '講師未割当のペアが残っています。',
+      sections: [{
+        key: 'shortage',
+        title: `${instructorLabel}不足`,
+        items: shortageItems.map((item) => ({
+          label: slotLabel(item.slot, isMendan, mendanStart),
+          causes: [item.detail],
+          proposals: buildTeacherShortageProposals(assignmentState, item),
+        })),
+      }],
+    }
+  }
+
   const applyForceAssignAction = async (proposal: ForceAssignAction): Promise<void> => {
     if (!data) return
     let success = false
     let errorMessage = ''
-    const studentName = data.students.find((s) => s.id === proposal.studentId)?.name ?? proposal.studentId
+    let remainingShortageReport: StatusReport | null = null
+    const actionStudentIds = proposal.assignmentStudentIds ?? [proposal.studentId]
+    const studentName = actionStudentIds
+      .map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid)
+      .join(' / ')
     const teacherName = data.teachers.find((t) => t.id === proposal.teacherId)?.name ?? proposal.teacherId
 
     await updateAssignments((current) => {
-      const student = current.students.find((s) => s.id === proposal.studentId)
+      const students = actionStudentIds.map((sid) => current.students.find((s) => s.id === sid)).filter(Boolean) as Student[]
       const teacher = current.teachers.find((t) => t.id === proposal.teacherId)
-      if (!student || !teacher) {
+      if (students.length !== actionStudentIds.length || !teacher) {
         errorMessage = '生徒または講師が見つからないため、強制割当できませんでした。'
         return current
       }
@@ -3331,59 +3493,82 @@ const AdminPage = () => {
         errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
         return current
       }
-      if (!isStudentAvailable(student, proposal.slot)) {
-        errorMessage = `${student.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
-        return current
+      for (const student of students) {
+        if (!isStudentAvailable(student, proposal.slot)) {
+          errorMessage = `${student.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
+          return current
+        }
       }
 
       const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
-      if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) {
-        errorMessage = `${student.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} に割当済みです。`
-        return current
-      }
+      if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
+        const targetIndex = slotAssignments.findIndex((assignment) => !assignment.teacherId && !assignment.isGroupLesson && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds!))
+        if (targetIndex < 0) {
+          errorMessage = '講師未割当の対象ペアが見つからないため、代行割当できませんでした。'
+          return current
+        }
+        if (slotAssignments.some((assignment, index) => index !== targetIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)) {
+          errorMessage = `${teacher.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} で別ペアに割当済みです。`
+          return current
+        }
 
-      const targetIndex = slotAssignments.findIndex((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-      if (targetIndex >= 0) {
         const targetAssignment = slotAssignments[targetIndex]
-        if (targetAssignment.studentIds.length >= 2) {
-          errorMessage = `${teacher.name} のペアは既に満席です。`
-          return current
-        }
-        if (targetAssignment.studentIds.some((sid) => constraintFor(current.constraints, sid, proposal.studentId) === 'incompatible')) {
-          errorMessage = `${teacher.name} の既存ペアには相性不可の生徒がいるため、強制割当できません。`
-          return current
-        }
-        const nextStudentIds = [...targetAssignment.studentIds, proposal.studentId]
-        const nextStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}), [proposal.studentId]: proposal.subject }
-        const primarySubject = nextStudentSubjects[nextStudentIds[0]] ?? targetAssignment.subject ?? proposal.subject
-        const nextMakeupInfo = proposal.makeupInfo
-          ? { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo }
-          : targetAssignment.regularMakeupInfo
-        const nextSubstituteInfo = proposal.substituteInfo
-          ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo }
-          : targetAssignment.regularSubstituteInfo
         slotAssignments[targetIndex] = {
           ...targetAssignment,
-          studentIds: nextStudentIds,
-          subject: primarySubject,
-          studentSubjects: nextStudentSubjects,
-          ...(nextMakeupInfo ? { regularMakeupInfo: nextMakeupInfo } : {}),
-          ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
+          teacherId: proposal.teacherId,
+          subject: proposal.subject,
+          ...(proposal.assignmentStudentSubjects ? { studentSubjects: { ...proposal.assignmentStudentSubjects } } : {}),
+          teacherUnassignedReason: undefined,
         }
       } else {
-        const deskCount = current.settings.deskCount ?? 0
-        if (deskCount > 0 && slotAssignments.length >= deskCount) {
-          errorMessage = '机数上限のため、強制割当できません。'
+        if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) {
+          errorMessage = `${studentName} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} に割当済みです。`
           return current
         }
-        slotAssignments.push({
-          teacherId: proposal.teacherId,
-          studentIds: [proposal.studentId],
-          subject: proposal.subject,
-          studentSubjects: { [proposal.studentId]: proposal.subject },
-          ...(proposal.makeupInfo ? { regularMakeupInfo: { [proposal.studentId]: proposal.makeupInfo } } : {}),
-          ...(proposal.substituteInfo ? { regularSubstituteInfo: { [proposal.studentId]: proposal.substituteInfo } } : {}),
-        })
+
+        const targetIndex = slotAssignments.findIndex((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
+        if (targetIndex >= 0) {
+          const targetAssignment = slotAssignments[targetIndex]
+          if (targetAssignment.studentIds.length >= 2) {
+            errorMessage = `${teacher.name} のペアは既に満席です。`
+            return current
+          }
+          if (targetAssignment.studentIds.some((sid) => constraintFor(current.constraints, sid, proposal.studentId) === 'incompatible')) {
+            errorMessage = `${teacher.name} の既存ペアには相性不可の生徒がいるため、強制割当できません。`
+            return current
+          }
+          const nextStudentIds = [...targetAssignment.studentIds, proposal.studentId]
+          const nextStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}), [proposal.studentId]: proposal.subject }
+          const primarySubject = nextStudentSubjects[nextStudentIds[0]] ?? targetAssignment.subject ?? proposal.subject
+          const nextMakeupInfo = proposal.makeupInfo
+            ? { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo }
+            : targetAssignment.regularMakeupInfo
+          const nextSubstituteInfo = proposal.substituteInfo
+            ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo }
+            : targetAssignment.regularSubstituteInfo
+          slotAssignments[targetIndex] = {
+            ...targetAssignment,
+            studentIds: nextStudentIds,
+            subject: primarySubject,
+            studentSubjects: nextStudentSubjects,
+            ...(nextMakeupInfo ? { regularMakeupInfo: nextMakeupInfo } : {}),
+            ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
+          }
+        } else {
+          const deskCount = current.settings.deskCount ?? 0
+          if (deskCount > 0 && slotAssignments.length >= deskCount) {
+            errorMessage = '机数上限のため、強制割当できません。'
+            return current
+          }
+          slotAssignments.push({
+            teacherId: proposal.teacherId,
+            studentIds: [proposal.studentId],
+            subject: proposal.subject,
+            studentSubjects: { [proposal.studentId]: proposal.subject },
+            ...(proposal.makeupInfo ? { regularMakeupInfo: { [proposal.studentId]: proposal.makeupInfo } } : {}),
+            ...(proposal.substituteInfo ? { regularSubstituteInfo: { [proposal.studentId]: proposal.substituteInfo } } : {}),
+          })
+        }
       }
 
       success = true
@@ -3395,7 +3580,7 @@ const AdminPage = () => {
         if ((proposal.makeupInfo || proposal.substituteInfo) && item.teacherId !== (proposal.substituteInfo?.regularTeacherId ?? proposal.teacherId)) return true
         return false
       })
-      return {
+      const nextCurrent = {
         ...current,
         assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
         autoAssignHighlights: {
@@ -3404,6 +3589,8 @@ const AdminPage = () => {
           unplacedMakeup: filteredUnplacedMakeup,
         },
       }
+      remainingShortageReport = buildShortageOnlyReport(nextCurrent.assignments)
+      return nextCurrent
     })
 
     if (errorMessage) {
@@ -3411,8 +3598,12 @@ const AdminPage = () => {
       return
     }
     if (success) {
-      setLatestStatusReport(null)
-      setStatusModal(null)
+      if (remainingShortageReport) {
+        setStatusModal(remainingShortageReport)
+      } else {
+        setLatestStatusReport(null)
+        setStatusModal(null)
+      }
       alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
     }
   }
@@ -3546,7 +3737,7 @@ const AdminPage = () => {
       })
       .filter(Boolean) as { studentName: string; over: { subject: string; over: number }[] }[]
 
-    const shortageEntries = collectTeacherShortages(data, nextAssignments)
+    const shortageEntries = collectTeacherShortageItems(nextAssignments)
 
     // Build unplaced makeup message with reasons
     const pendingMakeupDemands = collectPendingMakeupDemands(nextAssignments)
@@ -3749,11 +3940,7 @@ const AdminPage = () => {
       items: shortageEntries.map((item) => ({
         label: slotLabel(item.slot, isMendan, mendanStart),
         causes: [item.detail],
-        proposals: item.detail.includes('出席不可')
-          ? [toStatusProposal(`${slotLabel(item.slot, isMendan, mendanStart)} に対応講師の出席可能コマを追加してください`)]
-          : item.detail.includes('担当外科目')
-            ? [toStatusProposal('担当可能な講師へ差し替えるか、対応講師の出席可能コマを追加してください')]
-            : [toStatusProposal('講師設定と出席希望を確認してください')],
+        proposals: buildTeacherShortageProposals(nextAssignments, item),
       })),
     }
     const overRemovedSection: StatusSection = {
@@ -4775,7 +4962,7 @@ service cloud.firestore {
                 const missingTotal = (s: { missingBySubj: Record<string, number> }) => Object.values(s.missingBySubj).reduce((a, b) => a + b, 0)
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
-                const teacherShortages = collectTeacherShortages(data, effAssignments)
+                const teacherShortages = collectTeacherShortageItems(effAssignments)
 
                 const underTooltip = underAssigned
                   .map((s) => {
@@ -4870,9 +5057,7 @@ service cloud.firestore {
                     items: teacherShortages.map((item) => ({
                       label: slotLabel(item.slot, isMendan, mendanStart),
                       causes: [item.detail],
-                      proposals: item.detail.includes('出席不可')
-                        ? [toStatusProposal(`${slotLabel(item.slot, isMendan, mendanStart)} に対応${instructorLabel}の出席可能コマを追加してください`)]
-                        : [toStatusProposal('担当可能な講師への差し替え、または出席可能コマの追加を検討してください')],
+                      proposals: buildTeacherShortageProposals(effAssignments, item),
                     })),
                   },
                 ].filter((section) => section.items.length > 0)
@@ -5746,7 +5931,31 @@ service cloud.firestore {
                             <ul>
                               {(item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')]).map((proposal, proposalIdx) => (
                                 <li key={proposalIdx}>
-                                  {proposal.action ? (
+                                  {proposal.choices && proposal.choices.length > 0 ? (() => {
+                                    const choiceKey = `${section.key}:${item.label}:${proposalIdx}:${proposal.label}`
+                                    const selectedValue = proposalSelections[choiceKey] ?? proposal.choices[0]?.value ?? ''
+                                    const selectedChoice = proposal.choices.find((choice) => choice.value === selectedValue) ?? proposal.choices[0]
+                                    return (
+                                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        <span>{proposal.label}</span>
+                                        <select
+                                          value={selectedValue}
+                                          onChange={(e) => setProposalSelections((prev) => ({ ...prev, [choiceKey]: e.target.value }))}
+                                        >
+                                          {proposal.choices.map((choice) => (
+                                            <option key={choice.value} value={choice.value}>{choice.label}</option>
+                                          ))}
+                                        </select>
+                                        <button
+                                          className="status-proposal-action"
+                                          type="button"
+                                          onClick={() => selectedChoice && void applyForceAssignAction(selectedChoice.action)}
+                                        >
+                                          実行
+                                        </button>
+                                      </div>
+                                    )
+                                  })() : proposal.action ? (
                                     <button
                                       className="status-proposal-action"
                                       type="button"
@@ -5895,7 +6104,8 @@ const TeacherInputPage = ({
       },
       submissionLog: [...(data.submissionLog ?? []), logEntry],
     }
-    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
+    const normalizedNext = releaseUnavailableTeacherAssignments(next, new Set([teacher.id])) ?? next
+    saveSession(classroomId, sessionId, normalizedNext).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const availCount = availabilityArray.length
     const personTypeLabel = personKeyPrefix === 'manager' ? '講師' : '講師'
