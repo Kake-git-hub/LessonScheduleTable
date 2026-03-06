@@ -98,8 +98,7 @@ export const buildIncrementalAutoAssignments = async (
   }
 
   const markChangedPair = (slot: string, assignment: Assignment, detail: string): void => {
-    if (assignment.isRegular) return
-    if (!hasMeaningfulManualAssignment(assignment)) return
+    if (!hasMeaningfulManualAssignment(assignment) && !assignment.isRegular) return
     if (!changedPairSigSetBySlot[slot]) changedPairSigSetBySlot[slot] = new Set<string>()
     const sig = assignmentSignature(assignment)
     changedPairSigSetBySlot[slot].add(sig)
@@ -119,7 +118,6 @@ export const buildIncrementalAutoAssignments = async (
     }
   }
   const markMakeupPair = (slot: string, assignment: Assignment, detail?: string): void => {
-    if (assignment.isRegular) return
     if (!makeupPairSigSetBySlot[slot]) makeupPairSigSetBySlot[slot] = new Set<string>()
     const sig = assignmentSignature(assignment)
     makeupPairSigSetBySlot[slot].add(sig)
@@ -478,8 +476,13 @@ export const buildIncrementalAutoAssignments = async (
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand or makeup need
         const [slotDate] = slot.split('_')
+        // On re-assign for regular pairs with existing students, only allow makeup students (not general unfulfilled demand)
+        const requireMakeup = !isInitialAssignment && assignment.isRegular && assignment.studentIds.length > 0
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
+          if (requireMakeup) {
+            return hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
+          }
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
           return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
