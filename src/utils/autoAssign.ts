@@ -133,9 +133,11 @@ export const buildIncrementalAutoAssignments = async (
   const result: Record<string, Assignment[]> = {}
 
   // Pre-compute makeup student info: for each regular-lesson student, which regular slots are unavailable
-  // Stores per-student array of { teacherId, dayOfWeek, slotNumber, date, subject } for each unavailable regular slot
-  // Also includes regular students who were removed from actual results (absent in reality)
-  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number; date: string; subject: string }>>()
+  // Stores per-student array of { teacherId, dayOfWeek, slotNumber, date, subject, absentDate? } for each unavailable regular slot
+  // Also includes students who were removed from actual results (absent in reality) — both regular and makeup
+  // absentDate is set for actual-result-based absences so makeup is only placed on later dates
+  type MakeupInfo = { teacherId: string; dayOfWeek: number; slotNumber: number; date: string; subject: string; absentDate?: string }
+  const makeupStudentInfo = new Map<string, MakeupInfo[]>()
   // Build a set of ALL slot keys (including recorded) for regular-lesson matching
   const allSlotKeys = [...new Set([...slots, ...Object.keys(data.actualResults ?? {})])]
   for (const rl of data.regularLessons) {
@@ -156,7 +158,7 @@ export const buildIncrementalAutoAssignments = async (
             && !actualForSlot.some((r) => r.studentIds.includes(sid))
           if (needsMakeup || absentFromActual) {
             const arr = makeupStudentInfo.get(sid) ?? []
-            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date, subject: rlSubject })
+            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date, subject: rlSubject, ...(absentFromActual ? { absentDate: date } : {}) })
             makeupStudentInfo.set(sid, arr)
           }
         }
@@ -164,11 +166,41 @@ export const buildIncrementalAutoAssignments = async (
     }
   }
 
+  // Case 3: Detect makeup assignments (non-regular with regularMakeupInfo) where student was absent from actual results
+  // These generate new makeup demand, just like regular lesson absences
+  if (data.actualResults) {
+    for (const [slot, actualResults] of Object.entries(data.actualResults)) {
+      const origAssignments = data.assignments[slot] ?? []
+      for (const orig of origAssignments) {
+        if (orig.isRegular || !orig.regularMakeupInfo) continue
+        for (const sid of orig.studentIds) {
+          if (!orig.regularMakeupInfo[sid]) continue // only students who were makeup
+          // Check if this student is absent from actual results in this slot
+          const studentInActual = actualResults.some((r) => r.studentIds.includes(sid))
+          if (studentInActual) continue
+          // Student was absent from their makeup slot — generate new makeup demand
+          const [absentDate] = slot.split('_')
+          const mkInfo = orig.regularMakeupInfo[sid]
+          const subject = orig.studentSubjects?.[sid] ?? orig.subject
+          const arr = makeupStudentInfo.get(sid) ?? []
+          arr.push({ teacherId: orig.teacherId, dayOfWeek: mkInfo.dayOfWeek, slotNumber: mkInfo.slotNumber, date: mkInfo.date ?? absentDate, subject, absentDate })
+          makeupStudentInfo.set(sid, arr)
+        }
+      }
+    }
+  }
+
   // Helper: check if student has remaining makeup demand for a specific teacher and subject
-  const hasMakeupForTeacher = (studentId: string, teacherId: string, baseSubj: string): boolean => {
+  // targetDate restricts actual-result-based absences to only match slots AFTER the absence date
+  const hasMakeupForTeacher = (studentId: string, teacherId: string, baseSubj: string, targetDate?: string): boolean => {
     const mkInfos = makeupStudentInfo.get(studentId)
     if (!mkInfos) return false
-    return mkInfos.some((mk) => mk.teacherId === teacherId && mk.subject === baseSubj)
+    return mkInfos.some((mk) => {
+      if (mk.teacherId !== teacherId || mk.subject !== baseSubj) return false
+      // For actual-result absences, only allow placement on dates strictly after the absence
+      if (mk.absentDate && targetDate && targetDate <= mk.absentDate) return false
+      return true
+    })
   }
 
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
@@ -426,11 +458,12 @@ export const buildIncrementalAutoAssignments = async (
         // Check student-student constraints with existing students in this assignment
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand or makeup need
+        const [slotDate] = slot.split('_')
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
-          return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj)
+          return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
         })
       })
 
@@ -441,11 +474,12 @@ export const buildIncrementalAutoAssignments = async (
           return bRem - aRem
         })[0]
         // Pick the best viable subject for this new student
+        const [bestSlotDate] = slot.split('_')
         const bestSubj = teachableBaseSubjects(teacher.subjects, best.grade).find((baseSubj) => {
           if (!best.subjects.includes(baseSubj)) return false
           const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
-          return allocated < requested || hasMakeupForTeacher(best.id, teacher.id, baseSubj)
+          return allocated < requested || hasMakeupForTeacher(best.id, teacher.id, baseSubj, bestSlotDate)
         }) ?? assignment.subject
         // Reconstruct studentSubjects
         const studentSubjects: Record<string, string> = {}
@@ -457,7 +491,8 @@ export const buildIncrementalAutoAssignments = async (
         assignment.studentSubjects = studentSubjects
         // Check if this is a makeup student being added to their regular teacher
         const mkInfos = makeupStudentInfo.get(best.id)
-        const mkMatch = mkInfos?.find(mk => mk.teacherId === teacher.id && mk.subject === bestSubj)
+        const [mkDate2] = slot.split('_')
+        const mkMatch = mkInfos?.find(mk => mk.teacherId === teacher.id && mk.subject === bestSubj && (!mk.absentDate || mkDate2 > mk.absentDate))
         if (mkMatch) {
           // Set regularMakeupInfo so ★ badge appears
           assignment.regularMakeupInfo = { ...(assignment.regularMakeupInfo ?? {}), [best.id]: { dayOfWeek: mkMatch.dayOfWeek, slotNumber: mkMatch.slotNumber, date: mkMatch.date } }
@@ -605,7 +640,7 @@ export const buildIncrementalAutoAssignments = async (
           combo.every((student) => {
             const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
             const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
-            return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj)
+            return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, currentDate)
           }),
         )
 
@@ -625,13 +660,13 @@ export const buildIncrementalAutoAssignments = async (
             if (!s1.subjects.includes(baseSubj)) return false
             const req = (s1.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
-            return alloc < req || hasMakeupForTeacher(s1.id, teacher.id, baseSubj)
+            return alloc < req || hasMakeupForTeacher(s1.id, teacher.id, baseSubj, currentDate)
           })
           const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
             if (!s2.subjects.includes(baseSubj)) return false
             const req = (s2.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
-            return alloc < req || hasMakeupForTeacher(s2.id, teacher.id, baseSubj)
+            return alloc < req || hasMakeupForTeacher(s2.id, teacher.id, baseSubj, currentDate)
           })
           // Only add mixed plans where subjects actually differ
           for (const subj1 of s1Viable) {
@@ -761,14 +796,14 @@ export const buildIncrementalAutoAssignments = async (
         // Check if any student is a makeup student assigned to their regular teacher
         const makeupSids = a.studentIds.filter((sid) => {
           const mkInfos = makeupStudentInfo.get(sid)
-          return mkInfos && mkInfos.length > 0 && mkInfos.some(mk => mk.teacherId === a.teacherId)
+          return mkInfos && mkInfos.length > 0 && mkInfos.some(mk => mk.teacherId === a.teacherId && (!mk.absentDate || currentDate > mk.absentDate))
         })
         if (makeupSids.length > 0) {
           // Set regularMakeupInfo so the ★ badge appears alongside 振替
           const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(a.regularMakeupInfo ?? {}) }
           for (const sid of makeupSids) {
             const mkInfos = makeupStudentInfo.get(sid)!
-            const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId)
+            const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId && (!mk.absentDate || currentDate > mk.absentDate))
             if (matchIdx >= 0) {
               const match = mkInfos[matchIdx]
               regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber, date: match.date }
