@@ -3499,7 +3499,7 @@ const AdminPage = () => {
         ...analysis.force,
         ...analysis.teacher,
         ...analysis.student,
-        ...analysis.cards,
+        ...(analysis.force.length === 0 ? analysis.cards : []),
       ])
       const causes = [reason, ...analysis.blockers]
       if (proposals.length > 0) {
@@ -3544,7 +3544,7 @@ const AdminPage = () => {
             ...r.suggestions.force,
             ...r.suggestions.teacher,
             ...r.suggestions.student,
-            ...r.suggestions.cards,
+            ...(r.suggestions.force.length === 0 ? r.suggestions.cards : []),
           ]),
         })),
       ),
@@ -4630,7 +4630,7 @@ service cloud.firestore {
                       if (currentStudent) {
                         for (const special of specials) {
                           const analysis = buildRemainingSuggestions(data.assignments, effAssignments, currentAvailableSlotKeys, currentStudent, special.subj)
-                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...analysis.cards)
+                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 ? analysis.cards : []))
                         }
                         const studentMakeups = currentPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
                         for (const demand of studentMakeups) {
@@ -4648,7 +4648,7 @@ service cloud.firestore {
                               makeupDemand: demand,
                             },
                           )
-                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...analysis.cards)
+                          proposalPool.push(...analysis.force, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 ? analysis.cards : []))
                         }
                       }
                       if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
