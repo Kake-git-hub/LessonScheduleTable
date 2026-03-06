@@ -3056,8 +3056,8 @@ const AdminPage = () => {
     if (!data) return { force: [], teacher: [], student: [], cards: [], blockers: [] }
 
     const forceSuggestions = new Map<string, StatusProposal>()
-    const teacherSuggestions = new Set<string>()
-    const studentSuggestions = new Set<string>()
+    const teacherSuggestions = new Map<string, { teacherName: string; subject: string; slots: string[] }>()
+    const studentSuggestions = new Map<string, { teacherName: string; subject: string; slots: string[] }>()
     const cardSuggestions = new Map<string, StatusProposal>()
     const blockerReasons = new Set<string>()
     const deskLimit = data.settings.deskCount ?? 0
@@ -3117,10 +3117,22 @@ const AdminPage = () => {
         }
 
         if (!teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
-          teacherSuggestions.add(`講師出席追加案: ${teacher.name} を ${slotLabel(slot, isMendan, mendanStart)} 出席可にすると ${subject} を追加候補`)
+          const key = `${teacher.id}|${subject}`
+          const existing = teacherSuggestions.get(key)
+          if (existing) {
+            existing.slots.push(slotLabel(slot, isMendan, mendanStart))
+          } else {
+            teacherSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
+          }
         }
         if (teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
-          studentSuggestions.add(`生徒出席緩和案: ${slotLabel(slot, isMendan, mendanStart)} を出席可にすると 講師(${teacher.name}) で ${subject} を追加候補`)
+          const key = `${teacher.id}|${subject}`
+          const existing = studentSuggestions.get(key)
+          if (existing) {
+            existing.slots.push(slotLabel(slot, isMendan, mendanStart))
+          } else {
+            studentSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
+          }
         }
         if (teacherAvailable && studentAvailable && evalResult.blocked) {
           const suggestion = buildConstraintSuggestion(student, evalResult.blockReason ?? '', slot, teacher.name)
@@ -3136,10 +3148,23 @@ const AdminPage = () => {
       }
     }
 
+    const force = [...forceSuggestions.values()]
+      .sort((a, b) => {
+        const aExisting = a.label.includes('既存ペアへ追加') ? 0 : 1
+        const bExisting = b.label.includes('既存ペアへ追加') ? 0 : 1
+        if (aExisting !== bExisting) return aExisting - bExisting
+        return a.label.localeCompare(b.label, 'ja')
+      })
+      .slice(0, 5)
+
     return {
-      force: [...forceSuggestions.values()].slice(0, 5),
-      teacher: [...teacherSuggestions].slice(0, 5).map((label) => toStatusProposal(label)),
-      student: [...studentSuggestions].slice(0, 5).map((label) => toStatusProposal(label)),
+      force,
+      teacher: [...teacherSuggestions.values()]
+        .map((item) => toStatusProposal(`講師出席追加案: ${item.teacherName} を ${item.slots.join('、')} 出席可にすると ${item.subject} を追加候補`))
+        .slice(0, 5),
+      student: [...studentSuggestions.values()]
+        .map((item) => toStatusProposal(`生徒出席緩和案: ${item.slots.join('、')} を出席可にすると 講師(${item.teacherName}) で ${item.subject} を追加候補`))
+        .slice(0, 5),
       cards: [...cardSuggestions.values()].slice(0, 5),
       blockers: [...blockerReasons].slice(0, 8),
     }
