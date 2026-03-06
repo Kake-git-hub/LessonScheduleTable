@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.17'
+const APP_VERSION = '1.3.18'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2998,36 +2998,36 @@ const AdminPage = () => {
       return null
     }
 
-    const buildRemainingSuggestions = (student: Student, subject: string): { teacher: string[]; cards: string[]; student: string[] } => {
+    const analyzePlacementOptions = (
+      student: Student,
+      subject: string,
+      candidateTeachers: Teacher[],
+      slotFilter?: (slot: string) => boolean,
+    ): { teacher: string[]; cards: string[]; student: string[]; blockers: string[] } => {
       const teacherSuggestions = new Set<string>()
       const cardSuggestions = new Set<string>()
       const studentSuggestions = new Set<string>()
+      const blockerReasons = new Set<string>()
       const deskLimit = data.settings.deskCount ?? 0
-
-      const compatibleTeachers = data.teachers.filter((teacher) =>
-        canTeachSubject(teacher.subjects, student.grade, subject)
-        && constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible',
-      )
 
       for (const slot of availableSlotKeys) {
         if (getSlotNumber(slot) === 0) continue
+        if (slotFilter && !slotFilter(slot)) continue
         const slotAssignments = nextAssignments[slot] ?? []
         const [slotDate] = slot.split('_')
         const dayOfWeek = getIsoDayOfWeek(slotDate)
         const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === dayOfWeek)
 
-        for (const teacher of compatibleTeachers) {
+        for (const teacher of candidateTeachers) {
           if (slotAssignments.some((a) => a.studentIds.includes(student.id))) continue
 
           const teacherAssignment = slotAssignments.find((a) => a.teacherId === teacher.id)
-          if (teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) {
-            continue
-          }
-          if (teacherAssignment && teacherAssignment.studentIds.length >= 2) continue
-          if (!teacherAssignment && deskLimit > 0 && slotAssignments.length >= deskLimit) continue
-
           const teacherAvailable = hasAvailability(data.availability, instructorPersonType, teacher.id, slot)
           const studentAvailable = isStudentAvailable(student, slot)
+          const teacherStudentIncompatible = constraintFor(data.constraints, teacher.id, student.id) === 'incompatible'
+          const existingStudentIncompatible = !!teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')
+          const teacherPairFull = !!teacherAssignment && teacherAssignment.studentIds.length >= 2
+          const deskBlocked = !teacherAssignment && deskLimit > 0 && slotAssignments.length >= deskLimit
           const evalResult = evaluateConstraintCards(
             student,
             slot,
@@ -3038,15 +3038,32 @@ const AdminPage = () => {
             teacher.id,
           )
 
-          if (!teacherAvailable && studentAvailable && !evalResult.blocked) {
+          const hardReasons: string[] = []
+          if (teacherStudentIncompatible) hardReasons.push(`講師(${teacher.name})と生徒の相性不可`)
+          if (existingStudentIncompatible) hardReasons.push(`講師(${teacher.name})ペア内の既存生徒と相性不可`)
+          if (teacherPairFull) hardReasons.push(`講師(${teacher.name})のペアが満席`)
+          if (deskBlocked) hardReasons.push('机数上限で新規ペア不可')
+          if (evalResult.blocked && evalResult.blockReason) hardReasons.push(evalResult.blockReason)
+          if (teacherAvailable && studentAvailable && hardReasons.length > 0) {
+            for (const reason of hardReasons) blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: ${reason}`)
+          }
+
+          if (!teacherAvailable && studentAvailable && hardReasons.length === 0) {
             teacherSuggestions.add(`講師出席追加案: ${teacher.name} を ${slotLabel(slot, isMendan, mendanStart)} 出席可にすると ${subject} を追加候補`)
           }
           if (teacherAvailable && studentAvailable && evalResult.blocked) {
             const suggestion = buildConstraintSuggestion(student, evalResult.blockReason ?? '', slot, teacher.name)
             if (suggestion) cardSuggestions.add(suggestion)
           }
-          if (teacherAvailable && !studentAvailable && !evalResult.blocked) {
+          if (teacherAvailable && !studentAvailable && hardReasons.length === 0) {
             studentSuggestions.add(`生徒不可緩和案: ${slotLabel(slot, isMendan, mendanStart)} を出席可にすると 講師(${teacher.name}) で ${subject} を追加候補`)
+          }
+          if (!teacherAvailable && !studentAvailable && hardReasons.length === 0) {
+            blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})と生徒の両方が未出席`)
+          } else if (!teacherAvailable && hardReasons.length === 0) {
+            blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})が未出席`)
+          } else if (!studentAvailable && hardReasons.length === 0) {
+            blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 生徒が出席不可`)
           }
         }
       }
@@ -3055,7 +3072,16 @@ const AdminPage = () => {
         teacher: [...teacherSuggestions].slice(0, 5),
         cards: [...cardSuggestions].slice(0, 5),
         student: [...studentSuggestions].slice(0, 5),
+        blockers: [...blockerReasons].slice(0, 8),
       }
+    }
+
+    const buildRemainingSuggestions = (student: Student, subject: string): { teacher: string[]; cards: string[]; student: string[]; blockers: string[] } => {
+      const compatibleTeachers = data.teachers.filter((teacher) =>
+        canTeachSubject(teacher.subjects, student.grade, subject)
+        && constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible',
+      )
+      return analyzePlacementOptions(student, subject, compatibleTeachers)
     }
 
     const remainingStudents = data.students
@@ -3069,7 +3095,7 @@ const AdminPage = () => {
         if (remaining.length === 0) return null
         return { studentName: student.name, remaining }
       })
-      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number; suggestions: { teacher: string[]; cards: string[]; student: string[] } }[] }[]
+      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number; suggestions: { teacher: string[]; cards: string[]; student: string[]; blockers: string[] } }[] }[]
 
     const overAssignedStudents = data.students
       .map((student) => {
@@ -3174,6 +3200,26 @@ const AdminPage = () => {
           ? `講師(${teacherName}): ${specificReasons.join(', ')}`
           : `講師(${teacherName})の空き枠あるが配置されず(原因不明)`
       }
+      const analysis = teacher
+        ? analyzePlacementOptions(
+            student,
+            um.subject,
+            [teacher],
+            (fs) => !um.absentDate || fs.split('_')[0] > um.absentDate,
+          )
+        : { teacher: [] as string[], cards: [] as string[], student: [] as string[], blockers: [] as string[] }
+      const suggestionLines = [
+        ...analysis.teacher,
+        ...analysis.cards,
+        ...analysis.student,
+      ]
+      if (suggestionLines.length > 0) {
+        reason = `${reason} / ${suggestionLines.join(' / ')}`
+      } else if (analysis.blockers.length > 0) {
+        reason = `${reason} / 提案候補なし: ${analysis.blockers.join(', ')}`
+      } else {
+        reason = `${reason} / 提案候補なし: 机数上限・相性不可・出席可能日を確認してください`
+      }
       unplacedMakeupEntries.push({ studentName: student.name, subject: um.subject, reason })
     }
 
@@ -3207,7 +3253,7 @@ const AdminPage = () => {
             ]
             const suggestionText = suggestionLines.length > 0
               ? `\n  ${suggestionLines.join('\n  ')}`
-              : '\n  提案候補なし: 机数上限や相性不可など他の制約を確認してください'
+              : `\n  提案候補なし: ${r.suggestions.blockers.length > 0 ? r.suggestions.blockers.join(' / ') : '机数上限や相性不可など他の制約を確認してください'}`
             return `${r.subject}残${r.remaining}${suggestionText}`
           }).join('\n')}`)
           .join('\n')}`
