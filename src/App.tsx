@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.5'
+const APP_VERSION = '1.3.6'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2910,8 +2910,9 @@ const AdminPage = () => {
       const assignedCount = submittedCount - unassignedParents.length
 
       // Final cleanup: remove teacher-only assignments
+      const validStudentIdSet = new Set(data.students.map((s) => s.id))
       for (const slot of Object.keys(nextAssignments)) {
-        nextAssignments[slot] = nextAssignments[slot].filter((a) => a.studentIds.length > 0 || a.isGroupLesson)
+        nextAssignments[slot] = nextAssignments[slot].filter((a) => a.studentIds.some(sid => sid && validStudentIdSet.has(sid)) || a.isGroupLesson)
         if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
       }
 
@@ -3007,9 +3008,10 @@ const AdminPage = () => {
       }
     }
 
-    // Final cleanup: remove teacher-only assignments (no students) that may have leaked through
+    // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
+    const validStudentIdSet2 = new Set(data.students.map((s) => s.id))
     for (const slot of Object.keys(nextAssignments)) {
-      nextAssignments[slot] = nextAssignments[slot].filter((a) => a.studentIds.length > 0 || a.isGroupLesson)
+      nextAssignments[slot] = nextAssignments[slot].filter((a) => a.studentIds.some(sid => sid && validStudentIdSet2.has(sid)) || a.isGroupLesson)
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 

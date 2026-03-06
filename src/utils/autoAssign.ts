@@ -361,6 +361,24 @@ export const buildIncrementalAutoAssignments = async (
 
   console.log('[AutoAssign] After Phase 1: result has', Object.keys(result).length, 'slots')
 
+  // Consume makeup demand already satisfied by preserved assignments (actual results + Phase 1)
+  // This prevents duplicate makeup assignments on re-assign
+  for (const slotAssignments of Object.values(result)) {
+    for (const assignment of slotAssignments) {
+      if (!assignment.regularMakeupInfo) continue
+      for (const [sid, mkInfo] of Object.entries(assignment.regularMakeupInfo)) {
+        const mkInfos = makeupStudentInfo.get(sid)
+        if (!mkInfos) continue
+        const idx = mkInfos.findIndex(mk =>
+          mk.teacherId === assignment.teacherId &&
+          mk.dayOfWeek === mkInfo.dayOfWeek &&
+          mk.slotNumber === mkInfo.slotNumber
+        )
+        if (idx >= 0) mkInfos.splice(idx, 1)
+      }
+    }
+  }
+
   // Determine if this is the initial assignment or a re-run
   const isInitialAssignment = !Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
 
@@ -849,9 +867,13 @@ export const buildIncrementalAutoAssignments = async (
     if (signatureSet.size > 0) makeupPairSignatures[slot] = [...signatureSet]
   }
 
-  // Cleanup: remove assignments with no students (empty teacher-only pairs)
+  // Cleanup: remove assignments with no valid students (empty teacher-only pairs or stale student IDs)
   for (const slot of Object.keys(result)) {
-    const cleaned = result[slot].filter((a) => a.studentIds.length > 0 || a.isGroupLesson)
+    const cleaned = result[slot].filter((a) => {
+      if (a.isGroupLesson) return true
+      // Check that at least one student ID actually exists
+      return a.studentIds.some(sid => sid && studentIds.has(sid))
+    })
     if (cleaned.length > 0) {
       result[slot] = cleaned
     } else {
