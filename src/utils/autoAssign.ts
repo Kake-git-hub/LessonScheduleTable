@@ -133,24 +133,42 @@ export const buildIncrementalAutoAssignments = async (
   const result: Record<string, Assignment[]> = {}
 
   // Pre-compute makeup student info: for each regular-lesson student, which regular slots are unavailable
-  // Stores per-student array of { teacherId, dayOfWeek, slotNumber } for each unavailable regular slot
-  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number; date: string }>>()
+  // Stores per-student array of { teacherId, dayOfWeek, slotNumber, date, subject } for each unavailable regular slot
+  // Also includes regular students who were removed from actual results (absent in reality)
+  const makeupStudentInfo = new Map<string, Array<{ teacherId: string; dayOfWeek: number; slotNumber: number; date: string; subject: string }>>()
+  // Build a set of ALL slot keys (including recorded) for regular-lesson matching
+  const allSlotKeys = [...new Set([...slots, ...Object.keys(data.actualResults ?? {})])]
   for (const rl of data.regularLessons) {
     for (const sid of rl.studentIds) {
       const student = data.students.find((s) => s.id === sid)
       if (!student) continue
-      for (const slot of slots) {
+      const rlSubject = rl.studentSubjects?.[sid] ?? rl.subject
+      for (const slot of allSlotKeys) {
         const [date] = slot.split('_')
         const dow = getIsoDayOfWeek(date)
         if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
-          if (!isStudentAvailable(student, slot)) {
+          // Case 1: student is unavailable for this slot
+          const needsMakeup = !isStudentAvailable(student, slot)
+          // Case 2: slot has actual results recorded and student was removed (absent)
+          const actualForSlot = data.actualResults?.[slot]
+          const absentFromActual = actualForSlot != null
+            && data.assignments[slot]?.some((a) => a.isRegular && a.studentIds.includes(sid))
+            && !actualForSlot.some((r) => r.studentIds.includes(sid))
+          if (needsMakeup || absentFromActual) {
             const arr = makeupStudentInfo.get(sid) ?? []
-            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date })
+            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date, subject: rlSubject })
             makeupStudentInfo.set(sid, arr)
           }
         }
       }
     }
+  }
+
+  // Helper: get remaining makeup demand per subject for a student
+  const getMakeupDemand = (studentId: string, baseSubj: string): number => {
+    const mkInfos = makeupStudentInfo.get(studentId)
+    if (!mkInfos) return 0
+    return mkInfos.filter((mk) => mk.subject === baseSubj).length
   }
 
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
@@ -386,12 +404,13 @@ export const buildIncrementalAutoAssignments = async (
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
         // Check student-student constraints with existing students in this assignment
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
-        // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand
+        // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand (including makeup)
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
+          const makeupDemand = getMakeupDemand(student.id, baseSubj)
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
-          return allocated < requested
+          return allocated < requested + makeupDemand
         })
       })
 
@@ -405,8 +424,9 @@ export const buildIncrementalAutoAssignments = async (
         const bestSubj = teachableBaseSubjects(teacher.subjects, best.grade).find((baseSubj) => {
           if (!best.subjects.includes(baseSubj)) return false
           const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
+          const makeupDemand = getMakeupDemand(best.id, baseSubj)
           const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
-          return allocated < requested
+          return allocated < requested + makeupDemand
         }) ?? assignment.subject
         // Reconstruct studentSubjects
         const studentSubjects: Record<string, string> = {}
@@ -549,8 +569,9 @@ export const buildIncrementalAutoAssignments = async (
         const viableCommonSubjects = commonBaseSubjects.filter((baseSubj) =>
           combo.every((student) => {
             const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
+            const makeupDemand = getMakeupDemand(student.id, baseSubj)
             const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
-            return allocated < requested
+            return allocated < requested + makeupDemand
           }),
         )
 
@@ -569,14 +590,16 @@ export const buildIncrementalAutoAssignments = async (
           const s1Viable = teachableBaseSubjects(teacher.subjects, s1.grade).filter((baseSubj) => {
             if (!s1.subjects.includes(baseSubj)) return false
             const req = (s1.subjectSlots ?? {})[baseSubj] ?? 0
+            const mkDemand = getMakeupDemand(s1.id, baseSubj)
             const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
-            return alloc < req
+            return alloc < req + mkDemand
           })
           const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
             if (!s2.subjects.includes(baseSubj)) return false
             const req = (s2.subjectSlots ?? {})[baseSubj] ?? 0
+            const mkDemand = getMakeupDemand(s2.id, baseSubj)
             const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
-            return alloc < req
+            return alloc < req + mkDemand
           })
           // Only add mixed plans where subjects actually differ
           for (const subj1 of s1Viable) {
@@ -608,8 +631,9 @@ export const buildIncrementalAutoAssignments = async (
         let remainingSlotScore = 0
         for (const st of combo) {
           const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
+          const totalMakeupDemand = (makeupStudentInfo.get(st.id) ?? []).length
           const totalAssigned = countStudentLoad(result, st.id)
-          remainingSlotScore += (totalRequested - totalAssigned) * 20
+          remainingSlotScore += (totalRequested + totalMakeupDemand - totalAssigned) * 20
         }
 
         // ── Additional scoring factors (lower priority) ──
