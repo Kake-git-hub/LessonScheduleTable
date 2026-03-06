@@ -32,7 +32,7 @@ export const buildIncrementalAutoAssignments = async (
   data: SessionData,
   slots: string[],
   onProgress?: (ratio: number) => void,
-): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; makeupPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>> }> => {
+): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; makeupPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>>; unplacedMakeup: { studentId: string; teacherId: string; subject: string; absentDate?: string }[] }> => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
   const addedPairSigSetBySlot: Record<string, Set<string>> = {}
@@ -885,9 +885,17 @@ export const buildIncrementalAutoAssignments = async (
     }
   }
 
-  console.log('[AutoAssign] Done: result has', Object.keys(result).length, 'slots,', changeLog.length, 'changes')
+  // Collect unplaced makeup demand for reporting
+  const unplacedMakeup: { studentId: string; teacherId: string; subject: string; absentDate?: string }[] = []
+  for (const [studentId, mkInfos] of makeupStudentInfo.entries()) {
+    for (const mk of mkInfos) {
+      unplacedMakeup.push({ studentId, teacherId: mk.teacherId, subject: mk.subject, absentDate: mk.absentDate })
+    }
+  }
 
-  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot }
+  console.log('[AutoAssign] Done: result has', Object.keys(result).length, 'slots,', changeLog.length, 'changes,', unplacedMakeup.length, 'unplaced makeup')
+
+  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot, unplacedMakeup }
 }
 
 /** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */

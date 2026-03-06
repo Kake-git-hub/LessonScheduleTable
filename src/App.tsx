@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.12'
+const APP_VERSION = '1.3.13'
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
@@ -2932,7 +2932,7 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -2986,6 +2986,44 @@ const AdminPage = () => {
 
     const shortageEntries = collectTeacherShortages(data, nextAssignments)
 
+    // Build unplaced makeup message with reasons
+    const unplacedMakeupEntries: { studentName: string; subject: string; reason: string }[] = []
+    for (const um of unplacedMakeup) {
+      const student = data.students.find((s) => s.id === um.studentId)
+      if (!student) continue
+      const teacher = data.teachers.find((t) => t.id === um.teacherId)
+      const teacherName = teacher?.name ?? '?'
+      // Determine reason: check future availability
+      const futureCandidates = availableSlotKeys.filter((fs) => {
+        if (um.absentDate) {
+          const [fd] = fs.split('_')
+          if (fd <= um.absentDate) return false
+        }
+        if (getSlotNumber(fs) === 0) return false
+        return true
+      })
+      const studentAvail = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
+      const teacherAvail = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, um.teacherId, fs))
+      const bothAvail = futureCandidates.filter((fs) =>
+        isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, um.teacherId, fs)
+      )
+      let reason: string
+      if (bothAvail.length === 0) {
+        if (studentAvail.length === 0 && teacherAvail.length === 0) {
+          reason = `講師(${teacherName})と生徒の出席可能日なし`
+        } else if (studentAvail.length === 0) {
+          reason = '生徒の出席可能日なし'
+        } else if (teacherAvail.length === 0) {
+          reason = `講師(${teacherName})の出席可能日なし`
+        } else {
+          reason = `講師(${teacherName})と生徒のマッチする日なし`
+        }
+      } else {
+        reason = `講師(${teacherName})の空き枠に配置不可(他の制約)`
+      }
+      unplacedMakeupEntries.push({ studentName: student.name, subject: um.subject, reason })
+    }
+
     // Preserve original planned assignments for recorded slots (not actual results)
     // Auto-assign seeds actual data into result for load counting, but we must keep
     // the original planned data in assignments so tooltip can detect absences (planned vs actual)
@@ -3021,10 +3059,15 @@ const AdminPage = () => {
           .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)} ${item.detail}`)
           .join('\n')}`
       : ''
+    const unplacedMakeupMessage = unplacedMakeupEntries.length > 0
+      ? `\n\n振替未配置:\n${unplacedMakeupEntries
+          .map((item) => `${item.studentName}: ${item.subject}(${item.reason})`)
+          .join('\n')}`
+      : ''
     if (changeLog.length > 0) {
-      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
+      alert(`自動提案完了: ${changeLog.length}件の変更がありました。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${shortageMessage}`)
     } else {
-      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${overAssignedMessage}${shortageMessage}`)
+      alert(`自動提案完了: 変更はありませんでした。${remainingMessage}${unplacedMakeupMessage}${overAssignedMessage}${shortageMessage}`)
     }
 
     } catch (err) {
@@ -3822,9 +3865,9 @@ service cloud.firestore {
                       .filter((r) => r.rem !== 0)
                     // Count slots where student was planned but missing from actual result (regular and makeup assignments)
                     // Track per-subject for display, and reasons for no available makeup slot
-                    const missingBySubj: Record<string, number> = {}
                     type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
-                    const noMakeupReasons: NoMakeupReason[] = []
+                    type AbsenceEntry = { subject: string; reasons: NoMakeupReason[] }
+                    const absences: AbsenceEntry[] = []
                     for (const sk of slotKeys) {
                       if (!(sk in liveActual)) continue
                       const planned = data.assignments[sk] ?? []
@@ -3839,10 +3882,9 @@ service cloud.firestore {
                         const isMakeupAbsence = !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
                         if (!isRegularAbsence && !isMakeupAbsence) continue
                         const absentSubj = getStudentSubject(origAssignment, student.id)
-                        missingBySubj[absentSubj] = (missingBySubj[absentSubj] ?? 0) + 1
                         const origTeacherId = origAssignment.teacherId
                         const [absentDate] = sk.split('_')
-                        // Check future slots after the absence date
+                        // Check future slots after the absence date for makeup availability
                         const futureCandidates = slotKeys.filter((fs) => {
                           if (recordedSlotSet.has(fs)) return false
                           const [fd] = fs.split('_')
@@ -3855,18 +3897,48 @@ service cloud.firestore {
                         const bothAvailSlots = futureCandidates.filter((fs) =>
                           isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, origTeacherId, fs)
                         )
+                        const reasons: NoMakeupReason[] = []
                         if (bothAvailSlots.length === 0) {
                           if (studentAvailSlots.length === 0 && teacherAvailSlots.length === 0) {
-                            noMakeupReasons.push('no_match')
+                            reasons.push('no_match')
                           } else if (studentAvailSlots.length === 0) {
-                            noMakeupReasons.push('no_student')
+                            reasons.push('no_student')
                           } else if (teacherAvailSlots.length === 0) {
-                            noMakeupReasons.push('no_teacher')
+                            reasons.push('no_teacher')
                           } else {
-                            noMakeupReasons.push('no_match')
+                            reasons.push('no_match')
                           }
                         }
+                        absences.push({ subject: absentSubj, reasons })
                       }
+                    }
+                    // Count successful makeup placements in non-recorded slots
+                    const makeupPlacedBySubj: Record<string, number> = {}
+                    for (const sk of slotKeys) {
+                      if (recordedSlotSet.has(sk)) continue
+                      const slotAssigns = effAssignments[sk] ?? []
+                      for (const a of slotAssigns) {
+                        if (a.regularMakeupInfo?.[student.id]) {
+                          const subj = getStudentSubject(a, student.id)
+                          makeupPlacedBySubj[subj] = (makeupPlacedBySubj[subj] ?? 0) + 1
+                        }
+                      }
+                    }
+                    // Deduct placed makeups from absences (covered absences are removed)
+                    const coveredRemaining: Record<string, number> = { ...makeupPlacedBySubj }
+                    const uncoveredAbsences: AbsenceEntry[] = []
+                    for (const abs of absences) {
+                      if ((coveredRemaining[abs.subject] ?? 0) > 0) {
+                        coveredRemaining[abs.subject]--
+                        continue // This absence is covered by a makeup placement
+                      }
+                      uncoveredAbsences.push(abs)
+                    }
+                    const missingBySubj: Record<string, number> = {}
+                    const noMakeupReasons: NoMakeupReason[] = []
+                    for (const abs of uncoveredAbsences) {
+                      missingBySubj[abs.subject] = (missingBySubj[abs.subject] ?? 0) + 1
+                      noMakeupReasons.push(...abs.reasons)
                     }
                     const missingTotal = Object.values(missingBySubj).reduce((a, b) => a + b, 0)
                     if (remaining.length === 0 && missingTotal === 0) return null
