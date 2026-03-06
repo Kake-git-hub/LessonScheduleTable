@@ -311,9 +311,10 @@ export const buildIncrementalAutoAssignments = async (
       } else if (removedStudentIds.length > 0) {
         // All students removed — don't keep teacher-only assignment
         changeLog.push({ slot, action: '生徒全員解除', detail: `講師のみ残留破棄（予定変更のため）` })
-      } else {
+      } else if (assignment.studentIds.length > 0) {
         cleaned.push(assignment)
       }
+      // Skip assignments that already have no students (don't keep teacher-only)
     }
 
     if (cleaned.length > 0) {
@@ -323,7 +324,12 @@ export const buildIncrementalAutoAssignments = async (
 
   console.log('[AutoAssign] After Phase 1: result has', Object.keys(result).length, 'slots')
 
-  // Phase 1.5: Remove excess assignments when requested slots were reduced
+  // Determine if this is the initial assignment or a re-run
+  const isInitialAssignment = !Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
+
+  // Phase 1.5: Remove excess assignments when requested slots were reduced (ONLY on initial assignment)
+  // On re-runs, preserve existing student assignments as-is
+  if (isInitialAssignment) {
   // Include seeded recorded slot load so we correctly detect over-allocation
   const specialLoadMap = new Map<string, number>()
   for (const [, slotAssignments] of Object.entries(result)) {
@@ -378,10 +384,18 @@ export const buildIncrementalAutoAssignments = async (
         assignment.studentIds = remainingStudentIds
         if (remainingStudentIds.length > 0) {
           markChangedPair(slot, assignment, `希望コマ数減少により一部生徒を解除`)
+        } else {
+          // All students removed by excess — remove this assignment entirely
+          const slotArr = result[slot]
+          if (slotArr) {
+            const idx = slotArr.indexOf(assignment)
+            if (idx >= 0) slotArr.splice(idx, 1)
+          }
         }
       }
     }
   }
+  } // end isInitialAssignment (Phase 1.5)
 
   // Phase 2: Fill empty student positions in existing assignments (including regular with empty spots)
   for (const slot of slots) {
