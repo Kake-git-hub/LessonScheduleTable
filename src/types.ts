@@ -69,6 +69,8 @@ export type Assignment = {
   teacherId: string
   studentIds: string[]
   subject: string
+  /** Reason shown when a previously assigned teacher became unavailable and the pair was left unassigned. */
+  teacherUnassignedReason?: string
   /** Per-student subject overrides. Maps studentId → subject.
    *  When set, each student may learn a different subject in the same pair. */
   studentSubjects?: Record<string, string>

@@ -164,7 +164,7 @@ export const collectTeacherShortages = (
       if (assignment.isRegular) continue
 
       if (!assignment.teacherId) {
-        shortages.push({ slot, detail: '講師未設定' })
+        shortages.push({ slot, detail: assignment.teacherUnassignedReason ?? '講師未割当' })
         continue
       }
 

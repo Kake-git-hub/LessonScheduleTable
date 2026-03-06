@@ -210,7 +210,15 @@ describe('collectTeacherShortages', () => {
     const assignments = { '2026-07-21_1': [{ teacherId: '', studentIds: ['s1'], subject: '数' }] }
     const result = collectTeacherShortages(data, assignments)
     expect(result).toHaveLength(1)
-    expect(result[0].detail).toBe('講師未設定')
+    expect(result[0].detail).toBe('講師未割当')
+  })
+
+  it('prefers stored teacher-unassigned reason', () => {
+    const data = makeSessionData()
+    const assignments = { '2026-07-21_1': [{ teacherId: '', studentIds: ['s1'], subject: '数', teacherUnassignedReason: '伊藤先生が出席不可のため講師未割当' }] }
+    const result = collectTeacherShortages(data, assignments)
+    expect(result).toHaveLength(1)
+    expect(result[0].detail).toBe('伊藤先生が出席不可のため講師未割当')
   })
 
   it('detects deleted teacher', () => {

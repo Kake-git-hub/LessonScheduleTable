@@ -1579,7 +1579,7 @@ const HomePage = () => {
                   <h3>通常授業管理</h3>
                   <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                     <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
-                      <option value="">講師を選択</option>
+                      <option value="">講師未割当</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
                     <select value={regularStudent1Id} onChange={(e) => { setRegularStudent1Id(e.target.value); setRegularStudentSubjects((prev) => { const next = { ...prev }; delete next[regularStudent1Id]; return next }) }}>
@@ -1665,7 +1665,7 @@ const HomePage = () => {
                   <h3>集団授業設定</h3>
                   <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
                     <select value={groupTeacherId} onChange={(e) => setGroupTeacherId(e.target.value)}>
-                      <option value="">講師を選択</option>
+                      <option value="">講師未割当</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
                     <select value={groupSubject} onChange={(e) => setGroupSubject(e.target.value)}>
@@ -2283,6 +2283,32 @@ const AdminPage = () => {
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
   const masterSyncDoneRef = useRef(false)
 
+  const releaseUnavailableTeacherAssignments = useCallback((current: SessionData, teacherIds?: Set<string>): SessionData | null => {
+    if (current.settings.sessionType === 'mendan') return null
+
+    let changed = false
+    const nextAssignments: Record<string, Assignment[]> = {}
+    for (const [slot, slotAssignments] of Object.entries(current.assignments)) {
+      nextAssignments[slot] = slotAssignments.map((assignment) => {
+        if (assignment.isRegular || assignment.isGroupLesson || !assignment.teacherId) return assignment
+        if (teacherIds && !teacherIds.has(assignment.teacherId)) return assignment
+
+        const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
+        if (!teacher || hasAvailability(current.availability, 'teacher', teacher.id, slot)) return assignment
+
+        changed = true
+        return {
+          ...assignment,
+          teacherId: '',
+          teacherUnassignedReason: `${teacher.name} が出席不可のため講師未割当`,
+        }
+      })
+    }
+
+    if (!changed) return null
+    return { ...current, assignments: nextAssignments }
+  }, [])
+
   // Sync master data (regularLessons, constraints) into session on first load
   useEffect(() => {
     if (!data || masterSyncDoneRef.current) return
@@ -2335,10 +2361,30 @@ const AdminPage = () => {
       const prevAt = prev.studentSubmittedAt[student.id] ?? 0
       if (student.submittedAt !== prevAt) updatedIds.push(student.id)
     }
+    const decreasedTeacherIds = new Set<string>()
+    for (const teacher of data.teachers) {
+      const key = `teacher:${teacher.id}`
+      const prevSlots = new Set(prev.availability[key] ?? [])
+      const currSlots = new Set(data.availability[key] ?? [])
+      for (const slot of prevSlots) {
+        if (!currSlots.has(slot)) {
+          decreasedTeacherIds.add(teacher.id)
+          break
+        }
+      }
+    }
+
     // Update snapshot
     prevSnapshotRef.current = {
       availability: { ...data.availability },
       studentSubmittedAt: Object.fromEntries(data.students.map((s) => [s.id, s.submittedAt])),
+    }
+    if (decreasedTeacherIds.size > 0) {
+      const normalized = releaseUnavailableTeacherAssignments(data, decreasedTeacherIds)
+      if (normalized) {
+        setData(normalized)
+        saveSession(classroomId, sessionId, normalized).catch(() => { /* ignore */ })
+      }
     }
     if (updatedIds.length > 0) {
       setRecentlyUpdated((p) => new Set([...p, ...updatedIds]))
@@ -2352,7 +2398,7 @@ const AdminPage = () => {
       }, 3000)
       return () => clearTimeout(timer)
     }
-  }, [data])
+  }, [classroomId, data, releaseUnavailableTeacherAssignments, sessionId])
   const buildInputUrl = (personType: PersonType, personId: string): string => {
     const base = window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '')
     return `${base}/#/c/${classroomId}/availability/${sessionId}/${personType}/${personId}`
@@ -3798,36 +3844,65 @@ const AdminPage = () => {
     return warnings
   }
 
+  const deleteSlotAssignment = async (slot: string, idx: number): Promise<void> => {
+    await updateAssignments((current) => {
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
+      if (!slotAssignments[idx]) return current
+      setManuallyModifiedSlots((prev) => new Set(prev).add(slot))
+      slotAssignments.splice(idx, 1)
+      const nextAssignments = { ...current.assignments }
+      if (slotAssignments.length === 0) delete nextAssignments[slot]
+      else nextAssignments[slot] = slotAssignments
+      return { ...current, assignments: nextAssignments }
+    })
+  }
+
   const setSlotTeacher = async (slot: string, idx: number, teacherId: string): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
+      const prev = slotAssignments[idx]
+      if (!prev) return current
+
       if (!teacherId) {
-        // Mark slot as manually modified so auto-fill won't recreate the deleted pair
-        setManuallyModifiedSlots((prev) => new Set(prev).add(slot))
-        slotAssignments.splice(idx, 1)
-        const nextAssignments = { ...current.assignments }
-        if (slotAssignments.length === 0) {
-          delete nextAssignments[slot]
-        } else {
-          nextAssignments[slot] = slotAssignments
+        slotAssignments[idx] = {
+          ...prev,
+          teacherId: '',
         }
-        return { ...current, assignments: nextAssignments }
+        delete slotAssignments[idx].teacherUnassignedReason
+        return {
+          ...current,
+          assignments: { ...current.assignments, [slot]: slotAssignments },
+        }
       }
 
-      const prev = slotAssignments[idx]
       const currentInstructor = isMendan
         ? (current.managers ?? []).find((m) => m.id === teacherId)
         : current.teachers.find((item) => item.id === teacherId)
       const instructorSubjects = isMendan ? ['面談'] : ((currentInstructor && 'subjects' in currentInstructor) ? (currentInstructor as Teacher).subjects : [])
-      const nextSubject =
-        prev?.subject && instructorSubjects.includes(prev.subject)
-          ? prev.subject
-          : (instructorSubjects[0] ?? '')
+      const preserveStudents = !prev.teacherId || prev.teacherId === teacherId
+      const nextStudentIds = preserveStudents ? [...prev.studentIds] : []
+      const nextStudentSubjects = nextStudentIds.reduce<Record<string, string>>((acc, sid) => {
+        const student = current.students.find((item) => item.id === sid)
+        const existingSubject = prev.studentSubjects?.[sid] ?? prev.subject
+        const viable = student ? teachableBaseSubjects(instructorSubjects, student.grade) : []
+        acc[sid] = student && canTeachSubject(instructorSubjects, student.grade, existingSubject)
+          ? existingSubject
+          : (viable[0] ?? existingSubject)
+        return acc
+      }, {})
+      const nextSubject = nextStudentIds.length > 0
+        ? (nextStudentSubjects[nextStudentIds[0]] ?? prev.subject)
+        : (prev.subject && instructorSubjects.includes(prev.subject)
+            ? prev.subject
+            : (instructorSubjects[0] ?? ''))
 
       slotAssignments[idx] = {
         teacherId,
-        studentIds: prev?.teacherId === teacherId ? prev.studentIds : [],
+        studentIds: nextStudentIds,
         subject: nextSubject,
+        ...(nextStudentIds.length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
+        ...(prev.regularMakeupInfo ? { regularMakeupInfo: { ...prev.regularMakeupInfo } } : {}),
+        ...(prev.regularSubstituteInfo ? { regularSubstituteInfo: { ...prev.regularSubstituteInfo } } : {}),
       }
 
       return {
@@ -5225,7 +5300,7 @@ service cloud.firestore {
                                 onClick={() => removeEditingResultPair(rIdx)}>×</button>
                               <select value={result.teacherId}
                                 onChange={(e) => updateEditingResult(rIdx, 'teacherId', e.target.value)}>
-                                <option value="">{isMendan ? 'マネージャーを選択' : '講師を選択'}</option>
+                                <option value="">{isMendan ? 'マネージャーを選択' : '講師未割当'}</option>
                                 {instructors.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                               </select>
                               {result.teacherId && (
@@ -5318,6 +5393,8 @@ service cloud.firestore {
                         const isAutoMakeup = hasMakeupInfo || isAutoMakeupHighlight
                         const manualConstraintWarnings = !isRecorded ? getManualConstraintWarnings(slot, assignment, idx) : []
                         const hasManualConstraintWarning = manualConstraintWarnings.length > 0
+                        const teacherUnassignedWarning = !assignment.teacherId ? assignment.teacherUnassignedReason ?? '' : ''
+                        const hasTeacherUnassignedWarning = teacherUnassignedWarning.length > 0
                         // Red border only for transient auto-assign highlights (not for permanent 振替)
                         const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeupHighlight
                         const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
@@ -5367,7 +5444,7 @@ service cloud.firestore {
                         return (
                           <div
                             key={idx}
-                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${hasManualConstraintWarning ? ' assignment-block-manual-warning' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
+                            className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${hasManualConstraintWarning || hasTeacherUnassignedWarning ? ' assignment-block-manual-warning' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
                             style={isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : undefined}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
@@ -5386,10 +5463,11 @@ service cloud.firestore {
                               </button>
                             )}
                             {/* Badges row above teacher */}
-                            {(isIncompatiblePair || hasManualConstraintWarning || isAutoAdded || isAutoChanged) && (
+                            {(isIncompatiblePair || hasManualConstraintWarning || hasTeacherUnassignedWarning || isAutoAdded || isAutoChanged) && (
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                                 {hasManualConstraintWarning && <span className="badge manual-constraint-badge" title={manualConstraintWarnings.join('\n')}>注意</span>}
+                                {hasTeacherUnassignedWarning && <span className="badge manual-constraint-badge" title={teacherUnassignedWarning}>注意</span>}
                                 {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
                                 {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
                               </div>
@@ -5425,7 +5503,7 @@ service cloud.firestore {
                                     type="button"
                                     title="このペアを削除"
                                     style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
-                                    onClick={() => void setSlotTeacher(slot, idx, '')}
+                                    onClick={() => void deleteSlotAssignment(slot, idx)}
                                   >
                                     ×
                                   </button>
@@ -5446,7 +5524,7 @@ service cloud.firestore {
                               </div>
                             </div>
 
-                            {assignment.teacherId && (
+                            {(assignment.teacherId || assignment.studentIds.length > 0) && (
                               <>
                                 {(isMendan ? [0] : [0, 1]).map((pos) => {
                                   const otherStudentId = assignment.studentIds[pos === 0 ? 1 : 0] ?? ''
@@ -5602,9 +5680,10 @@ service cloud.firestore {
                               </>
                             )}
 
-                            {hasManualConstraintWarning && (
+                            {(hasManualConstraintWarning || hasTeacherUnassignedWarning) && (
                               <div className="manual-constraint-note">
-                                <strong>手動割当で制約カードを超過中</strong>
+                                <strong>{hasTeacherUnassignedWarning ? '講師未割当' : '手動割当で制約カードを超過中'}</strong>
+                                {hasTeacherUnassignedWarning && <div>{teacherUnassignedWarning}</div>}
                                 {manualConstraintWarnings.map((warning) => (
                                   <div key={warning}>{warning}</div>
                                 ))}
