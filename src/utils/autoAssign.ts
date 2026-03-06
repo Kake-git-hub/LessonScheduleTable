@@ -225,6 +225,11 @@ export const buildIncrementalAutoAssignments = async (
         continue
       }
 
+      // Skip assignments with no students (teacher-only)
+      if (!assignment.isGroupLesson && assignment.studentIds.length === 0) {
+        continue
+      }
+
       // Check teacher still exists
       if (!teacherIds.has(assignment.teacherId)) {
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
