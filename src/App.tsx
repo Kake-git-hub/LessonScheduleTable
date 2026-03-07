@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.23'
+const APP_VERSION = '1.3.24'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3455,7 +3455,13 @@ const AdminPage = () => {
 
   const buildShortageOnlyReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
     const shortageItems = collectTeacherShortageItems(assignmentState)
-    if (shortageItems.length === 0) return null
+    if (shortageItems.length === 0) {
+      return {
+        title: '現在のコマ割り状況',
+        summary: '講師未割当は解消されました。',
+        sections: [],
+      }
+    }
     return {
       title: '現在のコマ割り状況',
       summary: '講師未割当のペアが残っています。',
@@ -3475,7 +3481,7 @@ const AdminPage = () => {
     if (!data) return
     let success = false
     let errorMessage = ''
-    let remainingShortageReport: StatusReport | null = null
+    let nextStatusReport: StatusReport | null = null
     const actionStudentIds = proposal.assignmentStudentIds ?? [proposal.studentId]
     const studentName = actionStudentIds
       .map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid)
@@ -3574,22 +3580,46 @@ const AdminPage = () => {
       success = true
       setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
       const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
+      const nextChanged = { ...(currentHighlights.changed ?? {}) }
+      const nextAdded = { ...(currentHighlights.added ?? {}) }
+      const nextDetails = { ...(currentHighlights.changeDetails ?? {}) }
       const filteredUnplacedMakeup = (currentHighlights.unplacedMakeup ?? []).filter((item) => {
         if (item.studentId !== proposal.studentId) return true
         if (item.subject !== proposal.subject) return true
         if ((proposal.makeupInfo || proposal.substituteInfo) && item.teacherId !== (proposal.substituteInfo?.regularTeacherId ?? proposal.teacherId)) return true
         return false
       })
+      const highlightedAssignment = slotAssignments.find((assignment) =>
+        proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0
+          ? assignment.teacherId === proposal.teacherId && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
+          : assignment.teacherId === proposal.teacherId && assignment.studentIds.includes(proposal.studentId),
+      )
+      if (highlightedAssignment) {
+        const highlightedSig = assignmentSignature(highlightedAssignment)
+        nextChanged[proposal.slot] = [...new Set([...(nextChanged[proposal.slot] ?? []), highlightedSig])]
+        if (!nextDetails[proposal.slot]) nextDetails[proposal.slot] = {}
+        nextDetails[proposal.slot][highlightedSig] = proposal.substituteInfo
+          ? '強制割当: 通常講師代行'
+          : proposal.makeupInfo
+            ? '強制割当: 振替'
+            : '強制割当'
+        if (nextAdded[proposal.slot]) {
+          nextAdded[proposal.slot] = nextAdded[proposal.slot].filter((sig) => sig !== highlightedSig)
+          if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
+        }
+      }
       const nextCurrent = {
         ...current,
         assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
         autoAssignHighlights: {
           ...currentHighlights,
-          ...(currentHighlights.changeDetails ? { changeDetails: currentHighlights.changeDetails } : {}),
+          added: nextAdded,
+          changed: nextChanged,
+          changeDetails: nextDetails,
           unplacedMakeup: filteredUnplacedMakeup,
         },
       }
-      remainingShortageReport = buildShortageOnlyReport(nextCurrent.assignments)
+      nextStatusReport = buildShortageOnlyReport(nextCurrent.assignments)
       return nextCurrent
     })
 
@@ -3598,12 +3628,7 @@ const AdminPage = () => {
       return
     }
     if (success) {
-      if (remainingShortageReport) {
-        setStatusModal(remainingShortageReport)
-      } else {
-        setLatestStatusReport(null)
-        setStatusModal(null)
-      }
+      if (nextStatusReport) setStatusModal(nextStatusReport)
       alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
     }
   }
@@ -3975,6 +4000,7 @@ const AdminPage = () => {
       ...current,
       assignments: {},
       autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
+      settings: { ...current.settings, lastAutoAssignedAt: 0 },
     }))
   }
 
