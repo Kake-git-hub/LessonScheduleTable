@@ -3054,11 +3054,6 @@ const AdminPage = () => {
     return false
   }, [data, isMendan])
 
-  const currentTeacherShortageCount = useMemo(() => {
-    if (!data || isMendan) return 0
-    return collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults)).length
-  }, [data, isMendan])
-
   // For mendan: compute which slot numbers actually have manager availability
   const mendanActiveSlots = useMemo(() => {
     if (!isMendan || !data) return new Set<number>()
@@ -4288,6 +4283,11 @@ const AdminPage = () => {
     }
     return shortages
   }
+
+  const currentTeacherShortageCount = useMemo(() => {
+    if (!data || isMendan) return 0
+    return collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults)).length
+  }, [data, isMendan])
 
   const rankTeacherForShortage = (assignmentState: Record<string, Assignment[]>, teacherId: string, slot: string): [number, number, string] => {
     const [date] = slot.split('_')
