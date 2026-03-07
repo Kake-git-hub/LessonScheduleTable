@@ -42,15 +42,28 @@ type ForceAssignAction = {
   substituteInfo?: { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }
 }
 
+type MoveTeacherShortageAction = {
+  type: 'move-teacher-shortage'
+  sourceSlot: string
+  targetSlot: string
+  teacherId: string
+  studentId: string
+  subject: string
+  assignmentStudentIds: string[]
+  assignmentStudentSubjects?: Record<string, string>
+}
+
+type ProposalAction = ForceAssignAction | MoveTeacherShortageAction
+
 type StatusProposalChoice = {
   value: string
   label: string
-  action: ForceAssignAction
+  action: ProposalAction
 }
 
 type StatusProposal = {
   label: string
-  action?: ForceAssignAction
+  action?: ProposalAction
   choices?: StatusProposalChoice[]
 }
 
@@ -89,16 +102,18 @@ type PlacementAnalysis = {
   blockers: string[]
 }
 
-const toStatusProposal = (label: string, action?: ForceAssignAction, choices?: StatusProposalChoice[]): StatusProposal => ({ label, ...(action ? { action } : {}), ...(choices && choices.length > 0 ? { choices } : {}) })
+const toStatusProposal = (label: string, action?: ProposalAction, choices?: StatusProposalChoice[]): StatusProposal => ({ label, ...(action ? { action } : {}), ...(choices && choices.length > 0 ? { choices } : {}) })
 
 const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] => {
   const seen = new Set<string>()
   const unique: StatusProposal[] = []
   for (const proposal of proposals) {
     const actionKey = proposal.action
-      ? `${proposal.action.type}|${proposal.action.slot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds?.join(',') ?? ''}|${proposal.action.makeupInfo?.dayOfWeek ?? ''}|${proposal.action.makeupInfo?.slotNumber ?? ''}|${proposal.action.makeupInfo?.date ?? ''}`
+      ? proposal.action.type === 'force-assign'
+        ? `${proposal.action.type}|${proposal.action.slot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds?.join(',') ?? ''}|${proposal.action.makeupInfo?.dayOfWeek ?? ''}|${proposal.action.makeupInfo?.slotNumber ?? ''}|${proposal.action.makeupInfo?.date ?? ''}`
+        : `${proposal.action.type}|${proposal.action.sourceSlot}|${proposal.action.targetSlot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds.join(',')}`
       : ''
-    const choiceKey = proposal.choices?.map((choice) => `${choice.value}:${choice.label}:${choice.action.teacherId}`).join('|') ?? ''
+    const choiceKey = proposal.choices?.map((choice) => `${choice.value}:${choice.label}:${choice.action.type}:${choice.action.teacherId}`).join('|') ?? ''
     const key = `${proposal.label}|${actionKey}|${choiceKey}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -178,7 +193,7 @@ const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   return labels.map((label) => toStatusProposal(label))
 }
 
-const buildTeacherMoveLabels = (
+const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
   assignmentState: Record<string, Assignment[]>,
@@ -187,10 +202,10 @@ const buildTeacherMoveLabels = (
   teacherId: string,
   isMendan: boolean,
   mendanStart?: number,
-): string[] => {
+): StatusProposalChoice[] => {
   const [sourceDate] = slot.split('_')
   const studentIds = assignment.studentIds.filter(Boolean)
-  const candidates: string[] = []
+  const candidates: StatusProposalChoice[] = []
 
   for (const targetSlot of [...allSlotKeys].sort()) {
     if (targetSlot === slot) continue
@@ -216,7 +231,20 @@ const buildTeacherMoveLabels = (
     })
     if (!studentsAvailable) continue
 
-    candidates.push(slotLabel(targetSlot, isMendan, mendanStart))
+    candidates.push({
+      value: targetSlot,
+      label: slotLabel(targetSlot, isMendan, mendanStart),
+      action: {
+        type: 'move-teacher-shortage',
+        sourceSlot: slot,
+        targetSlot,
+        teacherId,
+        studentId: assignment.studentIds[0] ?? '',
+        subject: assignment.subject,
+        assignmentStudentIds: [...assignment.studentIds],
+        ...(assignment.studentSubjects ? { assignmentStudentSubjects: { ...assignment.studentSubjects } } : {}),
+      },
+    })
     if (candidates.length >= 5) break
   }
 
@@ -3916,8 +3944,8 @@ const AdminPage = () => {
 
     const originalTeacherId = item.assignment.teacherUnavailableOriginalId
     const originalTeacher = originalTeacherId ? data.teachers.find((teacher) => teacher.id === originalTeacherId) : undefined
-    const originalTeacherMoveLabels = originalTeacherId
-      ? buildTeacherMoveLabels(data, slotKeys, assignmentState, item.slot, item.assignment, originalTeacherId, isMendan, mendanStart)
+    const originalTeacherMoveChoices = originalTeacherId
+      ? buildTeacherMoveChoices(data, slotKeys, assignmentState, item.slot, item.assignment, originalTeacherId, isMendan, mendanStart)
       : []
 
     const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
@@ -3939,9 +3967,9 @@ const AdminPage = () => {
           },
         })),
       )]
-      if (originalTeacherMoveLabels.length > 0) {
+      if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
-        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`))
+        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
       return proposals
     }
@@ -3958,17 +3986,17 @@ const AdminPage = () => {
           : teacher.name
       })
       const proposals = [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
-      if (originalTeacherMoveLabels.length > 0) {
+      if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
-        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`))
+        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
       return proposals
     }
 
     if (originalTeacherId) {
-      if (originalTeacherMoveLabels.length > 0) {
+      if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
-        return [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`)]
+        return [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices)]
       }
       if (originalTeacher) {
         return [toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
@@ -4170,7 +4198,71 @@ const AdminPage = () => {
     }
   }
 
-  const applyForceAssignAction = async (proposal: ForceAssignAction): Promise<void> => {
+  const buildCurrentStatusReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
+    if (!data) return null
+
+    const liveActual = data.actualResults ?? {}
+    const effectiveAssignments = buildEffectiveAssignments(assignmentState, liveActual)
+    const { studentsWithRemaining, currentPendingMakeupDemands, currentAvailableSlotKeys } = buildStudentsWithRemaining(
+      assignmentState,
+      effectiveAssignments,
+      liveActual,
+    )
+
+    const missingTotal = (student: { missingBySubj: Record<string, number> }) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
+    const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
+    const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
+    const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
+    const makeupEntries = buildUnplacedMakeupEntries(
+      assignmentState,
+      effectiveAssignments,
+      currentAvailableSlotKeys,
+      currentPendingMakeupDemands,
+      currentPendingMakeupDemands,
+    )
+    const remainingDetailItems = buildRemainingDetailItems(
+      assignmentState,
+      effectiveAssignments,
+      currentAvailableSlotKeys,
+      underAssigned,
+      currentPendingMakeupDemands,
+      makeupEntries,
+    )
+
+    const sections: StatusSection[] = [
+      {
+        key: 'under' as const,
+        title: '残コマ詳細',
+        items: remainingDetailItems,
+      },
+      {
+        key: 'over' as const,
+        title: '過割当',
+        items: overAssigned.map((student) => ({
+          label: student.name,
+          causes: student.remaining.filter((entry) => entry.rem < 0).map((entry) => `${entry.subj}${entry.rem}`),
+          proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
+        })),
+      },
+      {
+        key: 'shortage' as const,
+        title: `${instructorLabel}不足`,
+        items: teacherShortages.map((item) => ({
+          label: slotLabel(item.slot, isMendan, mendanStart),
+          causes: [item.detail],
+          proposals: buildTeacherShortageProposals(effectiveAssignments, item),
+        })),
+      },
+    ].filter((section) => section.items.length > 0)
+
+    return {
+      title: '現在のコマ割り状況',
+      summary: sections.length > 0 ? '未解決項目' : '未解決項目なし',
+      sections,
+    }
+  }
+
+  const applyProposalAction = async (proposal: ProposalAction): Promise<void> => {
     if (!data) return
     let success = false
     let errorMessage = ''
@@ -4185,135 +4277,291 @@ const AdminPage = () => {
       const students = actionStudentIds.map((sid) => current.students.find((s) => s.id === sid)).filter(Boolean) as Student[]
       const teacher = current.teachers.find((t) => t.id === proposal.teacherId)
       if (students.length !== actionStudentIds.length || !teacher) {
-        errorMessage = '生徒または講師が見つからないため、強制割当できませんでした。'
+        errorMessage = '生徒または講師が見つからないため、提案を実行できませんでした。'
         return current
       }
-      if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.slot)) {
-        errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
+
+      if (proposal.type === 'force-assign') {
+        if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.slot)) {
+          errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
+          return current
+        }
+        for (const student of students) {
+          if (!isStudentAvailable(student, proposal.slot)) {
+            errorMessage = `${student.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
+            return current
+          }
+        }
+
+        const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
+        if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
+          const targetStudentIds = proposal.assignmentStudentIds
+          const targetIndex = slotAssignments.findIndex((assignment) => !assignment.teacherId && !assignment.isGroupLesson && sameStudentSet(assignment.studentIds, targetStudentIds))
+          if (targetIndex < 0) {
+            errorMessage = '講師未割当の対象ペアが見つからないため、代行割当できませんでした。'
+            return current
+          }
+          if (slotAssignments.some((assignment, index) => index !== targetIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)) {
+            errorMessage = `${teacher.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} で別ペアに割当済みです。`
+            return current
+          }
+
+          const targetAssignment = slotAssignments[targetIndex]
+          slotAssignments[targetIndex] = {
+            ...targetAssignment,
+            teacherId: proposal.teacherId,
+            subject: proposal.subject,
+            ...(proposal.assignmentStudentSubjects ? { studentSubjects: { ...proposal.assignmentStudentSubjects } } : {}),
+            teacherUnassignedReason: undefined,
+            teacherUnavailableOriginalId: undefined,
+          }
+        } else {
+          if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) {
+            errorMessage = `${studentName} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} に割当済みです。`
+            return current
+          }
+
+          const targetIndex = slotAssignments.findIndex((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
+          if (targetIndex >= 0) {
+            const targetAssignment = slotAssignments[targetIndex]
+            if (targetAssignment.studentIds.length >= 2) {
+              errorMessage = `${teacher.name} のペアは既に満席です。`
+              return current
+            }
+            if (targetAssignment.studentIds.some((sid) => constraintFor(current.constraints, sid, proposal.studentId) === 'incompatible')) {
+              errorMessage = `${teacher.name} の既存ペアには相性不可の生徒がいるため、強制割当できません。`
+              return current
+            }
+            const nextStudentIds = [...targetAssignment.studentIds, proposal.studentId]
+            const nextStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}), [proposal.studentId]: proposal.subject }
+            const primarySubject = nextStudentSubjects[nextStudentIds[0]] ?? targetAssignment.subject ?? proposal.subject
+            const nextMakeupInfo = proposal.makeupInfo
+              ? { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo }
+              : targetAssignment.regularMakeupInfo
+            const nextSubstituteInfo = proposal.substituteInfo
+              ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo }
+              : targetAssignment.regularSubstituteInfo
+            slotAssignments[targetIndex] = {
+              ...targetAssignment,
+              studentIds: nextStudentIds,
+              subject: primarySubject,
+              studentSubjects: nextStudentSubjects,
+              ...(nextMakeupInfo ? { regularMakeupInfo: nextMakeupInfo } : {}),
+              ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
+            }
+          } else {
+            const deskCount = current.settings.deskCount ?? 0
+            if (deskCount > 0 && slotAssignments.length >= deskCount) {
+              errorMessage = '机数上限のため、強制割当できません。'
+              return current
+            }
+            slotAssignments.push({
+              teacherId: proposal.teacherId,
+              studentIds: [proposal.studentId],
+              subject: proposal.subject,
+              studentSubjects: { [proposal.studentId]: proposal.subject },
+              ...(proposal.makeupInfo ? { regularMakeupInfo: { [proposal.studentId]: proposal.makeupInfo } } : {}),
+              ...(proposal.substituteInfo ? { regularSubstituteInfo: { [proposal.studentId]: proposal.substituteInfo } } : {}),
+            })
+          }
+        }
+
+        success = true
+        setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
+        const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
+        const nextChanged = { ...(currentHighlights.changed ?? {}) }
+        const nextAdded = { ...(currentHighlights.added ?? {}) }
+        const nextDetails = { ...(currentHighlights.changeDetails ?? {}) }
+        const filteredUnplacedMakeup = (currentHighlights.unplacedMakeup ?? []).filter((item) => {
+          if (item.studentId !== proposal.studentId) return true
+          if (item.subject !== proposal.subject) return true
+          if ((proposal.makeupInfo || proposal.substituteInfo) && item.teacherId !== (proposal.substituteInfo?.regularTeacherId ?? proposal.teacherId)) return true
+          return false
+        })
+        const highlightedAssignment = slotAssignments.find((assignment) =>
+          proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0
+            ? assignment.teacherId === proposal.teacherId && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
+            : assignment.teacherId === proposal.teacherId && assignment.studentIds.includes(proposal.studentId),
+        )
+        if (highlightedAssignment) {
+          const highlightedSig = assignmentSignature(highlightedAssignment)
+          nextChanged[proposal.slot] = [...new Set([...(nextChanged[proposal.slot] ?? []), highlightedSig])]
+          if (!nextDetails[proposal.slot]) nextDetails[proposal.slot] = {}
+          nextDetails[proposal.slot][highlightedSig] = proposal.substituteInfo
+            ? '強制割当: 通常講師代行'
+            : proposal.makeupInfo
+              ? '強制割当: 振替'
+              : '強制割当'
+          if (nextAdded[proposal.slot]) {
+            nextAdded[proposal.slot] = nextAdded[proposal.slot].filter((sig) => sig !== highlightedSig)
+            if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
+          }
+        }
+        const nextCurrent = {
+          ...current,
+          assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
+          autoAssignHighlights: {
+            ...currentHighlights,
+            added: nextAdded,
+            changed: nextChanged,
+            changeDetails: nextDetails,
+            unplacedMakeup: filteredUnplacedMakeup,
+          },
+        }
+        nextStatusReport = buildCurrentStatusReport(nextCurrent.assignments)
+        return nextCurrent
+      }
+
+      const sourceAssignments = [...(current.assignments[proposal.sourceSlot] ?? [])]
+      const sourceIndex = sourceAssignments.findIndex((assignment) =>
+        !assignment.isGroupLesson
+        && !assignment.teacherId
+        && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
+        && assignment.teacherUnavailableOriginalId === proposal.teacherId,
+      )
+      if (sourceIndex < 0) {
+        errorMessage = '移動対象の講師未割当ペアが見つからないため、移動提案を実行できませんでした。'
+        return current
+      }
+      if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.targetSlot)) {
+        errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に出席不可です。`
         return current
       }
       for (const student of students) {
-        if (!isStudentAvailable(student, proposal.slot)) {
-          errorMessage = `${student.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
+        if (!isStudentAvailable(student, proposal.targetSlot)) {
+          errorMessage = `${student.name} は現在 ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に出席不可です。`
           return current
         }
       }
 
-      const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
-      if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
-        const targetIndex = slotAssignments.findIndex((assignment) => !assignment.teacherId && !assignment.isGroupLesson && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds!))
-        if (targetIndex < 0) {
-          errorMessage = '講師未割当の対象ペアが見つからないため、代行割当できませんでした。'
+      const sourceAssignment = sourceAssignments[sourceIndex]
+      const targetAssignments = [...(current.assignments[proposal.targetSlot] ?? [])]
+      if (targetAssignments.some((assignment) => assignment.studentIds.some((sid) => proposal.assignmentStudentIds.includes(sid)))) {
+        errorMessage = `${studentName} は既に ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に割当済みです。`
+        return current
+      }
+
+      const existingTeacherPair = targetAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
+      let movedAssignment: Assignment
+      if (existingTeacherPair) {
+        if (existingTeacherPair.studentIds.length + proposal.assignmentStudentIds.length > 2) {
+          errorMessage = `${teacher.name} のペアは既に満席です。`
           return current
         }
-        if (slotAssignments.some((assignment, index) => index !== targetIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)) {
-          errorMessage = `${teacher.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} で別ペアに割当済みです。`
+        if (proposal.assignmentStudentIds.some((studentId) => existingTeacherPair.studentIds.some((existingId) => constraintFor(current.constraints, existingId, studentId) === 'incompatible'))) {
+          errorMessage = `${teacher.name} の既存ペアには相性不可の生徒がいるため、移動提案を実行できません。`
           return current
         }
 
-        const targetAssignment = slotAssignments[targetIndex]
-        slotAssignments[targetIndex] = {
-          ...targetAssignment,
+        const targetIndex = targetAssignments.findIndex((assignment) => assignment === existingTeacherPair)
+        const mergedStudentIds = [...existingTeacherPair.studentIds, ...proposal.assignmentStudentIds]
+        const mergedStudentSubjects = {
+          ...(existingTeacherPair.studentSubjects ?? {}),
+          ...(proposal.assignmentStudentSubjects ?? sourceAssignment.studentSubjects ?? Object.fromEntries(proposal.assignmentStudentIds.map((sid) => [sid, sourceAssignment.studentSubjects?.[sid] ?? sourceAssignment.subject]))),
+        }
+        const mergedMakeupInfo = { ...(existingTeacherPair.regularMakeupInfo ?? {}) }
+        if (sourceAssignment.regularMakeupInfo) {
+          Object.assign(mergedMakeupInfo, sourceAssignment.regularMakeupInfo)
+        }
+        if (sourceAssignment.isRegular) {
+          const srcDate = proposal.sourceSlot.split('_')[0]
+          const srcDayOfWeek = getSlotDayOfWeek(proposal.sourceSlot)
+          const srcSlotNumber = getSlotNumber(proposal.sourceSlot)
+          for (const studentId of proposal.assignmentStudentIds) {
+            if (!mergedMakeupInfo[studentId]) {
+              mergedMakeupInfo[studentId] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNumber, date: srcDate }
+            }
+          }
+        }
+        const mergedSubstituteInfo = sourceAssignment.regularSubstituteInfo
+          ? { ...(existingTeacherPair.regularSubstituteInfo ?? {}), ...sourceAssignment.regularSubstituteInfo }
+          : existingTeacherPair.regularSubstituteInfo
+        movedAssignment = {
+          ...existingTeacherPair,
+          studentIds: mergedStudentIds,
+          studentSubjects: mergedStudentSubjects,
+          subject: mergedStudentSubjects[mergedStudentIds[0]] ?? existingTeacherPair.subject ?? proposal.subject,
+          ...(Object.keys(mergedMakeupInfo).length > 0 ? { regularMakeupInfo: mergedMakeupInfo } : {}),
+          ...(mergedSubstituteInfo ? { regularSubstituteInfo: mergedSubstituteInfo } : {}),
+        }
+        targetAssignments[targetIndex] = movedAssignment
+      } else {
+        const deskCount = current.settings.deskCount ?? 0
+        if (deskCount > 0 && targetAssignments.length >= deskCount) {
+          errorMessage = '机数上限のため、移動提案を実行できません。'
+          return current
+        }
+
+        const movedCopy: Assignment = {
+          ...sourceAssignment,
           teacherId: proposal.teacherId,
           subject: proposal.subject,
           ...(proposal.assignmentStudentSubjects ? { studentSubjects: { ...proposal.assignmentStudentSubjects } } : {}),
           teacherUnassignedReason: undefined,
           teacherUnavailableOriginalId: undefined,
         }
-      } else {
-        if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) {
-          errorMessage = `${studentName} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} に割当済みです。`
-          return current
+        if (movedCopy.isRegular) {
+          const srcDate = proposal.sourceSlot.split('_')[0]
+          const srcDayOfWeek = getSlotDayOfWeek(proposal.sourceSlot)
+          const srcSlotNumber = getSlotNumber(proposal.sourceSlot)
+          const regularMakeupInfo = { ...(movedCopy.regularMakeupInfo ?? {}) }
+          for (const studentId of proposal.assignmentStudentIds) {
+            if (!regularMakeupInfo[studentId]) {
+              regularMakeupInfo[studentId] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNumber, date: srcDate }
+            }
+          }
+          movedCopy.isRegular = false
+          movedCopy.regularMakeupInfo = regularMakeupInfo
         }
-
-        const targetIndex = slotAssignments.findIndex((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-        if (targetIndex >= 0) {
-          const targetAssignment = slotAssignments[targetIndex]
-          if (targetAssignment.studentIds.length >= 2) {
-            errorMessage = `${teacher.name} のペアは既に満席です。`
-            return current
-          }
-          if (targetAssignment.studentIds.some((sid) => constraintFor(current.constraints, sid, proposal.studentId) === 'incompatible')) {
-            errorMessage = `${teacher.name} の既存ペアには相性不可の生徒がいるため、強制割当できません。`
-            return current
-          }
-          const nextStudentIds = [...targetAssignment.studentIds, proposal.studentId]
-          const nextStudentSubjects = { ...(targetAssignment.studentSubjects ?? {}), [proposal.studentId]: proposal.subject }
-          const primarySubject = nextStudentSubjects[nextStudentIds[0]] ?? targetAssignment.subject ?? proposal.subject
-          const nextMakeupInfo = proposal.makeupInfo
-            ? { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo }
-            : targetAssignment.regularMakeupInfo
-          const nextSubstituteInfo = proposal.substituteInfo
-            ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo }
-            : targetAssignment.regularSubstituteInfo
-          slotAssignments[targetIndex] = {
-            ...targetAssignment,
-            studentIds: nextStudentIds,
-            subject: primarySubject,
-            studentSubjects: nextStudentSubjects,
-            ...(nextMakeupInfo ? { regularMakeupInfo: nextMakeupInfo } : {}),
-            ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
-          }
-        } else {
-          const deskCount = current.settings.deskCount ?? 0
-          if (deskCount > 0 && slotAssignments.length >= deskCount) {
-            errorMessage = '机数上限のため、強制割当できません。'
-            return current
-          }
-          slotAssignments.push({
-            teacherId: proposal.teacherId,
-            studentIds: [proposal.studentId],
-            subject: proposal.subject,
-            studentSubjects: { [proposal.studentId]: proposal.subject },
-            ...(proposal.makeupInfo ? { regularMakeupInfo: { [proposal.studentId]: proposal.makeupInfo } } : {}),
-            ...(proposal.substituteInfo ? { regularSubstituteInfo: { [proposal.studentId]: proposal.substituteInfo } } : {}),
-          })
-        }
+        movedAssignment = movedCopy
+        targetAssignments.push(movedCopy)
       }
 
+      sourceAssignments.splice(sourceIndex, 1)
+      const nextAssignments = { ...current.assignments }
+      if (sourceAssignments.length === 0) {
+        delete nextAssignments[proposal.sourceSlot]
+      } else {
+        nextAssignments[proposal.sourceSlot] = sourceAssignments
+      }
+      nextAssignments[proposal.targetSlot] = targetAssignments
+
       success = true
-      setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
+      setManuallyModifiedSlots((prev) => {
+        const next = new Set(prev)
+        next.add(proposal.sourceSlot)
+        next.add(proposal.targetSlot)
+        return next
+      })
       const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
       const nextChanged = { ...(currentHighlights.changed ?? {}) }
       const nextAdded = { ...(currentHighlights.added ?? {}) }
       const nextDetails = { ...(currentHighlights.changeDetails ?? {}) }
-      const filteredUnplacedMakeup = (currentHighlights.unplacedMakeup ?? []).filter((item) => {
-        if (item.studentId !== proposal.studentId) return true
-        if (item.subject !== proposal.subject) return true
-        if ((proposal.makeupInfo || proposal.substituteInfo) && item.teacherId !== (proposal.substituteInfo?.regularTeacherId ?? proposal.teacherId)) return true
-        return false
-      })
-      const highlightedAssignment = slotAssignments.find((assignment) =>
-        proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0
-          ? assignment.teacherId === proposal.teacherId && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
-          : assignment.teacherId === proposal.teacherId && assignment.studentIds.includes(proposal.studentId),
-      )
-      if (highlightedAssignment) {
-        const highlightedSig = assignmentSignature(highlightedAssignment)
-        nextChanged[proposal.slot] = [...new Set([...(nextChanged[proposal.slot] ?? []), highlightedSig])]
-        if (!nextDetails[proposal.slot]) nextDetails[proposal.slot] = {}
-        nextDetails[proposal.slot][highlightedSig] = proposal.substituteInfo
-          ? '強制割当: 通常講師代行'
-          : proposal.makeupInfo
-            ? '強制割当: 振替'
-            : '強制割当'
-        if (nextAdded[proposal.slot]) {
-          nextAdded[proposal.slot] = nextAdded[proposal.slot].filter((sig) => sig !== highlightedSig)
-          if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
-        }
+      const sourceSig = assignmentSignature(sourceAssignment)
+      if (nextChanged[proposal.sourceSlot]) {
+        nextChanged[proposal.sourceSlot] = nextChanged[proposal.sourceSlot].filter((sig) => sig !== sourceSig)
+        if (nextChanged[proposal.sourceSlot].length === 0) delete nextChanged[proposal.sourceSlot]
       }
+      if (nextAdded[proposal.sourceSlot]) {
+        nextAdded[proposal.sourceSlot] = nextAdded[proposal.sourceSlot].filter((sig) => sig !== sourceSig)
+        if (nextAdded[proposal.sourceSlot].length === 0) delete nextAdded[proposal.sourceSlot]
+      }
+      const movedSig = assignmentSignature(movedAssignment)
+      nextChanged[proposal.targetSlot] = [...new Set([...(nextChanged[proposal.targetSlot] ?? []), movedSig])]
+      if (!nextDetails[proposal.targetSlot]) nextDetails[proposal.targetSlot] = {}
+      nextDetails[proposal.targetSlot][movedSig] = `講師不足移動: ${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)}`
+
       const nextCurrent = {
         ...current,
-        assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
+        assignments: nextAssignments,
         autoAssignHighlights: {
           ...currentHighlights,
           added: nextAdded,
           changed: nextChanged,
           changeDetails: nextDetails,
-          unplacedMakeup: filteredUnplacedMakeup,
         },
       }
-      nextStatusReport = buildShortageOnlyReport(nextCurrent.assignments)
+      nextStatusReport = buildCurrentStatusReport(nextCurrent.assignments)
       return nextCurrent
     })
 
@@ -4322,8 +4570,15 @@ const AdminPage = () => {
       return
     }
     if (success) {
-      if (nextStatusReport) setStatusModal(nextStatusReport)
-      alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
+      if (nextStatusReport) {
+        setStatusModal(nextStatusReport)
+        setLatestStatusReport(nextStatusReport)
+      }
+      if (proposal.type === 'force-assign') {
+        alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
+      } else {
+        alert(`移動提案を実行しました。\n${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} / ${teacherName} / ${studentName}`)
+      }
     }
   }
 
@@ -6515,7 +6770,7 @@ service cloud.firestore {
                                         <button
                                           className="status-proposal-action"
                                           type="button"
-                                          onClick={() => selectedChoice && void applyForceAssignAction(selectedChoice.action)}
+                                          onClick={() => selectedChoice && void applyProposalAction(selectedChoice.action)}
                                         >
                                           実行
                                         </button>
@@ -6525,7 +6780,7 @@ service cloud.firestore {
                                     <button
                                       className="status-proposal-action"
                                       type="button"
-                                      onClick={() => void applyForceAssignAction(proposal.action!)}
+                                      onClick={() => void applyProposalAction(proposal.action!)}
                                     >
                                       {proposal.label}
                                     </button>
