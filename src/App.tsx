@@ -167,10 +167,22 @@ const STATUS_ADD_TEACHER = '講師の空きコマを増やしてください'
 const STATUS_ADD_STUDENT = '生徒の不可日・不可コマを減らしてください'
 const STATUS_ALIGN_AVAILABILITY = '講師と生徒の空きが重なるよう調整してください'
 const STATUS_ADJUST_DESKS = '同時間の割当を減らすか机数を増やしてください'
+const STATUS_RESOLVE_SHORTAGE_FIRST = '先に講師不足を解消してください。未割当や出席不可の講師枠が残っている間は、残コマを埋める提案を出しません'
 const STATUS_REVIEW_COMPATIBILITY = '相性不可の組み合わせや既存ペアを見直してください'
 const STATUS_REVIEW_DAILY_LIMIT = 'その日の別コマを減らすか制約カードを見直してください'
 const STATUS_MOVE_SAME_SLOT = '同時間の別割当を移すか他のコマで調整してください'
 const STATUS_REVIEW_SUBJECTS = '講師の担当科目設定を見直してください'
+
+const STATUS_SECTION_PRIORITY: Record<StatusSection['key'], number> = {
+  shortage: 0,
+  under: 1,
+  over: 2,
+  overRemoved: 3,
+  makeup: 4,
+}
+
+const sortStatusSections = (sections: StatusSection[]): StatusSection[] =>
+  [...sections].sort((left, right) => (STATUS_SECTION_PRIORITY[left.key] ?? 99) - (STATUS_SECTION_PRIORITY[right.key] ?? 99))
 
 const parseBlockerEntry = (blocker: string): { slot: string; reason: string } => {
   const divider = blocker.indexOf(': ')
@@ -3042,6 +3054,11 @@ const AdminPage = () => {
     return false
   }, [data, isMendan])
 
+  const currentTeacherShortageCount = useMemo(() => {
+    if (!data || isMendan) return 0
+    return collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults)).length
+  }, [data, isMendan])
+
   // For mendan: compute which slot numbers actually have manager availability
   const mendanActiveSlots = useMemo(() => {
     if (!isMendan || !data) return new Set<number>()
@@ -3825,8 +3842,11 @@ const AdminPage = () => {
     underAssigned: StudentRemainingSummary[],
     pendingMakeupDemands: PendingMakeupDemand[],
     makeupEntries: UnplacedMakeupEntry[],
+    options?: { blockAssignmentsUntilShortagesResolved?: boolean },
   ): StatusDetail[] => {
     if (!data) return []
+
+    const blockAssignmentsUntilShortagesResolved = options?.blockAssignmentsUntilShortagesResolved ?? false
 
     const details = new Map<string, { label: string; causes: string[]; proposals: StatusProposal[] }>()
     const order: string[] = []
@@ -3839,7 +3859,9 @@ const AdminPage = () => {
       if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
       const specials = student.remaining.filter((entry) => entry.rem > 0)
       if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
-      if (currentStudent) {
+      if (blockAssignmentsUntilShortagesResolved) {
+        proposalPool.push(toStatusProposal(STATUS_RESOLVE_SHORTAGE_FIRST))
+      } else if (currentStudent) {
         for (const special of specials) {
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
           proposalPool.push(
@@ -4520,6 +4542,7 @@ const AdminPage = () => {
     const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
     const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
     const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
+    const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
     const makeupEntries = buildUnplacedMakeupEntries(
       assignmentState,
       effectiveAssignments,
@@ -4534,9 +4557,10 @@ const AdminPage = () => {
       underAssigned,
       currentPendingMakeupDemands,
       makeupEntries,
+      { blockAssignmentsUntilShortagesResolved },
     )
 
-    const sections: StatusSection[] = [
+    const sections = sortStatusSections([
       {
         key: 'under' as const,
         title: '残コマ詳細',
@@ -4560,7 +4584,7 @@ const AdminPage = () => {
           proposals: buildTeacherShortageProposals(effectiveAssignments, item),
         })),
       },
-    ].filter((section) => section.items.length > 0)
+    ].filter((section) => section.items.length > 0))
 
     return {
       title: '現在のコマ割り状況',
@@ -4584,6 +4608,7 @@ const AdminPage = () => {
     const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
     const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
     const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
+    const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
     const makeupEntries = buildUnplacedMakeupEntries(
       assignmentState,
       effectiveAssignments,
@@ -4598,9 +4623,10 @@ const AdminPage = () => {
       underAssigned,
       currentPendingMakeupDemands,
       makeupEntries,
+      { blockAssignmentsUntilShortagesResolved },
     )
 
-    const sections: StatusSection[] = [
+    const sections = sortStatusSections([
       {
         key: 'under' as const,
         title: '残コマ詳細',
@@ -4624,7 +4650,7 @@ const AdminPage = () => {
           proposals: buildTeacherShortageProposals(effectiveAssignments, item),
         })),
       },
-    ].filter((section) => section.items.length > 0)
+    ].filter((section) => section.items.length > 0))
 
     return {
       title: '現在のコマ割り状況',
@@ -4969,6 +4995,13 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
+    if (!isMendan) {
+      const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults))
+      if (currentShortages.length > 0) {
+        alert(`先に${instructorLabel}不足を解消してください。\n未解決 ${currentShortages.length} 件が残っている間は、自動提案で残コマを埋められません。`)
+        return
+      }
+    }
     setAutoAssignLoading(true)
     setAutoAssignProgress(0)
     setManuallyModifiedSlots(new Set()) // Clear manual modifications on auto-assign
@@ -5160,7 +5193,7 @@ const AdminPage = () => {
     const report: StatusReport = {
       title: '自動提案結果',
       summary: changeLog.length > 0 ? `${changeLog.length}件変更` : '変更なし',
-      sections: [underSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0),
+      sections: sortStatusSections([underSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0)),
     }
     setLatestStatusReport(report)
     setStatusModal(report)
@@ -6190,6 +6223,7 @@ service cloud.firestore {
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortageItems(effAssignments)
+                const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
                 const makeupEntries = buildUnplacedMakeupEntries(
                   data.assignments,
                   effAssignments,
@@ -6204,36 +6238,10 @@ service cloud.firestore {
                   underAssigned,
                   currentPendingMakeupDemands,
                   makeupEntries,
+                  { blockAssignmentsUntilShortagesResolved },
                 )
 
-                const underTooltip = underAssigned
-                  .map((s) => {
-                    const parts: string[] = []
-                    const missingEntries = Object.entries(s.missingBySubj).filter(([, c]) => c > 0)
-                    if (missingEntries.length > 0) {
-                      parts.push(missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`).join(', '))
-                    }
-                    if (s.noMakeupReasons.length > 0) {
-                      const reasonCounts = { no_student: 0, no_teacher: 0, no_match: 0 }
-                      for (const r of s.noMakeupReasons) reasonCounts[r]++
-                      const reasonParts: string[] = []
-                      if (reasonCounts.no_student > 0) reasonParts.push(`生徒の出席可能日なし${reasonCounts.no_student > 1 ? `×${reasonCounts.no_student}` : ''}`)
-                      if (reasonCounts.no_teacher > 0) reasonParts.push(`講師の出席可能日なし${reasonCounts.no_teacher > 1 ? `×${reasonCounts.no_teacher}` : ''}`)
-                      if (reasonCounts.no_match > 0) reasonParts.push(`講師と生徒のマッチする日なし${reasonCounts.no_match > 1 ? `×${reasonCounts.no_match}` : ''}`)
-                      parts.push(`振替不可: ${reasonParts.join(', ')}`)
-                    }
-                    const specials = s.remaining.filter((r) => r.rem > 0)
-                    if (specials.length > 0) parts.push(specials.map((r) => `特別${r.subj}残${r.rem}コマ`).join(', '))
-                    return `${s.name}: ${parts.join(', ')}`
-                  })
-                  .join('\n')
-                const overTooltip = overAssigned
-                  .map((s) => `${s.name}: ${s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`).join(', ')}`)
-                  .join('\n')
-                const shortageTooltip = teacherShortages
-                  .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)}: ${item.detail}`)
-                  .join('\n')
-                const currentSections: StatusSection[] = [
+                const currentSections = sortStatusSections([
                   {
                     key: 'under' as const,
                     title: '残コマ詳細',
@@ -6257,12 +6265,19 @@ service cloud.firestore {
                       proposals: buildTeacherShortageProposals(effAssignments, item),
                     })),
                   },
-                ].filter((section) => section.items.length > 0)
+                ].filter((section) => section.items.length > 0))
                 const currentStatusReport: StatusReport = {
                   title: '現在のコマ割り状況',
                   summary: '未解決項目',
                   sections: currentSections,
                 }
+
+                const unresolvedCount = teacherShortages.length + underAssigned.length + overAssigned.length
+                const unresolvedTooltip = [
+                  teacherShortages.length > 0 ? `${instructorLabel}不足 ${teacherShortages.length}件` : '',
+                  underAssigned.length > 0 ? `残コマ ${underAssigned.length}名` : '',
+                  overAssigned.length > 0 ? `過割当 ${overAssigned.length}名` : '',
+                ].filter(Boolean).join(' / ')
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
                 const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
@@ -6271,28 +6286,23 @@ service cloud.firestore {
                   <>
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
-                    ) : underAssigned.length > 0 ? (
-                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under') })}>
-                        残コマあり: {underAssigned.length}名
+                    ) : unresolvedCount > 0 ? (
+                      <span
+                        className="badge warn"
+                        title={unresolvedTooltip}
+                        style={{ cursor: 'pointer', background: teacherShortages.length > 0 ? '#fff1f2' : '#fef3c7', color: teacherShortages.length > 0 ? '#be123c' : '#92400e', border: teacherShortages.length > 0 ? '1px solid #fda4af' : '1px solid #fcd34d' }}
+                        onClick={() => setStatusModal(currentStatusReport)}
+                      >
+                        未解決: {unresolvedCount}件
                       </span>
                     ) : (
                       <span className="badge ok">全員割当完了</span>
-                    )}
-                    {overAssigned.length > 0 && (
-                      <span className="badge" title={overTooltip} style={{ cursor: 'pointer', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'over') })}>
-                        過割当: {overAssigned.length}名
-                      </span>
-                    )}
-                    {teacherShortages.length > 0 && (
-                      <span className="badge" title={shortageTooltip} style={{ cursor: 'pointer', background: '#fff1f2', color: '#be123c', border: '1px solid #fda4af' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'shortage') })}>
-                        {instructorLabel}不足: {teacherShortages.length}件
-                      </span>
                     )}
                   </>
                 )
               })()}
               {shouldShowAutoAssignButton && (
-                <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
+                <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading || (!isMendan && currentTeacherShortageCount > 0)} title={!isMendan && currentTeacherShortageCount > 0 ? `先に${instructorLabel}不足 ${currentTeacherShortageCount}件を解消してください` : undefined}>
                   {isMendan ? '自動割当（先着順）' : '自動提案'}
                 </button>
               )}
