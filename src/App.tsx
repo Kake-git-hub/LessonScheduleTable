@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.30'
+const APP_VERSION = '1.3.31'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -1842,6 +1842,7 @@ type AnalyticsTab = 'teacher' | 'student' | 'day' | 'subject'
 const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: string[] }) => {
   const [tab, setTab] = useState<AnalyticsTab>('teacher')
   const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+  const sessionDates = useMemo(() => getDatesInRange(data.settings), [data.settings])
 
   // Precompute helpers (use effective assignments: actual results override planned)
   const effectiveAssignmentsMap = useMemo(
@@ -1926,7 +1927,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         e.assignment.studentIds.includes(student.id),
       )
       const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]).length
-      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular || !!e.assignment.regularSubstituteInfo?.[student.id]).length
+      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular || !!e.assignment.regularMakeupInfo?.[student.id] || !!e.assignment.regularSubstituteInfo?.[student.id]).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
       // Count unsatisfied slots: student was in planned assignment but removed from actual result
@@ -1960,6 +1961,35 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         return { subject: subj, desired, assigned, diff: assigned - desired }
       })
 
+      const regularDesiredBySubject = sessionDates.reduce<Record<string, number>>((acc, date) => {
+        const dayOfWeek = getIsoDayOfWeek(date)
+        for (const lesson of data.regularLessons) {
+          if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
+          const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
+          acc[subject] = (acc[subject] ?? 0) + 1
+        }
+        return acc
+      }, {})
+
+      const regularAssignedBySubject = myAssignments.reduce<Record<string, number>>((acc, entry) => {
+        if (!entry.assignment.isRegular && !entry.assignment.regularMakeupInfo?.[student.id] && !entry.assignment.regularSubstituteInfo?.[student.id]) {
+          return acc
+        }
+        const subject = getStudentSubject(entry.assignment, student.id)
+        acc[subject] = (acc[subject] ?? 0) + 1
+        return acc
+      }, {})
+
+      const regularSubjectNames = [...new Set([...Object.keys(regularDesiredBySubject), ...Object.keys(regularAssignedBySubject)])].sort((a, b) => a.localeCompare(b, 'ja'))
+      const regularSubjectDetails = regularSubjectNames.map((subject) => {
+        const desired = regularDesiredBySubject[subject] ?? 0
+        const assigned = regularAssignedBySubject[subject] ?? 0
+        return { subject, desired, assigned, diff: assigned - desired }
+      })
+
+      const regularDesiredTotal = Object.values(regularDesiredBySubject).reduce((sum, count) => sum + count, 0)
+      const regularAssignedTotal = Object.values(regularAssignedBySubject).reduce((sum, count) => sum + count, 0)
+
       const totalDesired = Object.values(student.subjectSlots).reduce((s, c) => s + c, 0)
       const totalAssigned = totalSlots
 
@@ -1975,16 +2005,20 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         student,
         totalSlots,
         regularSlots,
+        regularDesiredTotal,
+        regularAssignedTotal,
         totalDesired,
         totalAssigned,
         fulfillment: totalDesired > 0 ? Math.round((totalAssigned / totalDesired) * 100) : 0,
+        regularFulfillment: regularDesiredTotal > 0 ? Math.round((regularAssignedTotal / regularDesiredTotal) * 100) : 0,
         attendanceDays: dates.size,
         subjectDetails,
+        regularSubjectDetails,
         uniqueTeacherCount: teacherIds.size,
         unsatisfiedSlots,
       }
     })
-  }, [data, allSlotAssignments, slotKeys])
+  }, [data, allSlotAssignments, slotKeys, sessionDates])
 
   // --- Day of Week Analytics ---
   const dayStats = useMemo(() => {
@@ -2137,7 +2171,9 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                 <th>充足率</th>
                 <th>不充足</th>
                 <th>科目別（割当/希望）</th>
-                <th>通常</th>
+                <th>通常計（割当/必要）</th>
+                <th>通常充足率</th>
+                <th>通常科目別（割当/必要）</th>
                 <th>出席日数</th>
                 <th>担当講師数</th>
               </tr>
@@ -2175,7 +2211,30 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
                     })}
                     {ss.subjectDetails.length === 0 && '-'}
                   </td>
-                  <td>{ss.regularSlots}</td>
+                  <td>{ss.regularAssignedTotal}/{ss.regularDesiredTotal}</td>
+                  <td>
+                    {ss.regularDesiredTotal > 0 ? (
+                      <span style={{
+                        color: ss.regularFulfillment >= 100 ? '#16a34a' : ss.regularFulfillment >= 70 ? '#d97706' : '#dc2626',
+                        fontWeight: 600,
+                      }}>
+                        {ss.regularFulfillment}%
+                      </span>
+                    ) : (
+                      <span style={{ color: '#6b7280' }}>-</span>
+                    )}
+                  </td>
+                  <td style={{ fontSize: '0.85em' }}>
+                    {ss.regularSubjectDetails.map((sd) => {
+                      const color = sd.diff > 0 ? '#dc2626' : sd.diff < 0 ? '#d97706' : '#16a34a'
+                      return (
+                        <span key={sd.subject} style={{ marginRight: '8px' }}>
+                          {sd.subject}:<span style={{ color, fontWeight: 500 }}>{sd.assigned}/{sd.desired}</span>
+                        </span>
+                      )
+                    })}
+                    {ss.regularSubjectDetails.length === 0 && '-'}
+                  </td>
                   <td>{ss.attendanceDays}日</td>
                   <td>{ss.uniqueTeacherCount}名</td>
                 </tr>
