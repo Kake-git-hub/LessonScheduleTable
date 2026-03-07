@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.29'
+const APP_VERSION = '1.3.30'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3095,6 +3095,40 @@ const AdminPage = () => {
       .slice(0, 5)
   }
 
+  const getRegularMissingBySubject = (
+    student: Student,
+    effectiveAssignments: Record<string, Assignment[]>,
+  ): Record<string, number> => {
+    if (!data) return {}
+
+    const desiredBySubject: Record<string, number> = {}
+    for (const date of getDatesInRange(data.settings)) {
+      const dayOfWeek = getIsoDayOfWeek(date)
+      for (const lesson of data.regularLessons) {
+        if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
+        const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
+        desiredBySubject[subject] = (desiredBySubject[subject] ?? 0) + 1
+      }
+    }
+
+    const assignedBySubject: Record<string, number> = {}
+    for (const slot of slotKeys) {
+      const slotAssignments = effectiveAssignments[slot] ?? []
+      for (const assignment of slotAssignments) {
+        if (!assignment.studentIds.includes(student.id)) continue
+        if (!assignment.isRegular && !assignment.regularMakeupInfo?.[student.id] && !assignment.regularSubstituteInfo?.[student.id]) continue
+        const subject = getStudentSubject(assignment, student.id)
+        assignedBySubject[subject] = (assignedBySubject[subject] ?? 0) + 1
+      }
+    }
+
+    return Object.entries(desiredBySubject).reduce<Record<string, number>>((acc, [subject, desired]) => {
+      const missing = desired - (assignedBySubject[subject] ?? 0)
+      if (missing > 0) acc[subject] = missing
+      return acc
+    }, {})
+  }
+
   const collectPendingMakeupDemands = (
     assignmentState: Record<string, Assignment[]>,
     actualResultsOverride?: Record<string, ActualResult[]>,
@@ -3594,6 +3628,10 @@ const AdminPage = () => {
           missingBySubj[absence.subject] = (missingBySubj[absence.subject] ?? 0) + 1
           noMakeupReasons.push(...absence.reasons)
         }
+        const regularMissingBySubj = getRegularMissingBySubject(student, effectiveAssignments)
+        for (const [subj, count] of Object.entries(regularMissingBySubj)) {
+          missingBySubj[subj] = Math.max(missingBySubj[subj] ?? 0, count)
+        }
 
         const missingTotal = Object.values(missingBySubj).reduce((sum, count) => sum + count, 0)
         if (remaining.length === 0 && missingTotal === 0) return null
@@ -3609,9 +3647,10 @@ const AdminPage = () => {
     for (const item of unplacedMakeupHighlights) {
       const studentName = data.students.find((student) => student.id === item.studentId)?.name
       if (!studentName) continue
+      const sameSubjectCount = unplacedMakeupHighlights.filter((entry) => entry.studentId === item.studentId && entry.subject === item.subject).length
       const existing = studentsWithRemaining.find((student) => student.name === studentName)
-      if (existing) existing.missingBySubj[item.subject] = (existing.missingBySubj[item.subject] ?? 0) + 1
-      else studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [item.subject]: 1 }, noMakeupReasons: [] })
+      if (existing) existing.missingBySubj[item.subject] = Math.max(existing.missingBySubj[item.subject] ?? 0, sameSubjectCount)
+      else studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [item.subject]: sameSubjectCount }, noMakeupReasons: [] })
     }
 
     const missingTotal = (student: { missingBySubj: Record<string, number> }) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
@@ -5188,6 +5227,10 @@ service cloud.firestore {
                       missingBySubj[abs.subject] = (missingBySubj[abs.subject] ?? 0) + 1
                       noMakeupReasons.push(...abs.reasons)
                     }
+                    const regularMissingBySubj = getRegularMissingBySubject(student, effAssignments)
+                    for (const [subj, count] of Object.entries(regularMissingBySubj)) {
+                      missingBySubj[subj] = Math.max(missingBySubj[subj] ?? 0, count)
+                    }
                     const missingTotal = Object.values(missingBySubj).reduce((a, b) => a + b, 0)
                     if (remaining.length === 0 && missingTotal === 0) return null
                     return { name: student.name, remaining, missingBySubj, noMakeupReasons }
@@ -5206,11 +5249,12 @@ service cloud.firestore {
                 for (const um of unplacedMakeupHighlights) {
                   const studentName = data.students.find((s) => s.id === um.studentId)?.name
                   if (!studentName) continue
+                  const sameSubjectCount = unplacedMakeupHighlights.filter((entry) => entry.studentId === um.studentId && entry.subject === um.subject).length
                   const existing = studentsWithRemaining.find((s) => s.name === studentName)
                   if (existing) {
-                    existing.missingBySubj[um.subject] = (existing.missingBySubj[um.subject] ?? 0) + 1
+                    existing.missingBySubj[um.subject] = Math.max(existing.missingBySubj[um.subject] ?? 0, sameSubjectCount)
                   } else {
-                    studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [um.subject]: 1 }, noMakeupReasons: [] })
+                    studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [um.subject]: sameSubjectCount }, noMakeupReasons: [] })
                   }
                 }
 
