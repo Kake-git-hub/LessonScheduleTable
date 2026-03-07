@@ -1926,8 +1926,18 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       const myAssignments = allSlotAssignments.filter((e) =>
         e.assignment.studentIds.includes(student.id),
       )
+      const groupSubjectSet = new Set(
+        (data.groupLessons ?? [])
+          .filter((lesson) => lesson.studentIds.includes(student.id))
+          .map((lesson) => lesson.subject),
+      )
       const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]).length
-      const regularSlots = myAssignments.filter((e) => e.assignment.isRegular || !!e.assignment.regularMakeupInfo?.[student.id] || !!e.assignment.regularSubstituteInfo?.[student.id]).length
+      const regularSlots = myAssignments.filter((e) => {
+        if (e.assignment.isGroupLesson) return false
+        if (!e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]) return false
+        const subject = getStudentSubject(e.assignment, student.id)
+        return !groupSubjectSet.has(subject)
+      }).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
       // Count unsatisfied slots: student was in planned assignment but removed from actual result
@@ -1966,16 +1976,23 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         for (const lesson of data.regularLessons) {
           if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
           const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
+          if (groupSubjectSet.has(subject)) continue
           acc[subject] = (acc[subject] ?? 0) + 1
         }
         return acc
       }, {})
 
       const regularAssignedBySubject = myAssignments.reduce<Record<string, number>>((acc, entry) => {
+        if (entry.assignment.isGroupLesson) {
+          return acc
+        }
         if (!entry.assignment.isRegular && !entry.assignment.regularMakeupInfo?.[student.id] && !entry.assignment.regularSubstituteInfo?.[student.id]) {
           return acc
         }
         const subject = getStudentSubject(entry.assignment, student.id)
+        if (groupSubjectSet.has(subject)) {
+          return acc
+        }
         acc[subject] = (acc[subject] ?? 0) + 1
         return acc
       }, {})
@@ -3154,11 +3171,183 @@ const AdminPage = () => {
       .slice(0, 5)
   }
 
+  type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
+  type StudentRemainingSummary = {
+    studentId: string
+    name: string
+    remaining: { subj: string; rem: number }[]
+    missingBySubj: Record<string, number>
+    noMakeupReasons: NoMakeupReason[]
+  }
+
+  const getGroupSubjectSetForStudent = (studentId: string): Set<string> => {
+    if (!data) return new Set<string>()
+    return new Set(
+      (data.groupLessons ?? [])
+        .filter((lesson) => lesson.studentIds.includes(studentId))
+        .map((lesson) => lesson.subject),
+    )
+  }
+
+  const buildStudentsWithRemaining = (
+    assignmentState: Record<string, Assignment[]>,
+    effectiveAssignments: Record<string, Assignment[]>,
+    liveActual: Record<string, ActualResult[]>,
+    highlightSource: Array<{ studentId: string; teacherId: string; subject: string; absentDate?: string }> = data?.autoAssignHighlights?.unplacedMakeup ?? [],
+  ) => {
+    if (!data) {
+      return {
+        studentsWithRemaining: [] as StudentRemainingSummary[],
+        currentPendingMakeupDemands: [] as PendingMakeupDemand[],
+        currentAvailableSlotKeys: [] as string[],
+      }
+    }
+
+    const recordedSlotSet = new Set(Object.keys(liveActual))
+    const currentPendingMakeupDemands = collectPendingMakeupDemands(assignmentState, liveActual)
+    const currentAvailableSlotKeys = slotKeys.filter((slot) => !recordedSlotSet.has(slot))
+
+    const studentsWithRemaining = data.students
+      .map((student) => {
+        const groupSubjectSet = getGroupSubjectSetForStudent(student.id)
+        const remaining = Object.entries(student.subjectSlots)
+          .map(([subj, desired]) => {
+            const assigned = countStudentSubjectLoad(effectiveAssignments, student.id, subj)
+            return { subj, rem: desired - assigned }
+          })
+          .filter((entry) => entry.rem !== 0)
+
+        type AbsenceEntry = { subject: string; reasons: NoMakeupReason[] }
+        const absences: AbsenceEntry[] = []
+
+        for (const slot of slotKeys) {
+          if (!(slot in liveActual)) continue
+          const planned = assignmentState[slot] ?? []
+          const wasPlanned = planned.some((assignment) => assignment.studentIds.includes(student.id))
+          const [slotDate] = slot.split('_')
+          const slotDow = getIsoDayOfWeek(slotDate)
+          const slotNum = getSlotNumber(slot)
+          const wasRegularLesson = data.regularLessons.some((lesson) =>
+            lesson.studentIds.includes(student.id) && lesson.dayOfWeek === slotDow && lesson.slotNumber === slotNum,
+          )
+          if (!wasPlanned && !wasRegularLesson) continue
+
+          const isInActual = liveActual[slot].some((result: ActualResult) => result.studentIds.includes(student.id))
+          if (isInActual) continue
+
+          const origAssignment = planned.find((assignment) => assignment.studentIds.includes(student.id))
+          const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
+          const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
+          const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
+          if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
+
+          let absentSubj: string
+          let origTeacherId: string
+          if (origAssignment) {
+            absentSubj = getStudentSubject(origAssignment, student.id)
+            origTeacherId = origAssignment.teacherId
+          } else {
+            const lesson = data.regularLessons.find((entry) =>
+              entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
+            )!
+            absentSubj = lesson.studentSubjects?.[student.id] ?? lesson.subject
+            origTeacherId = lesson.teacherId
+          }
+          if (groupSubjectSet.has(absentSubj)) continue
+
+          const [absentDate] = slot.split('_')
+          const futureCandidates = slotKeys.filter((futureSlot) => {
+            if (recordedSlotSet.has(futureSlot)) return false
+            const [futureDate] = futureSlot.split('_')
+            if (futureDate <= absentDate) return false
+            if (getSlotNumber(futureSlot) === 0) return false
+            return true
+          })
+          const teacherAvailSlots = futureCandidates.filter((futureSlot) => hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot))
+          const studentAvailSlots = futureCandidates.filter((futureSlot) => isStudentAvailable(student, futureSlot))
+          const matchedSlots = futureCandidates.filter((futureSlot) =>
+            isStudentAvailable(student, futureSlot) && hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot),
+          )
+          const reasons: NoMakeupReason[] = []
+          if (teacherAvailSlots.length === 0) reasons.push('no_teacher')
+          if (studentAvailSlots.length === 0) reasons.push('no_student')
+          if (teacherAvailSlots.length > 0 && studentAvailSlots.length > 0 && matchedSlots.length === 0) reasons.push('no_match')
+          absences.push({ subject: absentSubj, reasons })
+        }
+
+        const makeupPlacedBySubj: Record<string, number> = {}
+        for (const slot of slotKeys) {
+          if (recordedSlotSet.has(slot)) continue
+          const slotAssignments = effectiveAssignments[slot] ?? []
+          for (const assignment of slotAssignments) {
+            if (assignment.regularMakeupInfo?.[student.id] || assignment.regularSubstituteInfo?.[student.id]) {
+              const subj = getStudentSubject(assignment, student.id)
+              if (groupSubjectSet.has(subj)) continue
+              makeupPlacedBySubj[subj] = (makeupPlacedBySubj[subj] ?? 0) + 1
+            }
+          }
+        }
+
+        const coveredRemaining: Record<string, number> = { ...makeupPlacedBySubj }
+        const uncoveredAbsences: AbsenceEntry[] = []
+        for (const absence of absences) {
+          if ((coveredRemaining[absence.subject] ?? 0) > 0) {
+            coveredRemaining[absence.subject]--
+            continue
+          }
+          uncoveredAbsences.push(absence)
+        }
+
+        const missingBySubj: Record<string, number> = {}
+        const noMakeupReasons: NoMakeupReason[] = []
+        for (const absence of uncoveredAbsences) {
+          missingBySubj[absence.subject] = (missingBySubj[absence.subject] ?? 0) + 1
+          noMakeupReasons.push(...absence.reasons)
+        }
+        const regularMissingBySubj = getRegularMissingBySubject(student, effectiveAssignments)
+        for (const [subj, count] of Object.entries(regularMissingBySubj)) {
+          missingBySubj[subj] = Math.max(missingBySubj[subj] ?? 0, count)
+        }
+
+        const missingTotal = Object.values(missingBySubj).reduce((sum, count) => sum + count, 0)
+        if (remaining.length === 0 && missingTotal === 0) return null
+        return { studentId: student.id, name: student.name, remaining, missingBySubj, noMakeupReasons }
+      })
+      .filter(Boolean) as StudentRemainingSummary[]
+
+    const unresolvedPendingKeys = new Set(currentPendingMakeupDemands.map((demand) => `${demand.studentId}|${demand.teacherId}|${demand.subject}|${demand.absentDate ?? ''}`))
+    const unplacedMakeupHighlights = highlightSource.filter((item) =>
+      unresolvedPendingKeys.has(`${item.studentId}|${item.teacherId}|${item.subject}|`)
+      || [...unresolvedPendingKeys].some((key) => key.startsWith(`${item.studentId}|${item.teacherId}|${item.subject}|`)),
+    )
+    for (const item of unplacedMakeupHighlights) {
+      const existing = studentsWithRemaining.find((student) => student.studentId === item.studentId)
+      const sameSubjectCount = unplacedMakeupHighlights.filter((entry) => entry.studentId === item.studentId && entry.subject === item.subject).length
+      if (existing) {
+        existing.missingBySubj[item.subject] = Math.max(existing.missingBySubj[item.subject] ?? 0, sameSubjectCount)
+        continue
+      }
+      const student = data.students.find((entry) => entry.id === item.studentId)
+      if (!student) continue
+      studentsWithRemaining.push({
+        studentId: student.id,
+        name: student.name,
+        remaining: [],
+        missingBySubj: { [item.subject]: sameSubjectCount },
+        noMakeupReasons: [],
+      })
+    }
+
+    return { studentsWithRemaining, currentPendingMakeupDemands, currentAvailableSlotKeys }
+  }
+
   const getRegularMissingBySubject = (
     student: Student,
     effectiveAssignments: Record<string, Assignment[]>,
   ): Record<string, number> => {
     if (!data) return {}
+
+    const groupSubjectSet = getGroupSubjectSetForStudent(student.id)
 
     const desiredBySubject: Record<string, number> = {}
     for (const date of getDatesInRange(data.settings)) {
@@ -3166,6 +3355,7 @@ const AdminPage = () => {
       for (const lesson of data.regularLessons) {
         if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
         const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
+        if (groupSubjectSet.has(subject)) continue
         desiredBySubject[subject] = (desiredBySubject[subject] ?? 0) + 1
       }
     }
@@ -3175,8 +3365,10 @@ const AdminPage = () => {
       const slotAssignments = effectiveAssignments[slot] ?? []
       for (const assignment of slotAssignments) {
         if (!assignment.studentIds.includes(student.id)) continue
+        if (assignment.isGroupLesson) continue
         if (!assignment.isRegular && !assignment.regularMakeupInfo?.[student.id] && !assignment.regularSubstituteInfo?.[student.id]) continue
         const subject = getStudentSubject(assignment, student.id)
+        if (groupSubjectSet.has(subject)) continue
         assignedBySubject[subject] = (assignedBySubject[subject] ?? 0) + 1
       }
     }
@@ -3587,130 +3779,12 @@ const AdminPage = () => {
     if (!data) return null
 
     const liveActual = data.actualResults ?? {}
-    const recordedSlotSet = new Set(Object.keys(liveActual))
     const effectiveAssignments = buildEffectiveAssignments(assignmentState, liveActual)
-    const currentPendingMakeupDemands = collectPendingMakeupDemands(assignmentState, liveActual)
-    const currentAvailableSlotKeys = slotKeys.filter((slot) => !recordedSlotSet.has(slot))
-
-    const studentsWithRemaining = data.students
-      .map((student) => {
-        const remaining = Object.entries(student.subjectSlots)
-          .map(([subj, desired]) => {
-            const assigned = countStudentSubjectLoad(effectiveAssignments, student.id, subj)
-            return { subj, rem: desired - assigned }
-          })
-          .filter((entry) => entry.rem !== 0)
-
-        type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
-        type AbsenceEntry = { subject: string; reasons: NoMakeupReason[] }
-        const absences: AbsenceEntry[] = []
-
-        for (const slot of slotKeys) {
-          if (!(slot in liveActual)) continue
-          const planned = assignmentState[slot] ?? []
-          const wasPlanned = planned.some((assignment) => assignment.studentIds.includes(student.id))
-          const [slotDate] = slot.split('_')
-          const slotDow = getIsoDayOfWeek(slotDate)
-          const slotNum = getSlotNumber(slot)
-          const wasRegularLesson = data.regularLessons.some((lesson) =>
-            lesson.studentIds.includes(student.id) && lesson.dayOfWeek === slotDow && lesson.slotNumber === slotNum,
-          )
-          if (!wasPlanned && !wasRegularLesson) continue
-
-          const isInActual = liveActual[slot].some((result: ActualResult) => result.studentIds.includes(student.id))
-          if (isInActual) continue
-
-          const origAssignment = planned.find((assignment) => assignment.studentIds.includes(student.id))
-          const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
-          const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
-          const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
-          if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
-
-          let absentSubj: string
-          let origTeacherId: string
-          if (origAssignment) {
-            absentSubj = getStudentSubject(origAssignment, student.id)
-            origTeacherId = origAssignment.teacherId
-          } else {
-            const lesson = data.regularLessons.find((entry) =>
-              entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
-            )!
-            absentSubj = lesson.studentSubjects?.[student.id] ?? lesson.subject
-            origTeacherId = lesson.teacherId
-          }
-
-          const [absentDate] = slot.split('_')
-          const futureCandidates = slotKeys.filter((futureSlot) => {
-            if (recordedSlotSet.has(futureSlot)) return false
-            const [futureDate] = futureSlot.split('_')
-            if (futureDate <= absentDate) return false
-            if (getSlotNumber(futureSlot) === 0) return false
-            return true
-          })
-          const teacherAvailSlots = futureCandidates.filter((futureSlot) => hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot))
-          const studentAvailSlots = futureCandidates.filter((futureSlot) => isStudentAvailable(student, futureSlot))
-          const matchedSlots = futureCandidates.filter((futureSlot) =>
-            isStudentAvailable(student, futureSlot) && hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot),
-          )
-          const reasons: NoMakeupReason[] = []
-          if (teacherAvailSlots.length === 0) reasons.push('no_teacher')
-          if (studentAvailSlots.length === 0) reasons.push('no_student')
-          if (teacherAvailSlots.length > 0 && studentAvailSlots.length > 0 && matchedSlots.length === 0) reasons.push('no_match')
-          absences.push({ subject: absentSubj, reasons })
-        }
-
-        const makeupPlacedBySubj: Record<string, number> = {}
-        for (const slot of slotKeys) {
-          if (recordedSlotSet.has(slot)) continue
-          const slotAssignments = effectiveAssignments[slot] ?? []
-          for (const assignment of slotAssignments) {
-            if (assignment.regularMakeupInfo?.[student.id] || assignment.regularSubstituteInfo?.[student.id]) {
-              const subj = getStudentSubject(assignment, student.id)
-              makeupPlacedBySubj[subj] = (makeupPlacedBySubj[subj] ?? 0) + 1
-            }
-          }
-        }
-
-        const coveredRemaining: Record<string, number> = { ...makeupPlacedBySubj }
-        const uncoveredAbsences: AbsenceEntry[] = []
-        for (const absence of absences) {
-          if ((coveredRemaining[absence.subject] ?? 0) > 0) {
-            coveredRemaining[absence.subject]--
-            continue
-          }
-          uncoveredAbsences.push(absence)
-        }
-
-        const missingBySubj: Record<string, number> = {}
-        const noMakeupReasons: NoMakeupReason[] = []
-        for (const absence of uncoveredAbsences) {
-          missingBySubj[absence.subject] = (missingBySubj[absence.subject] ?? 0) + 1
-          noMakeupReasons.push(...absence.reasons)
-        }
-        const regularMissingBySubj = getRegularMissingBySubject(student, effectiveAssignments)
-        for (const [subj, count] of Object.entries(regularMissingBySubj)) {
-          missingBySubj[subj] = Math.max(missingBySubj[subj] ?? 0, count)
-        }
-
-        const missingTotal = Object.values(missingBySubj).reduce((sum, count) => sum + count, 0)
-        if (remaining.length === 0 && missingTotal === 0) return null
-        return { name: student.name, remaining, missingBySubj, noMakeupReasons }
-      })
-      .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
-
-    const unresolvedPendingKeys = new Set(currentPendingMakeupDemands.map((demand) => `${demand.studentId}|${demand.teacherId}|${demand.subject}|${demand.absentDate ?? ''}`))
-    const unplacedMakeupHighlights = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((item) =>
-      unresolvedPendingKeys.has(`${item.studentId}|${item.teacherId}|${item.subject}|`)
-      || [...unresolvedPendingKeys].some((key) => key.startsWith(`${item.studentId}|${item.teacherId}|${item.subject}|`)),
+    const { studentsWithRemaining, currentPendingMakeupDemands, currentAvailableSlotKeys } = buildStudentsWithRemaining(
+      assignmentState,
+      effectiveAssignments,
+      liveActual,
     )
-    for (const item of unplacedMakeupHighlights) {
-      const studentName = data.students.find((student) => student.id === item.studentId)?.name
-      if (!studentName) continue
-      const sameSubjectCount = unplacedMakeupHighlights.filter((entry) => entry.studentId === item.studentId && entry.subject === item.subject).length
-      const existing = studentsWithRemaining.find((student) => student.name === studentName)
-      if (existing) existing.missingBySubj[item.subject] = Math.max(existing.missingBySubj[item.subject] ?? 0, sameSubjectCount)
-      else studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [item.subject]: sameSubjectCount }, noMakeupReasons: [] })
-    }
 
     const missingTotal = (student: { missingBySubj: Record<string, number> }) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
     const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
@@ -3725,7 +3799,7 @@ const AdminPage = () => {
           const causes: string[] = []
           const proposalPool: StatusProposal[] = []
           const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
-          const currentStudent = data.students.find((entry) => entry.name === student.name)
+          const currentStudent = data.students.find((entry) => entry.id === student.studentId)
           if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
           const specials = student.remaining.filter((entry) => entry.rem > 0)
           if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
@@ -4046,23 +4120,6 @@ const AdminPage = () => {
       data.actualResults,
     )
 
-    const remainingStudents = data.students
-      .map((student) => {
-        const remaining = Object.entries(student.subjectSlots)
-          .map(([subject, desired]) => {
-            const assigned = countStudentSubjectLoad(effectiveForCounting, student.id, subject)
-            return {
-              subject,
-              remaining: desired - assigned,
-              suggestions: buildRemainingSuggestions(nextAssignments, effectiveForCounting, availableSlotKeys, student, subject),
-            }
-          })
-          .filter((item) => item.remaining > 0)
-        if (remaining.length === 0) return null
-        return { studentName: student.name, remaining }
-      })
-      .filter(Boolean) as { studentName: string; remaining: { subject: string; remaining: number; suggestions: PlacementAnalysis }[] }[]
-
     const overAssignedStudents = data.students
       .map((student) => {
         const over = Object.entries(student.subjectSlots)
@@ -4212,6 +4269,12 @@ const AdminPage = () => {
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
+    const {
+      studentsWithRemaining: autoAssignedStudentsWithRemaining,
+      currentPendingMakeupDemands: autoAssignPendingMakeupDemands,
+      currentAvailableSlotKeys: autoAssignAvailableSlotKeys,
+    } = buildStudentsWithRemaining(nextAssignments, effectiveForCounting, data.actualResults ?? {}, unplacedMakeup)
+
     await updateAssignments((current) => {
       // Merge: auto-assign results for non-recorded slots + preserve current assignments for recorded slots
       const mergedAssignments = { ...nextAssignments }
@@ -4226,22 +4289,53 @@ const AdminPage = () => {
       }
     })
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
+    const missingTotal = (student: StudentRemainingSummary) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
+    const underAssignedStudents = autoAssignedStudentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
     const underSection: StatusSection = {
       key: 'under',
       title: '残コマあり',
-      items: remainingStudents.flatMap((item) =>
-        item.remaining.map((r) => ({
-          label: `${item.studentName}: ${r.subject}残${r.remaining}コマ`,
-          causes: r.suggestions.blockers.length > 0 ? r.suggestions.blockers : ['希望コマ数に対して割当が不足'],
-          proposals: dedupeStatusProposals([
-            ...r.suggestions.force,
-            ...r.suggestions.substitute,
-            ...r.suggestions.teacher,
-            ...r.suggestions.student,
-            ...(r.suggestions.force.length === 0 && r.suggestions.substitute.length === 0 ? r.suggestions.cards : []),
-          ]),
-        })),
-      ),
+      items: underAssignedStudents.map((student) => {
+        const causes: string[] = []
+        const proposalPool: StatusProposal[] = []
+        const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
+        const currentStudent = data.students.find((entry) => entry.id === student.studentId)
+        if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
+        const specials = student.remaining.filter((entry) => entry.rem > 0)
+        if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
+        if (currentStudent) {
+          for (const special of specials) {
+            const analysis = buildRemainingSuggestions(nextAssignments, effectiveForCounting, autoAssignAvailableSlotKeys, currentStudent, special.subj)
+            proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+          }
+          const studentMakeups = autoAssignPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
+          for (const demand of studentMakeups) {
+            const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
+            if (!teacher) continue
+            const analysis = analyzePlacementOptions(
+              nextAssignments,
+              effectiveForCounting,
+              autoAssignAvailableSlotKeys,
+              currentStudent,
+              demand.subject,
+              [teacher],
+              {
+                slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
+                makeupDemand: demand,
+              },
+            )
+            proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+          }
+        }
+        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
+        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal('生徒の出席不可日・不可コマを減らしてください'))
+        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal('講師出席可能コマと生徒出席可能日が重なるように調整してください'))
+        const proposals = dedupeStatusProposals(proposalPool)
+        return {
+          label: student.name,
+          causes,
+          proposals: proposals.length > 0 ? proposals : [toStatusProposal('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')],
+        }
+      }),
     }
     const makeupSection: StatusSection = {
       key: 'makeup',
