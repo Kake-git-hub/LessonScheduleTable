@@ -307,6 +307,13 @@ const formatConstraintWarningSuffix = (warnings: string[]): string => {
   return ` (注意: ${summary}${warnings.length > 2 ? ' ほか' : ''})`
 }
 
+const formatAutoDiffTooltip = (kind: 'new' | 'changed', detail?: string): string => {
+  const header = kind === 'new' ? '新規追加' : '変更内容'
+  if (!detail) return kind === 'new' ? '自動提案で新規追加' : '自動提案で再割当'
+  const normalized = detail.replace(/\s+\|\s+/g, '\n').trim()
+  return `${header}\n${normalized}`
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -2175,6 +2182,98 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
     return s
   }, [slotKeys])
 
+  const unresolvedMissingByStudent = useMemo(() => {
+    const actualResults = data.actualResults ?? {}
+    const recordedSlotSet = new Set(Object.keys(actualResults))
+    const result = new Map<string, number>()
+
+    for (const student of data.students.filter((entry) => entry.submittedAt > 0)) {
+      const groupSubjectSet = new Set(
+        (data.groupLessons ?? [])
+          .filter((lesson) => lesson.studentIds.includes(student.id))
+          .map((lesson) => lesson.subject),
+      )
+
+      type AbsenceEntry = { subject: string }
+      const absences: AbsenceEntry[] = []
+      for (const slot of slotKeys) {
+        if (!(slot in actualResults)) continue
+        const planned = data.assignments[slot] ?? []
+        const wasPlanned = planned.some((assignment) => assignment.studentIds.includes(student.id))
+        const [slotDate] = slot.split('_')
+        const slotDow = getIsoDayOfWeek(slotDate)
+        const slotNum = getSlotNumber(slot)
+        const wasRegularLesson = data.regularLessons.some((lesson) =>
+          lesson.studentIds.includes(student.id) && lesson.dayOfWeek === slotDow && lesson.slotNumber === slotNum,
+        )
+        if (!wasPlanned && !wasRegularLesson) continue
+
+        const isInActual = actualResults[slot].some((actual) => actual.studentIds.includes(student.id))
+        if (isInActual) continue
+
+        const origAssignment = planned.find((assignment) => assignment.studentIds.includes(student.id))
+        const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
+        const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
+        const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
+        if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
+
+        let absentSubj = ''
+        if (origAssignment) {
+          absentSubj = getStudentSubject(origAssignment, student.id)
+        } else {
+          const lesson = data.regularLessons.find((entry) =>
+            entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
+          )
+          if (!lesson) continue
+          absentSubj = lesson.studentSubjects?.[student.id] ?? lesson.subject
+        }
+        if (groupSubjectSet.has(absentSubj)) continue
+        absences.push({ subject: absentSubj })
+      }
+
+      const makeupPlacedBySubj: Record<string, number> = {}
+      for (const slot of slotKeys) {
+        if (recordedSlotSet.has(slot)) continue
+        const slotAssignments = effectiveAssignmentsMap[slot] ?? []
+        for (const assignment of slotAssignments) {
+          if (assignment.regularMakeupInfo?.[student.id] || assignment.regularSubstituteInfo?.[student.id]) {
+            const subject = getStudentSubject(assignment, student.id)
+            if (groupSubjectSet.has(subject)) continue
+            makeupPlacedBySubj[subject] = (makeupPlacedBySubj[subject] ?? 0) + 1
+          }
+        }
+      }
+
+      const coveredRemaining = { ...makeupPlacedBySubj }
+      const missingBySubj: Record<string, number> = {}
+      for (const absence of absences) {
+        if ((coveredRemaining[absence.subject] ?? 0) > 0) {
+          coveredRemaining[absence.subject]--
+          continue
+        }
+        missingBySubj[absence.subject] = (missingBySubj[absence.subject] ?? 0) + 1
+      }
+
+      const { desiredBySubject: regularDesiredBySubject, assignedBySubject: regularAssignedBySubject } = getRegularSubjectProgress(data, effectiveAssignmentsMap, student.id)
+      for (const subject of new Set([...Object.keys(regularDesiredBySubject), ...Object.keys(regularAssignedBySubject)])) {
+        const desired = regularDesiredBySubject[subject] ?? 0
+        const assigned = regularAssignedBySubject[subject] ?? 0
+        if (desired > assigned) {
+          missingBySubj[subject] = Math.max(missingBySubj[subject] ?? 0, desired - assigned)
+        }
+      }
+
+      const unplacedForStudent = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((item) => item.studentId === student.id)
+      for (const item of unplacedForStudent) {
+        missingBySubj[item.subject] = Math.max(missingBySubj[item.subject] ?? 0, unplacedForStudent.filter((entry) => entry.subject === item.subject).length)
+      }
+
+      result.set(student.id, Object.values(missingBySubj).reduce((sum, count) => sum + count, 0))
+    }
+
+    return result
+  }, [data, slotKeys, effectiveAssignmentsMap])
+
   // --- Teacher Analytics ---
   const teacherStats = useMemo(() => {
     return data.teachers.map((teacher) => {
@@ -2231,7 +2330,6 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
 
   // --- Student Analytics ---
   const studentStats = useMemo(() => {
-    const actualResults = data.actualResults ?? {}
     return data.students.filter((s) => s.submittedAt > 0).map((student) => {
       const myAssignments = allSlotAssignments.filter((e) =>
         e.assignment.studentIds.includes(student.id),
@@ -2250,30 +2348,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
       }).length
       const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
 
-      // Count unsatisfied slots: student was in planned assignment but removed from actual result
-      // Includes both regular and special lesson students
-      let unsatisfiedSlots = 0
-      for (const slot of slotKeys) {
-        if (!(slot in actualResults)) continue
-        const planned = data.assignments[slot] ?? []
-        const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
-        // Fallback: check regularLessons for corrupted data
-        const [slotDate, slotIdx] = slot.split('_')
-        const skDow = getIsoDayOfWeek(slotDate)
-        const skSlotNum = Number(slotIdx)
-        const wasRegularLesson = data.regularLessons.some((rl) =>
-          rl.studentIds.includes(student.id) && rl.dayOfWeek === skDow && rl.slotNumber === skSlotNum
-        )
-        if (!wasPlanned && !wasRegularLesson) continue
-        const actual = actualResults[slot]
-        const isInActual = actual.some((r) => r.studentIds.includes(student.id))
-        if (!isInActual) unsatisfiedSlots++
-      }
-      // Add unplaced makeup from autoAssignHighlights (for absences not detectable from corrupted data)
-      const unplacedForStudent = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((um) => um.studentId === student.id)
-      if (unplacedForStudent.length > unsatisfiedSlots) {
-        unsatisfiedSlots = unplacedForStudent.length
-      }
+      const unsatisfiedSlots = unresolvedMissingByStudent.get(student.id) ?? 0
 
       // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
       const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
@@ -2321,7 +2396,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         unsatisfiedSlots,
       }
     })
-  }, [data, allSlotAssignments, slotKeys, sessionDates])
+  }, [data, allSlotAssignments, slotKeys, sessionDates, unresolvedMissingByStudent, effectiveAssignmentsMap])
 
   // --- Day of Week Analytics ---
   const dayStats = useMemo(() => {
@@ -4594,10 +4669,12 @@ const AdminPage = () => {
           nextChanged[proposal.slot] = [...new Set([...(nextChanged[proposal.slot] ?? []), highlightedSig])]
           if (!nextDetails[proposal.slot]) nextDetails[proposal.slot] = {}
           nextDetails[proposal.slot][highlightedSig] = proposal.substituteInfo
-            ? '強制割当: 通常講師代行'
+            ? `強制割当: ${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacher.name} / ${studentName} / ${proposal.subject}\n理由: 講師不足を通常講師代行で解消`
             : proposal.makeupInfo
-              ? '強制割当: 振替'
-              : '強制割当'
+              ? `強制割当: ${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacher.name} / ${studentName} / ${proposal.subject}\n理由: 振替提案を強制実行`
+              : proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0
+                ? `強制割当: ${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacher.name} / ${studentName} / ${proposal.subject}\n理由: 講師不足の代行候補を実行`
+                : `強制割当: ${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacher.name} / ${studentName} / ${proposal.subject}\n理由: 提案を強制実行`
           if (nextAdded[proposal.slot]) {
             nextAdded[proposal.slot] = nextAdded[proposal.slot].filter((sig) => sig !== highlightedSig)
             if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
@@ -4755,7 +4832,7 @@ const AdminPage = () => {
       const movedSig = assignmentSignature(movedAssignment)
       nextChanged[proposal.targetSlot] = [...new Set([...(nextChanged[proposal.targetSlot] ?? []), movedSig])]
       if (!nextDetails[proposal.targetSlot]) nextDetails[proposal.targetSlot] = {}
-      nextDetails[proposal.targetSlot][movedSig] = `講師不足移動: ${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)}`
+      nextDetails[proposal.targetSlot][movedSig] = `講師不足移動: ${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} / ${teacher.name} / ${studentName}\n理由: 元講師の別枠移動候補を実行`
 
       const nextCurrent = {
         ...current,
@@ -6679,8 +6756,8 @@ service cloud.firestore {
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
                                 {hasManualConstraintWarning && <span className="badge manual-constraint-badge" title={manualConstraintWarnings.join('\n')}>注意</span>}
                                 {hasTeacherUnassignedWarning && <span className="badge manual-constraint-badge" title={teacherUnassignedWarning}>注意</span>}
-                                {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={changeDetail || '自動提案で新規追加'}>新規</span>}
-                                {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={changeDetail || '自動提案で再割当'}>変更</span>}
+                                {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={formatAutoDiffTooltip('new', changeDetail)}>新規</span>}
+                                {isAutoChanged && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-update" title={formatAutoDiffTooltip('changed', changeDetail)}>変更</span>}
                               </div>
                             )}
                             {/* Teacher row: select + pair move + delete */}
