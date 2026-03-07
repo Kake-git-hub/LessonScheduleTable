@@ -7,6 +7,7 @@ import {
   getSlotNumber,
   getIsoDayOfWeek,
   getStudentSubject,
+  normalizeAssignment,
   countTeacherLoad,
   getTeacherAssignedDates,
   getTeacherSlotNumbersOnDate,
@@ -356,7 +357,7 @@ export const buildIncrementalAutoAssignments = async (
       }
 
       if (validStudentIds.length > 0) {
-        const changedAssignment = { ...assignment, studentIds: validStudentIds }
+        const changedAssignment = normalizeAssignment({ ...assignment, studentIds: validStudentIds })
         cleaned.push(changedAssignment)
         if (assignment.studentIds.length !== validStudentIds.length) {
           const removedNames = removedStudentIds.map((sid) => {

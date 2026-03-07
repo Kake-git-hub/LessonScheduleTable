@@ -2,6 +2,8 @@ import type { ActualResult, Assignment, RegularLesson, SessionData } from '../ty
 import { hasAvailability } from './constraints'
 import { canTeachSubject } from './subjects'
 
+type AssignmentLike = Assignment | ActualResult
+
 export const getSlotNumber = (slotKey: string): number => {
   const [, slot] = slotKey.split('_')
   return Number.parseInt(slot, 10)
@@ -20,6 +22,74 @@ export const getSlotDayOfWeek = (slotKey: string): number => {
 export const allAssignments = (assignments: Record<string, Assignment[]>): Assignment[] =>
   Object.values(assignments).flat()
 
+const normalizeStudentIds = (studentIds: string[]): string[] => studentIds.filter((sid): sid is string => {
+  if (typeof sid !== 'string') return false
+  const trimmed = sid.trim()
+  return !!trimmed
+})
+
+const normalizeStudentSubjects = (
+  studentIds: string[],
+  studentSubjects?: Record<string, string>,
+): Record<string, string> | undefined => {
+  if (!studentSubjects) return undefined
+  const normalized = studentIds.reduce<Record<string, string>>((acc, sid) => {
+    const subject = studentSubjects[sid]
+    if (typeof subject === 'string' && subject.trim()) {
+      acc[sid] = subject
+    }
+    return acc
+  }, {})
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+const normalizeInfoMap = <T>(
+  studentIds: string[],
+  infoMap?: Record<string, T>,
+): Record<string, T> | undefined => {
+  if (!infoMap) return undefined
+  const normalized = studentIds.reduce<Record<string, T>>((acc, sid) => {
+    if (sid in infoMap) {
+      acc[sid] = infoMap[sid]
+    }
+    return acc
+  }, {})
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+export const normalizeAssignment = <T extends AssignmentLike>(
+  assignment: T,
+): T => {
+  const studentIds = normalizeStudentIds(assignment.studentIds)
+  const studentSubjects = normalizeStudentSubjects(studentIds, assignment.studentSubjects)
+  const regularMakeupInfo = normalizeInfoMap(studentIds, assignment.regularMakeupInfo)
+  const regularSubstituteInfo = normalizeInfoMap(studentIds, assignment.regularSubstituteInfo)
+  const primarySubject = studentIds.length > 0
+    ? (studentSubjects?.[studentIds[0]] ?? assignment.subject)
+    : assignment.subject
+
+  const normalized = {
+    ...assignment,
+    studentIds,
+    subject: primarySubject,
+  } as T & {
+    studentSubjects?: Record<string, string>
+    regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+    regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
+  }
+
+  if (studentSubjects) normalized.studentSubjects = studentSubjects
+  else delete normalized.studentSubjects
+
+  if (regularMakeupInfo) normalized.regularMakeupInfo = regularMakeupInfo
+  else delete normalized.regularMakeupInfo
+
+  if (regularSubstituteInfo) normalized.regularSubstituteInfo = regularSubstituteInfo
+  else delete normalized.regularSubstituteInfo
+
+  return normalized
+}
+
 /**
  * Build "effective" assignments: for each slot, use actual results if recorded,
  * otherwise use planned assignments.
@@ -35,7 +105,7 @@ export const buildEffectiveAssignments = (
       effective[slot] = results.map((r) => {
         // Preserve isRegular/isGroupLesson/regularMakeupInfo from the original assignment
         const orig = originals.find((a) => a.teacherId === r.teacherId)
-        return {
+        return normalizeAssignment({
           teacherId: r.teacherId,
           studentIds: [...r.studentIds],
           subject: r.subject,
@@ -46,7 +116,7 @@ export const buildEffectiveAssignments = (
           ...(r.regularMakeupInfo ? { regularMakeupInfo: { ...r.regularMakeupInfo } } : {}),
           ...(orig?.regularSubstituteInfo ? { regularSubstituteInfo: { ...orig.regularSubstituteInfo } } : {}),
           ...(r.regularSubstituteInfo ? { regularSubstituteInfo: { ...r.regularSubstituteInfo } } : {}),
-        }
+        })
       })
     }
   }

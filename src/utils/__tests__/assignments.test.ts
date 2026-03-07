@@ -8,6 +8,7 @@ import {
   collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment,
   getTeacherStudentSlotsOnDate, getStudentSubjectsOnAdjacentSlots,
   findRegularLessonsForSlot, getDatesInRange,
+  normalizeAssignment,
 } from '../assignments'
 import type { Assignment, SessionData } from '../../types'
 
@@ -82,6 +83,34 @@ describe('buildEffectiveAssignments', () => {
     const result = buildEffectiveAssignments(assignments, actualResults)
     expect(result['2026-07-21_1'][0].studentIds).toEqual(['s2'])
     expect(result['2026-07-21_1'][0].subject).toBe('英')
+  })
+
+  it('drops stale per-student subjects from actual results', () => {
+    const assignments = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', isRegular: true, studentSubjects: { s1: '数', s2: '英' } }],
+    }
+    const actualResults = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1', ''], subject: '数', studentSubjects: { s1: '数', s2: '英' }, isRegular: true }],
+    }
+    const result = buildEffectiveAssignments(assignments, actualResults)
+    expect(result['2026-07-21_1'][0].studentIds).toEqual(['s1'])
+    expect(result['2026-07-21_1'][0].studentSubjects).toEqual({ s1: '数' })
+  })
+})
+
+describe('normalizeAssignment', () => {
+  it('removes empty student ids and stale per-student metadata', () => {
+    const result = normalizeAssignment({
+      teacherId: 't1',
+      studentIds: ['s1', ''],
+      subject: '数',
+      studentSubjects: { s1: '英', s2: '数' },
+      regularMakeupInfo: { s1: { dayOfWeek: 2, slotNumber: 1 }, s2: { dayOfWeek: 2, slotNumber: 2 } },
+    })
+    expect(result.studentIds).toEqual(['s1'])
+    expect(result.studentSubjects).toEqual({ s1: '英' })
+    expect(result.subject).toBe('英')
+    expect(result.regularMakeupInfo).toEqual({ s1: { dayOfWeek: 2, slotNumber: 1 } })
   })
 })
 
