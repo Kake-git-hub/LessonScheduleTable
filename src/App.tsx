@@ -3407,6 +3407,114 @@ const AdminPage = () => {
     }, {})
   }
 
+  const summarizeMakeupCauses = (causes: string[]): string => {
+    const tags: string[] = []
+    const add = (tag: string) => {
+      if (!tags.includes(tag)) tags.push(tag)
+    }
+
+    for (const cause of causes) {
+      if (cause.includes('講師(') && (cause.includes('未出席') || cause.includes('出席可能日なし'))) add('講師空きなし')
+      if (cause.includes('生徒') && (cause.includes('未出席') || cause.includes('出席可能日なし') || cause.includes('出席不可'))) add('生徒空きなし')
+      if (cause.includes('マッチする日なし') || cause.includes('両方が未出席')) add('空き不一致')
+      if (cause.includes('机数上限') || cause.includes('ペアが満席')) add('枠不足')
+      if (cause.includes('相性不可')) add('相性不可')
+      if (cause.includes('同コマに既に割当済み')) add('同コマ重複')
+      if (cause.includes('コマ上限')) add('日上限')
+      if (cause.includes('担当外科目')) add('担当外')
+    }
+
+    return tags.slice(0, 3).join(' / ')
+  }
+
+  const buildRemainingDetailItems = (
+    assignmentState: Record<string, Assignment[]>,
+    effectiveAssignments: Record<string, Assignment[]>,
+    availableSlotKeys: string[],
+    underAssigned: StudentRemainingSummary[],
+    pendingMakeupDemands: PendingMakeupDemand[],
+    makeupEntries: UnplacedMakeupEntry[],
+  ): StatusDetail[] => {
+    if (!data) return []
+
+    const details = new Map<string, { label: string; causes: string[]; proposals: StatusProposal[] }>()
+    const order: string[] = []
+
+    for (const student of underAssigned) {
+      const causes: string[] = []
+      const proposalPool: StatusProposal[] = []
+      const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
+      const currentStudent = data.students.find((entry) => entry.id === student.studentId)
+      if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
+      const specials = student.remaining.filter((entry) => entry.rem > 0)
+      if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
+      if (currentStudent) {
+        for (const special of specials) {
+          const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
+          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+        }
+        const studentMakeups = pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
+        for (const demand of studentMakeups) {
+          const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
+          if (!teacher) continue
+          const analysis = analyzePlacementOptions(
+            assignmentState,
+            effectiveAssignments,
+            availableSlotKeys,
+            currentStudent,
+            demand.subject,
+            [teacher],
+            {
+              slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
+              makeupDemand: demand,
+            },
+          )
+          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+        }
+      }
+      if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
+      if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
+      if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal(STATUS_ALIGN_AVAILABILITY))
+      details.set(student.studentId, {
+        label: student.name,
+        causes,
+        proposals: dedupeStatusProposals(proposalPool),
+      })
+      order.push(student.studentId)
+    }
+
+    for (const item of makeupEntries) {
+      const existing = details.get(item.studentId)
+      const conciseCause = summarizeMakeupCauses(item.causes.length > 0 ? item.causes : [item.reason])
+      const causeLabel = conciseCause
+        ? `${item.subject}: 振替未配置 (${conciseCause})`
+        : `${item.subject}: 振替未配置`
+      const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
+      const mergedProposals = dedupeStatusProposals([
+        ...(existing?.proposals ?? []),
+        ...(item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason])),
+      ])
+      details.set(item.studentId, {
+        label: existing?.label ?? item.studentName,
+        causes: mergedCauses,
+        proposals: mergedProposals,
+      })
+      if (!order.includes(item.studentId)) order.push(item.studentId)
+    }
+
+    return order
+      .map((studentId) => {
+        const detail = details.get(studentId)
+        if (!detail) return null
+        return {
+          label: detail.label,
+          causes: detail.causes,
+          proposals: detail.proposals.length > 0 ? detail.proposals : buildNoCandidateProposals(detail.causes),
+        }
+      })
+      .filter(Boolean) as StatusDetail[]
+  }
+
   const collectPendingMakeupDemands = (
     assignmentState: Record<string, Assignment[]>,
     actualResultsOverride?: Record<string, ActualResult[]>,
@@ -3952,62 +4060,20 @@ const AdminPage = () => {
       currentPendingMakeupDemands,
       currentPendingMakeupDemands,
     )
+    const remainingDetailItems = buildRemainingDetailItems(
+      assignmentState,
+      effectiveAssignments,
+      currentAvailableSlotKeys,
+      underAssigned,
+      currentPendingMakeupDemands,
+      makeupEntries,
+    )
 
     const sections: StatusSection[] = [
       {
         key: 'under' as const,
-        title: '残コマあり',
-        items: underAssigned.map((student) => {
-          const causes: string[] = []
-          const proposalPool: StatusProposal[] = []
-          const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
-          const currentStudent = data.students.find((entry) => entry.id === student.studentId)
-          if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
-          const specials = student.remaining.filter((entry) => entry.rem > 0)
-          if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
-          if (currentStudent) {
-            for (const special of specials) {
-              const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, currentAvailableSlotKeys, currentStudent, special.subj)
-              proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-            }
-            const studentMakeups = currentPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
-            for (const demand of studentMakeups) {
-              const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
-              if (!teacher) continue
-              const analysis = analyzePlacementOptions(
-                assignmentState,
-                effectiveAssignments,
-                currentAvailableSlotKeys,
-                currentStudent,
-                demand.subject,
-                [teacher],
-                {
-                  slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
-                  makeupDemand: demand,
-                },
-              )
-              proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-            }
-          }
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal(STATUS_ALIGN_AVAILABILITY))
-          const proposals = dedupeStatusProposals(proposalPool)
-          return {
-            label: student.name,
-            causes,
-            proposals: proposals.length > 0 ? proposals : buildNoCandidateProposals(causes),
-          }
-        }),
-        },
-        {
-          key: 'makeup' as const,
-          title: '振替未配置',
-          items: makeupEntries.map((item) => ({
-            label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
-            causes: item.causes.length > 0 ? item.causes : [item.reason],
-            proposals: item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
-          })),
+        title: '残コマ詳細',
+        items: remainingDetailItems,
       },
       {
         key: 'over' as const,
@@ -4342,16 +4408,7 @@ const AdminPage = () => {
       }
     })
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
-    const underSection = autoAssignShortageReport?.sections.find((section) => section.key === 'under') ?? { key: 'under', title: '残コマあり', items: [] }
-    const makeupSection: StatusSection = {
-      key: 'makeup',
-      title: '振替未配置',
-      items: mergedUnplacedMakeupEntries.map((item) => ({
-        label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
-        causes: item.causes.length > 0 ? item.causes : [item.reason],
-        proposals: item.proposals,
-      })),
-    }
+    const underSection = autoAssignShortageReport?.sections.find((section) => section.key === 'under') ?? { key: 'under', title: '残コマ詳細', items: [] }
     const overSection: StatusSection = {
       key: 'over',
       title: '過割当',
@@ -4394,7 +4451,7 @@ const AdminPage = () => {
     const report: StatusReport = {
       title: '自動提案結果',
       summary: changeLog.length > 0 ? `${changeLog.length}件変更` : '変更なし',
-      sections: [underSection, makeupSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0),
+      sections: [underSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0),
     }
     setLatestStatusReport(report)
     setStatusModal(report)
@@ -5392,9 +5449,9 @@ service cloud.firestore {
                     }
                     const missingTotal = Object.values(missingBySubj).reduce((a, b) => a + b, 0)
                     if (remaining.length === 0 && missingTotal === 0) return null
-                    return { name: student.name, remaining, missingBySubj, noMakeupReasons }
+                    return { studentId: student.id, name: student.name, remaining, missingBySubj, noMakeupReasons }
                   })
-                  .filter(Boolean) as { name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
+                  .filter(Boolean) as { studentId: string; name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
 
                 const currentPendingMakeupDemands = collectPendingMakeupDemands(data.assignments, liveActual)
                 const currentAvailableSlotKeys = slotKeys.filter((s) => !recordedSlotSet.has(s))
@@ -5413,7 +5470,7 @@ service cloud.firestore {
                   if (existing) {
                     existing.missingBySubj[um.subject] = Math.max(existing.missingBySubj[um.subject] ?? 0, sameSubjectCount)
                   } else {
-                    studentsWithRemaining.push({ name: studentName, remaining: [], missingBySubj: { [um.subject]: sameSubjectCount }, noMakeupReasons: [] })
+                    studentsWithRemaining.push({ studentId: um.studentId, name: studentName, remaining: [], missingBySubj: { [um.subject]: sameSubjectCount }, noMakeupReasons: [] })
                   }
                 }
 
@@ -5427,6 +5484,14 @@ service cloud.firestore {
                   currentAvailableSlotKeys,
                   currentPendingMakeupDemands,
                   currentPendingMakeupDemands,
+                )
+                const remainingDetailItems = buildRemainingDetailItems(
+                  data.assignments,
+                  effAssignments,
+                  currentAvailableSlotKeys,
+                  underAssigned,
+                  currentPendingMakeupDemands,
+                  makeupEntries,
                 )
 
                 const underTooltip = underAssigned
@@ -5459,62 +5524,8 @@ service cloud.firestore {
                 const currentSections: StatusSection[] = [
                   {
                     key: 'under' as const,
-                    title: '残コマあり',
-                    items: underAssigned.map((s) => {
-                      const causes: string[] = []
-                      const proposalPool: StatusProposal[] = []
-                      const missingEntries = Object.entries(s.missingBySubj).filter(([, c]) => c > 0)
-                      const currentStudent = data.students.find((student) => student.name === s.name)
-                      if (missingEntries.length > 0) {
-                        causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
-                      }
-                      const specials = s.remaining.filter((r) => r.rem > 0)
-                      if (specials.length > 0) {
-                        causes.push(...specials.map((r) => `特別${r.subj}残${r.rem}コマ`))
-                      }
-                      if (currentStudent) {
-                        for (const special of specials) {
-                          const analysis = buildRemainingSuggestions(data.assignments, effAssignments, currentAvailableSlotKeys, currentStudent, special.subj)
-                          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-                        }
-                        const studentMakeups = currentPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
-                        for (const demand of studentMakeups) {
-                          const teacher = data.teachers.find((item) => item.id === demand.teacherId)
-                          if (!teacher) continue
-                          const analysis = analyzePlacementOptions(
-                            data.assignments,
-                            effAssignments,
-                            currentAvailableSlotKeys,
-                            currentStudent,
-                            demand.subject,
-                            [teacher],
-                            {
-                              slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
-                              makeupDemand: demand,
-                            },
-                          )
-                          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-                        }
-                      }
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal(STATUS_ALIGN_AVAILABILITY))
-                      const proposals = dedupeStatusProposals(proposalPool)
-                      return {
-                        label: s.name,
-                        causes,
-                        proposals: proposals.length > 0 ? proposals : buildNoCandidateProposals(causes),
-                      }
-                    }),
-                  },
-                  {
-                    key: 'makeup' as const,
-                    title: '振替未配置',
-                    items: makeupEntries.map((item) => ({
-                      label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
-                      causes: item.causes.length > 0 ? item.causes : [item.reason],
-                      proposals: item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
-                    })),
+                    title: '残コマ詳細',
+                    items: remainingDetailItems,
                   },
                   {
                     key: 'over' as const,
@@ -5549,7 +5560,7 @@ service cloud.firestore {
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
                     ) : underAssigned.length > 0 ? (
-                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under' || s.key === 'makeup') })}>
+                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under') })}>
                         残コマあり: {underAssigned.length}名
                       </span>
                     ) : (
