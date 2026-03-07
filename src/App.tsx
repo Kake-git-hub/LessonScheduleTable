@@ -4028,8 +4028,21 @@ const AdminPage = () => {
     for (const student of underAssigned) {
       const causes: string[] = []
       const proposalPool: StatusProposal[] = []
-      const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
       const currentStudent = data.students.find((entry) => entry.id === student.studentId)
+      const studentMakeups = currentStudent
+        ? pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
+        : []
+      const pendingMakeupCountBySubject = studentMakeups.reduce<Record<string, number>>((acc, demand) => {
+        acc[demand.subject] = (acc[demand.subject] ?? 0) + 1
+        return acc
+      }, {})
+      const missingEntries = Object.entries(student.missingBySubj)
+        .map(([subj, count]) => {
+          const pendingMakeupCount = pendingMakeupCountBySubject[subj] ?? 0
+          const remainingRegularCount = Math.max(count - pendingMakeupCount, 0)
+          return [subj, remainingRegularCount] as const
+        })
+        .filter(([, count]) => count > 0)
       if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
       const specials = student.remaining.filter((entry) => entry.rem > 0)
       if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
@@ -4062,7 +4075,6 @@ const AdminPage = () => {
               : []),
           )
         }
-        const studentMakeups = pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
         for (const demand of studentMakeups) {
           const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
           if (!teacher) continue
