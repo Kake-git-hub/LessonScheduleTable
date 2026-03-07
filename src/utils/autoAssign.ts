@@ -420,9 +420,9 @@ export const buildIncrementalAutoAssignments = async (
   for (const [, slotAssignments] of Object.entries(result)) {
     for (const assignment of slotAssignments) {
       if (assignment.isRegular) continue
-      if (assignment.regularMakeupInfo) {
+      if (assignment.regularMakeupInfo || assignment.regularSubstituteInfo) {
         for (const studentId of assignment.studentIds) {
-          if (assignment.regularMakeupInfo[studentId]) continue
+          if (assignment.regularMakeupInfo?.[studentId] || assignment.regularSubstituteInfo?.[studentId]) continue
           const subj = getStudentSubject(assignment, studentId)
           const key = `${studentId}|${subj}`
           specialLoadMap.set(key, (specialLoadMap.get(key) ?? 0) + 1)
@@ -448,6 +448,10 @@ export const buildIncrementalAutoAssignments = async (
       const remainingStudentIds: string[] = []
       let removedAny = false
       for (const studentId of assignment.studentIds) {
+        if (assignment.regularMakeupInfo?.[studentId] || assignment.regularSubstituteInfo?.[studentId]) {
+          remainingStudentIds.push(studentId)
+          continue
+        }
         const student = data.students.find((s) => s.id === studentId)
         const subj = getStudentSubject(assignment, studentId)
         const requested = (student?.subjectSlots ?? {})[subj] ?? 0

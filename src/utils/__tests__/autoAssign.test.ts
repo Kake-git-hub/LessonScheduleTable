@@ -141,6 +141,43 @@ describe('buildIncrementalAutoAssignments', () => {
     expect(allAssigns).toHaveLength(0)
   })
 
+  it('keeps regular substitute assignments on rerun even when special demand is zero', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 3, holidays: [] },
+      teachers: [
+        makeTeacher({ id: 't1', name: '鈴木先生', subjects: ['数', '英'] }),
+        makeTeacher({ id: 't2', name: '山本先生', subjects: ['数', '英'] }),
+      ],
+      students: [
+        makeStudent({ id: 's1', name: '上田陽介', subjects: [], subjectSlots: {}, submittedAt: 1000 }),
+        makeStudent({ id: 's2', name: '同席生徒', subjects: ['英'], subjectSlots: { 英: 1 }, submittedAt: 2000 }),
+      ],
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      assignments: {
+        '2026-07-21_2': [{
+          teacherId: 't2',
+          studentIds: ['s2', 's1'],
+          subject: '英',
+          studentSubjects: { s2: '英', s1: '数' },
+          regularSubstituteInfo: { s1: { regularTeacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' } },
+        }],
+      },
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'teacher:t2': ['2026-07-21_2'],
+        'student:s1': ['2026-07-21_1', '2026-07-21_2'],
+        'student:s2': ['2026-07-21_2'],
+      },
+    })
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1', '2026-07-21_2', '2026-07-21_3'])
+    const slot2 = result.assignments['2026-07-21_2'] ?? []
+    expect(slot2).toHaveLength(1)
+    expect(slot2[0].studentIds).toContain('s1')
+    expect(slot2[0].regularSubstituteInfo?.s1).toEqual({ regularTeacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' })
+  })
+
   it('prefers 2-student pairs', async () => {
     const data = makeSessionData({
       teachers: [makeTeacher()],
