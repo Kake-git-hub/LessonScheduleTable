@@ -5,7 +5,7 @@
  * Constraint cards have HIGHER priority than shared rules.
  *
  * Default cards (auto-enabled unless removed):
- *   - twoSlotLimit: 1日2コマ上限
+ *   - twoSlotLimit: 2コマ上限
  *   - lateSlotNonExam: 受験生以外の後半コマ優先
  *   - groupContinuous: 集団後2コマ連続
  *
@@ -20,8 +20,8 @@ import { getSlotNumber, getIsoDayOfWeek, getStudentNonGroupSlotNumbersOnDate, ge
 /** Labels for each constraint card type (UI display). */
 export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
   oneSlotOnly: '1コマ上限',
-  twoSlotLimit: '二コマ限定',
-  threeSlotLimit: '三コマ限定',
+  twoSlotLimit: '2コマ上限',
+  threeSlotLimit: '3コマ上限',
   twoConsecutive: '2コマ連続',
   twoWithGap: '2コマ連続(一コマ空け)',
   groupContinuous: '集団後2コマ連続',
@@ -33,8 +33,8 @@ export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
 /** Short descriptions for each card type. */
 export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = {
   oneSlotOnly: '生徒を1日1コマに限定する。集団授業はこの上限に含めない',
-  twoSlotLimit: '生徒を1日2コマまでに限定する（デフォルト）。集団授業はこの上限に含めない',
-  threeSlotLimit: '生徒を1日3コマまでに限定する。集団授業はこの上限に含めない',
+  twoSlotLimit: '生徒を1日2コマまでに制限する（デフォルト）。集団授業はこの上限に含めない',
+  threeSlotLimit: '生徒を1日3コマまでに制限する。集団授業はこの上限に含めない',
   twoConsecutive: '生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   twoWithGap: '生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   groupContinuous: '集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
@@ -284,7 +284,7 @@ export const evaluateConstraintCards = (
       case 'twoSlotLimit': {
         // Hard limit: 2 slots per day (default behavior)
         if (existingSlotNums.length >= 2) {
-          return { score: -99999, blocked: true, blockReason: '二コマ限定: 既に2コマ配置済み' }
+          return { score: -99999, blocked: true, blockReason: '2コマ上限: 既に2コマ配置済み' }
         }
         break
       }
@@ -292,7 +292,7 @@ export const evaluateConstraintCards = (
       case 'threeSlotLimit': {
         // Hard limit: 3 slots per day
         if (existingSlotNums.length >= 3) {
-          return { score: -99999, blocked: true, blockReason: '三コマ限定: 既に3コマ配置済み' }
+          return { score: -99999, blocked: true, blockReason: '3コマ上限: 既に3コマ配置済み' }
         }
         break
       }

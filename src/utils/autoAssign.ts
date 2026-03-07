@@ -548,7 +548,7 @@ export const buildIncrementalAutoAssignments = async (
           const mkSlotNum = getSlotNumber(slot)
           const fmtDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
           const origDate = mkMatch.date ? fmtDate(mkMatch.date) : ''
-          const makeupDetail = `生徒希望入力で振替希望があったため自動振替（${best.name}: ${origDate} ${mkMatch.slotNumber}限 → ${fmtDate(mkDate)} ${mkSlotNum}限）`
+          const makeupDetail = `期間内の通常授業必要数を満たすため自動振替（${best.name}: ${origDate} ${mkMatch.slotNumber}限 → ${fmtDate(mkDate)} ${mkSlotNum}限）`
           markMakeupPair(slot, assignment, makeupDetail)
         } else {
           const addChangeInfo = describeStudentSubmissionChange(best.id)
@@ -890,7 +890,7 @@ export const buildIncrementalAutoAssignments = async (
             const origDate = info.date ? fmtDate(info.date) : ''
             return `${sName}: ${origDate} ${info.slotNumber}限 → ${fmtDate(mkDate)} ${mkSlotNum}限`
           }).join(', ')
-          const makeupDetail = `生徒希望入力で振替希望があったため自動振替（${makeupDetails}）`
+          const makeupDetail = `期間内の通常授業必要数を満たすため自動振替（${makeupDetails}）`
           markMakeupPair(slot, a, makeupDetail)
         } else {
           markAddedPair(slot, a, fullDetail)

@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.32'
+const APP_VERSION = '1.3.33'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3111,19 +3111,19 @@ const AdminPage = () => {
   const buildConstraintSuggestion = (student: Student, blockReason: string, slot: string, teacherName: string): StatusProposal | null => {
     const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
     if (blockReason.startsWith('1コマ上限') && cards.includes('oneSlotOnly')) {
-      return toStatusProposal(`制約カード変更案: 1コマ上限 -> 二コマ限定 または 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return toStatusProposal(`制約カード変更案: 1コマ上限 -> 2コマ上限 または 3コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
-    if (blockReason.startsWith('二コマ限定') && cards.includes('twoSlotLimit')) {
-      return toStatusProposal(`制約カード変更案: 二コマ限定 -> 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+    if (blockReason.startsWith('2コマ上限') && cards.includes('twoSlotLimit')) {
+      return toStatusProposal(`制約カード変更案: 2コマ上限 -> 3コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     if (blockReason.startsWith('2コマ連続') && cards.includes('twoConsecutive')) {
-      return toStatusProposal(`制約カード変更案: 2コマ連続 を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return toStatusProposal(`制約カード変更案: 2コマ連続 を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     if (blockReason.startsWith('2コマ連続(一コマ空け)') && cards.includes('twoWithGap')) {
-      return toStatusProposal(`制約カード変更案: 2コマ連続(一コマ空け) を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return toStatusProposal(`制約カード変更案: 2コマ連続(一コマ空け) を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     if (blockReason.startsWith('通常授業連結') && cards.includes('regularLink')) {
-      return toStatusProposal(`制約カード変更案: 通常授業連結 を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return toStatusProposal(`制約カード変更案: 通常授業連結 を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     if (blockReason.startsWith('集団後2コマ連続') && cards.includes('groupContinuous')) {
       return toStatusProposal(`制約カード変更案: 集団後2コマ連続 を外すと ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
@@ -5723,11 +5723,11 @@ service cloud.firestore {
                         <li><b>2コマ連続</b> → 生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後で分ける）</li>
                         <li><b>2コマ連続(一コマ空け)</b> → 生徒を2コマ連続で配置するが、間に1コマ入れる</li>
                         <li><b>1コマ上限</b> → 生徒を1日1コマに限定する。集団授業はこの上限に含めない</li>
-                        <li><b>二コマ限定</b> → 生徒を1日2コマまでに限定する。集団授業はこの上限に含めない</li>
-                        <li><b>三コマ限定</b> → 生徒を1日3コマまでに限定する。集団授業はこの上限に含めない</li>
+                        <li><b>2コマ上限</b> → 生徒を1日2コマまでに制限する。集団授業はこの上限に含めない</li>
+                        <li><b>3コマ上限</b> → 生徒を1日3コマまでに制限する。集団授業はこの上限に含めない</li>
                         <li><b>通常授業連結</b> → 通常授業の前後に特別講習のコマをつなげ2コマ連続とする</li>
                       </ul>
-                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>※ 2コマ連続 / 2コマ連続(一コマ空け) / 集団後2コマ連続 / 通常授業連結 は競合。1コマ上限 はそれら全てと競合。1コマ上限 / 二コマ限定 / 三コマ限定 も同時選択不可</p>
+                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>※ 2コマ連続 / 2コマ連続(一コマ空け) / 集団後2コマ連続 / 通常授業連結 は競合。1コマ上限 はそれら全てと競合。1コマ上限 / 2コマ上限 / 3コマ上限 も同時選択不可</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>制約</h4>
