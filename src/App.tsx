@@ -3521,7 +3521,7 @@ const AdminPage = () => {
       if (currentStudent) {
         for (const special of specials) {
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
-          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+          proposalPool.push(...analysis.force, ...analysis.substitute, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []), ...analysis.teacher, ...analysis.student)
         }
         const studentMakeups = pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
         for (const demand of studentMakeups) {
@@ -3539,7 +3539,7 @@ const AdminPage = () => {
               makeupDemand: demand,
             },
           )
-          proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
+          proposalPool.push(...analysis.force, ...analysis.substitute, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []), ...analysis.teacher, ...analysis.student)
         }
       }
       if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
@@ -3985,11 +3985,12 @@ const AdminPage = () => {
           ? `${teacher.name}(${slotSummary})`
           : teacher.name
       })
-      const proposals = [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
+      const proposals: StatusProposal[] = []
       if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
         proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
+      proposals.push(toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`))
       return proposals
     }
 
