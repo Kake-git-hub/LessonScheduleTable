@@ -172,6 +172,67 @@ const STATUS_REVIEW_DAILY_LIMIT = 'その日の別コマを減らすか制約カ
 const STATUS_MOVE_SAME_SLOT = '同時間の別割当を移すか他のコマで調整してください'
 const STATUS_REVIEW_SUBJECTS = '講師の担当科目設定を見直してください'
 
+const parseBlockerEntry = (blocker: string): { slot: string; reason: string } => {
+  const divider = blocker.indexOf(': ')
+  if (divider < 0) return { slot: '', reason: blocker }
+  return {
+    slot: blocker.slice(0, divider),
+    reason: blocker.slice(divider + 2),
+  }
+}
+
+const extractTeacherNameFromBlocker = (reason: string): string | null => {
+  const match = reason.match(/講師\(([^)]+)\)/)
+  return match?.[1] ?? null
+}
+
+const buildConcreteBlockerLabel = (slot: string, reason: string): string => {
+  const slotPrefix = slot ? `${slot}: ` : ''
+  const teacherName = extractTeacherNameFromBlocker(reason)
+
+  if (reason.includes('両方が未出席') || reason.includes('マッチする日なし')) {
+    return `${slotPrefix}講師と生徒の空きが重なっていません。両方の出席可能日を増やして重なる日を作ってください`
+  }
+  if ((reason.includes('講師(') && reason.includes('未出席')) || (reason.includes('講師(') && reason.includes('出席可能日なし'))) {
+    if (teacherName) {
+      return `${slotPrefix}${teacherName} の出席可能日を増やしてください`
+    }
+    return `${slotPrefix}講師の出席可能日を増やしてください`
+  }
+  if (reason.includes('生徒が出席不可') || reason.includes('生徒の出席可能日なし') || (reason.includes('生徒') && reason.includes('出席不可'))) {
+    return `${slotPrefix}生徒の出席可能日を増やすか不可コマを減らしてください`
+  }
+  if (reason.includes('机数上限')) {
+    return `${slotPrefix}机数上限がネックです。同時間の別割当を減らすか別コマへ移してください`
+  }
+  if (reason.includes('ペアが満席')) {
+    return `${slotPrefix}${reason}。この講師の別コマを空けるか別講師を空けてください`
+  }
+  if (reason.includes('相性不可')) {
+    return `${slotPrefix}${reason}。相性可の講師を空けるか既存ペアを移してください`
+  }
+  if (reason.includes('同コマに既に割当済み')) {
+    return `${slotPrefix}生徒が同コマで別授業に入っています。既存授業を別コマへ移してください`
+  }
+  if (reason.includes('コマ上限')) {
+    return `${slotPrefix}${reason}。その日の別コマを減らすか制約カードを調整してください`
+  }
+  if (reason.includes('担当外科目')) {
+    return `${slotPrefix}${reason}。担当可能な講師を増やすか科目設定を見直してください`
+  }
+  return `${slotPrefix}${reason} がネックです。該当条件を調整してください`
+}
+
+const buildSpecificBlockerProposals = (blockers: string[]): StatusProposal[] => {
+  const labels: string[] = []
+  for (const blocker of blockers) {
+    const { slot, reason } = parseBlockerEntry(blocker)
+    const label = buildConcreteBlockerLabel(slot, reason)
+    if (!labels.includes(label)) labels.push(label)
+  }
+  return labels.slice(0, 5).map((label) => toStatusProposal(label))
+}
+
 const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   const labels: string[] = []
   const add = (label: string) => {
@@ -3781,7 +3842,16 @@ const AdminPage = () => {
       if (currentStudent) {
         for (const special of specials) {
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
-          proposalPool.push(...analysis.force, ...analysis.substitute, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []), ...analysis.teacher, ...analysis.student)
+          proposalPool.push(
+            ...analysis.force,
+            ...analysis.substitute,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
+            ...analysis.teacher,
+            ...analysis.student,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+              ? buildSpecificBlockerProposals(analysis.blockers)
+              : []),
+          )
         }
         const studentMakeups = pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
         for (const demand of studentMakeups) {
@@ -3799,7 +3869,16 @@ const AdminPage = () => {
               makeupDemand: demand,
             },
           )
-          proposalPool.push(...analysis.force, ...analysis.substitute, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []), ...analysis.teacher, ...analysis.student)
+          proposalPool.push(
+            ...analysis.force,
+            ...analysis.substitute,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
+            ...analysis.teacher,
+            ...analysis.student,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+              ? buildSpecificBlockerProposals(analysis.blockers)
+              : []),
+          )
         }
       }
       if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
@@ -3825,7 +3904,12 @@ const AdminPage = () => {
       const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
       const mergedProposals = dedupeStatusProposals([
         ...(existing?.proposals ?? []),
-        ...(item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason])),
+        ...(item.proposals.length > 0
+          ? item.proposals
+          : [
+              ...buildSpecificBlockerProposals(item.causes),
+              ...buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
+            ]),
       ])
       details.set(item.studentId, {
         label: existing?.label ?? item.studentName,
@@ -3842,7 +3926,12 @@ const AdminPage = () => {
         return {
           label: detail.label,
           causes: detail.causes,
-          proposals: detail.proposals.length > 0 ? detail.proposals : buildNoCandidateProposals(detail.causes),
+          proposals: detail.proposals.length > 0
+            ? detail.proposals
+            : [
+                ...buildSpecificBlockerProposals(detail.causes),
+                ...buildNoCandidateProposals(detail.causes),
+              ],
         }
       })
       .filter(Boolean) as StatusDetail[]
