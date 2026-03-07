@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.31'
+const APP_VERSION = '1.3.32'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -5705,10 +5705,13 @@ service cloud.firestore {
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>共通ルール（自動提案スコアリング・優先順）</h4>
                       <ol style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
-                        <li><b>2人ペアボーナス +1000</b> → 講師稼働率の最大化</li>
-                        <li><b>既出勤日に追加 +500</b> / 新規出勤日 −200 → 講師の出勤日数を最小化</li>
-                        <li><b>残コマ多数優先 ×20</b> → 生徒競合の場合残コマ数が多い生徒を優先</li>
-                        <li><b>生徒は一日上限2コマまで</b>（ハードフィルタ）</li>
+                        <li><b>2人ペアボーナス +1000</b> → 同じ机数で処理できる人数を増やす</li>
+                        <li><b>既出勤日に追加 +80</b> / 新規出勤日 −30 → 講師の出勤日数をできるだけ増やさない</li>
+                        <li><b>残コマ多数優先 ×20</b> → 生徒競合時は残コマが多い生徒を先に埋める</li>
+                        <li><b>希望時限 +120</b> → 生徒の希望時限を優先する</li>
+                        <li><b>講師担当時限の連続 +12</b> → 他条件が同じなら講師の担当時限を連続させる</li>
+                        <li><b>講師稼働率平準化 ±8</b> → 最後のタイブレークとして講師の稼働率差をならす</li>
+                        <li><b>生徒は制約カードに従う</b>（ハードフィルタ優先）</li>
                       </ol>
                     </section>
                     <section>

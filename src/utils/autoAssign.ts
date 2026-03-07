@@ -137,6 +137,12 @@ export const buildIncrementalAutoAssignments = async (
   }
   const teacherIds = new Set(data.teachers.map((t) => t.id))
   const studentIds = new Set(data.students.map((s) => s.id))
+  const teacherAvailableSlotCount = new Map(
+    data.teachers.map((teacher) => [
+      teacher.id,
+      slots.filter((slot) => hasAvailability(data.availability, 'teacher', teacher.id, slot)).length,
+    ]),
+  )
   const result: Record<string, Assignment[]> = {}
 
   // Pre-compute makeup student info: for each regular-lesson student, which regular slots are unavailable
@@ -632,6 +638,22 @@ export const buildIncrementalAutoAssignments = async (
       const teacherDates = getTeacherAssignedDates(result, teacher.id)
       const isExistingDate = teacherDates.has(currentDate)
       const teacherLoad = countTeacherLoad(result, teacher.id)
+      const teacherProjectedUtilization = (() => {
+        const availableCount = teacherAvailableSlotCount.get(teacher.id) ?? 0
+        if (availableCount <= 0) return 1
+        return (teacherLoad + 1) / availableCount
+      })()
+      const averageTeacherUtilization = (() => {
+        const rates = data.teachers
+          .map((entry) => {
+            const availableCount = teacherAvailableSlotCount.get(entry.id) ?? 0
+            if (availableCount <= 0) return null
+            return countTeacherLoad(result, entry.id) / availableCount
+          })
+          .filter((rate): rate is number => rate != null)
+        if (rates.length === 0) return 0
+        return rates.reduce((sum, rate) => sum + rate, 0) / rates.length
+      })()
 
       const teacherSlotsOnDate = getTeacherSlotNumbersOnDate(result, teacher.id, currentDate)
       const teacherIsConsecutive = teacherSlotsOnDate.some((n) => Math.abs(n - currentSlotNum) === 1)
@@ -746,8 +768,14 @@ export const buildIncrementalAutoAssignments = async (
 
         // ── Additional scoring factors (lower priority) ──
 
-        // Teacher consecutive slot bonus
-        const teacherConsecBonus = teacherIsConsecutive ? 50 : 0
+        // Weak soft rule: prefer consecutive teacher periods only after stronger rules align.
+        const teacherConsecBonus = teacherIsConsecutive ? 12 : 0
+
+        // Weakest soft rule: slightly favor teachers whose utilization is still below the pack.
+        const teacherUtilizationBalanceBonus = Math.max(
+          -8,
+          Math.min(8, Math.round((averageTeacherUtilization - teacherProjectedUtilization) * 40)),
+        )
 
         // Mixed-subject penalty: same subject pairs are slightly preferred
         const mixedSubjectPenalty = plan.isMixed ? -15 : 0
@@ -785,9 +813,6 @@ export const buildIncrementalAutoAssignments = async (
           submissionBonus += Math.max(0, 15 - submissionRank * 2)
         }
 
-        // Teacher load balancing
-        const teacherLoadPenalty = teacherLoad * 2
-
         const score =
           totalCardScore +            // Constraint cards (highest priority)
           pairBonus +                  // 2人ペアボーナス
@@ -795,11 +820,11 @@ export const buildIncrementalAutoAssignments = async (
           remainingSlotScore +         // 残コマ多数優先
           preferredSlotBonus +         // 希望コマ優先
           teacherConsecBonus +         // 講師連続コマ
+          teacherUtilizationBalanceBonus + // 講師稼働率平準化
           mixedSubjectPenalty +        // 混合科目
           consecutiveSameSubjectPenalty + // 隣接同科目
           makeupBonus +                // 振替ボーナス
-          submissionBonus -            // 提出順
-          teacherLoadPenalty           // 講師負荷
+          submissionBonus              // 提出順
 
         if (!bestPlan || score > bestPlan.score) {
           const assignment: Assignment = plan.isMixed
