@@ -3862,6 +3862,19 @@ const AdminPage = () => {
       if (blockAssignmentsUntilShortagesResolved) {
         proposalPool.push(toStatusProposal(STATUS_RESOLVE_SHORTAGE_FIRST))
       } else if (currentStudent) {
+        for (const [subject] of missingEntries) {
+          const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, subject)
+          proposalPool.push(
+            ...analysis.force,
+            ...analysis.substitute,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
+            ...analysis.teacher,
+            ...analysis.student,
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+              ? buildSpecificBlockerProposals(analysis.blockers)
+              : []),
+          )
+        }
         for (const special of specials) {
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
           proposalPool.push(
