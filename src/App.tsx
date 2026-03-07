@@ -5422,9 +5422,6 @@ service cloud.firestore {
                 const shortageTooltip = teacherShortages
                   .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)}: ${item.detail}`)
                   .join('\n')
-                const makeupTooltip = makeupEntries
-                  .map((item) => `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`)
-                  .join('\n')
                 const currentSections: StatusSection[] = [
                   {
                     key: 'under' as const,
@@ -5518,7 +5515,7 @@ service cloud.firestore {
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
                     ) : underAssigned.length > 0 ? (
-                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under') })}>
+                      <span className="badge warn" title={underTooltip} style={{ cursor: 'pointer' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'under' || s.key === 'makeup') })}>
                         残コマあり: {underAssigned.length}名
                       </span>
                     ) : (
@@ -5527,11 +5524,6 @@ service cloud.firestore {
                     {overAssigned.length > 0 && (
                       <span className="badge" title={overTooltip} style={{ cursor: 'pointer', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'over') })}>
                         過割当: {overAssigned.length}名
-                      </span>
-                    )}
-                    {makeupEntries.length > 0 && (
-                      <span className="badge" title={makeupTooltip} style={{ cursor: 'pointer', background: '#fff7ed', color: '#c2410c', border: '1px solid #fdba74' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'makeup') })}>
-                        振替未配置: {makeupEntries.length}件
                       </span>
                     )}
                     {teacherShortages.length > 0 && (
