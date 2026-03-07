@@ -26,9 +26,9 @@ import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePd
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
-import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.25'
+const APP_VERSION = '1.3.26'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3034,8 +3034,8 @@ const AdminPage = () => {
 
   const buildConstraintSuggestion = (student: Student, blockReason: string, slot: string, teacherName: string): StatusProposal | null => {
     const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
-    if (blockReason.startsWith('一コマ限定') && cards.includes('oneSlotOnly')) {
-      return toStatusProposal(`制約カード変更案: 一コマ限定 -> 二コマ限定 または 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+    if (blockReason.startsWith('1コマ上限') && cards.includes('oneSlotOnly')) {
+      return toStatusProposal(`制約カード変更案: 1コマ上限 -> 二コマ限定 または 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     if (blockReason.startsWith('二コマ限定') && cards.includes('twoSlotLimit')) {
       return toStatusProposal(`制約カード変更案: 二コマ限定 -> 三コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
@@ -3049,8 +3049,8 @@ const AdminPage = () => {
     if (blockReason.startsWith('通常授業連結') && cards.includes('regularLink')) {
       return toStatusProposal(`制約カード変更案: 通常授業連結 を外すか 二コマ限定 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
-    if (blockReason.startsWith('集団後連続') && cards.includes('groupContinuous')) {
-      return toStatusProposal(`制約カード変更案: 集団後連続 を外すと ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+    if (blockReason.startsWith('集団後2コマ連続') && cards.includes('groupContinuous')) {
+      return toStatusProposal(`制約カード変更案: 集団後2コマ連続 を外すと ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
     }
     return null
   }
@@ -4862,7 +4862,7 @@ service cloud.firestore {
                           <div style={{ minWidth: 280 }}>
                             {ALL_CONSTRAINT_CARDS.map((cardType) => {
                               const isChecked = cards.includes(cardType)
-                              const conflictGroups = [CONSTRAINT_CARD_CONFLICT_GROUP, DAILY_LIMIT_CONFLICT_GROUP]
+                              const conflictGroups = CONSTRAINT_CARD_CONFLICT_GROUPS
                               const isConflicting = !isChecked && conflictGroups.some((group) =>
                                 group.includes(cardType) && cards.some((c) => group.includes(c) && c !== cardType)
                               )
@@ -5467,14 +5467,16 @@ service cloud.firestore {
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>コマ制約カード（共通ルールより優先）</h4>
                       <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
                         <li><b>(デフォルト) 受験生以外の後半コマ優先</b> → 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進</li>
-                        <li><b>(デフォルト) 集団後連続</b> → 集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置</li>
+                        <li><b>(デフォルト) 集団後2コマ連続</b> → 集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置</li>
                         <li><b>通常講師優先</b> → 通常授業の講師を優先</li>
                         <li><b>2コマ連続</b> → 生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後で分ける）</li>
                         <li><b>2コマ連続(一コマ空け)</b> → 生徒を2コマ連続で配置するが、間に1コマ入れる</li>
-                        <li><b>一コマ限定</b> → 生徒を1日1コマに限定する</li>
+                        <li><b>1コマ上限</b> → 生徒を1日1コマに限定する。集団授業はこの上限に含めない</li>
+                        <li><b>二コマ限定</b> → 生徒を1日2コマまでに限定する。集団授業はこの上限に含めない</li>
+                        <li><b>三コマ限定</b> → 生徒を1日3コマまでに限定する。集団授業はこの上限に含めない</li>
                         <li><b>通常授業連結</b> → 通常授業の前後に特別講習のコマをつなげ2コマ連続とする</li>
                       </ul>
-                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>※ 2コマ連続 / 2コマ連続(一コマ空け) / 一コマ限定 / 通常授業連結 は競合（同一生徒に1つのみ選択可）</p>
+                      <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: '12px' }}>※ 2コマ連続 / 2コマ連続(一コマ空け) / 集団後2コマ連続 / 通常授業連結 は競合。1コマ上限 はそれら全てと競合。1コマ上限 / 二コマ限定 / 三コマ限定 も同時選択不可</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>制約</h4>

@@ -3,7 +3,7 @@ import {
   allAssignments, buildEffectiveAssignments, getStudentSubject,
   countTeacherLoad, getTeacherAssignedDates, getTeacherSlotNumbersOnDate,
   getTeacherPrevSlotStudentIds,
-  countStudentSlotsOnDate, getStudentSlotNumbersOnDate, countStudentAssignedDates,
+  countStudentSlotsOnDate, getStudentNonGroupSlotNumbersOnDate, getStudentSlotNumbersOnDate, countStudentAssignedDates,
   countStudentLoad, countStudentSubjectLoad,
   collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment,
   getTeacherStudentSlotsOnDate, getStudentSubjectsOnAdjacentSlots,
@@ -168,6 +168,17 @@ describe('getStudentSlotNumbersOnDate', () => {
       '2026-07-21_1': [{ teacherId: 't2', studentIds: ['s1'], subject: '英' }],
     }
     expect(getStudentSlotNumbersOnDate(assignments, 's1', '2026-07-21')).toEqual([1, 3])
+  })
+})
+
+describe('getStudentNonGroupSlotNumbersOnDate', () => {
+  it('excludes group lessons from the returned slot numbers', () => {
+    const assignments = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', isGroupLesson: true }],
+      '2026-07-21_2': [{ teacherId: 't2', studentIds: ['s1'], subject: '英' }],
+      '2026-07-21_3': [{ teacherId: 't3', studentIds: ['s1'], subject: '国' }],
+    }
+    expect(getStudentNonGroupSlotNumbersOnDate(assignments, 's1', '2026-07-21')).toEqual([2, 3])
   })
 })
 

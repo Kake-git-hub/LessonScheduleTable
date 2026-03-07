@@ -7,11 +7,11 @@ export type SubjectSlotRequest = Record<string, number>
 // ── Constraint cards ─────────────────────────────────
 export type ConstraintCardType =
   | 'lateSlotNonExam'       // 受験生以外の後半コマ優先 (default)
-  | 'groupContinuous'       // 集団後連続 (default)
+  | 'groupContinuous'       // 集団後2コマ連続 (default)
   | 'preferRegularTeacher'  // 通常講師優先
   | 'twoConsecutive'        // 2コマ連続
   | 'twoWithGap'            // 2コマ連続(一コマ空け)
-  | 'oneSlotOnly'           // 一コマ限定
+  | 'oneSlotOnly'           // 1コマ上限
   | 'twoSlotLimit'          // 二コマ限定 (default)
   | 'threeSlotLimit'        // 三コマ限定
   | 'regularLink'           // 通常授業連結

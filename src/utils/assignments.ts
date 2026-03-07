@@ -124,6 +124,19 @@ export const getStudentSlotNumbersOnDate = (assignments: Record<string, Assignme
   return nums.sort((a, b) => a - b)
 }
 
+/** Get the slot numbers a student is assigned on a specific date, excluding group lessons. */
+export const getStudentNonGroupSlotNumbersOnDate = (assignments: Record<string, Assignment[]>, studentId: string, date: string): number[] => {
+  const nums: number[] = []
+  for (const [slot, slotAssignments] of Object.entries(assignments)) {
+    if (slot.startsWith(`${date}_`)) {
+      if (slotAssignments.some((a) => !a.isGroupLesson && a.studentIds.includes(studentId))) {
+        nums.push(getSlotNumber(slot))
+      }
+    }
+  }
+  return nums.sort((a, b) => a - b)
+}
+
 /** Count unique dates a student is assigned to */
 export const countStudentAssignedDates = (assignments: Record<string, Assignment[]>, studentId: string): number => {
   const dates = new Set<string>()

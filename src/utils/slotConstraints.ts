@@ -7,39 +7,40 @@
  * Default cards (auto-enabled unless removed):
  *   - twoSlotLimit: 1日2コマ上限
  *   - lateSlotNonExam: 受験生以外の後半コマ優先
- *   - groupContinuous: 集団後連続
+ *   - groupContinuous: 集団後2コマ連続
  *
  * Conflict groups (mutually exclusive per student):
- *   pattern: twoConsecutive / twoWithGap / regularLink
+ *   pattern: twoConsecutive / twoWithGap / groupContinuous / regularLink
  *   daily-limit: oneSlotOnly / twoSlotLimit / threeSlotLimit
+ *   one-slot: oneSlotOnly / twoConsecutive / twoWithGap / groupContinuous / regularLink
  */
 import type { Assignment, ConstraintCardType, RegularLesson, Student } from '../types'
-import { getSlotNumber, getIsoDayOfWeek, getStudentSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
+import { getSlotNumber, getIsoDayOfWeek, getStudentNonGroupSlotNumbersOnDate, getStudentSubjectsOnAdjacentSlots } from './assignments'
 
 /** Labels for each constraint card type (UI display). */
 export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
-  lateSlotNonExam: '受験生以外の後半コマ優先',
-  groupContinuous: '集団後連続',
-  preferRegularTeacher: '通常講師優先',
-  twoConsecutive: '2コマ連続',
-  twoWithGap: '2コマ連続(一コマ空け)',
-  oneSlotOnly: '一コマ限定',
+  oneSlotOnly: '1コマ上限',
   twoSlotLimit: '二コマ限定',
   threeSlotLimit: '三コマ限定',
+  twoConsecutive: '2コマ連続',
+  twoWithGap: '2コマ連続(一コマ空け)',
+  groupContinuous: '集団後2コマ連続',
   regularLink: '通常授業連結',
+  preferRegularTeacher: '通常講師優先',
+  lateSlotNonExam: '受験生以外の後半コマ優先',
 }
 
 /** Short descriptions for each card type. */
 export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = {
-  lateSlotNonExam: '高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
-  groupContinuous: '集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
-  preferRegularTeacher: '通常授業の講師を優先して配置',
+  oneSlotOnly: '生徒を1日1コマに限定する。集団授業はこの上限に含めない',
+  twoSlotLimit: '生徒を1日2コマまでに限定する（デフォルト）。集団授業はこの上限に含めない',
+  threeSlotLimit: '生徒を1日3コマまでに限定する。集団授業はこの上限に含めない',
   twoConsecutive: '生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   twoWithGap: '生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
-  oneSlotOnly: '生徒を1日1コマに限定する',
-  twoSlotLimit: '生徒を1日2コマまでに限定する（デフォルト）',
-  threeSlotLimit: '生徒を1日3コマまでに限定する',
+  groupContinuous: '集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
   regularLink: '通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  preferRegularTeacher: '通常授業の講師を優先して配置',
+  lateSlotNonExam: '高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
 }
 
 /** Get default constraint cards for a student based on grade.
@@ -62,25 +63,36 @@ export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', '
 
 /** All constraint card types in display order. */
 export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
-  'lateSlotNonExam',
-  'groupContinuous',
-  'preferRegularTeacher',
-  'twoConsecutive',
-  'twoWithGap',
   'oneSlotOnly',
   'twoSlotLimit',
   'threeSlotLimit',
+  'twoConsecutive',
+  'twoWithGap',
+  'groupContinuous',
   'regularLink',
+  'preferRegularTeacher',
+  'lateSlotNonExam',
 ]
 
 /** Conflict group: scheduling pattern cards are mutually exclusive for a single student. */
 export const CONSTRAINT_CARD_CONFLICT_GROUP: ConstraintCardType[] = [
-  'twoConsecutive', 'twoWithGap', 'regularLink',
+  'twoConsecutive', 'twoWithGap', 'groupContinuous', 'regularLink',
 ]
 
 /** Daily limit conflict group: daily slot limit cards are mutually exclusive. */
 export const DAILY_LIMIT_CONFLICT_GROUP: ConstraintCardType[] = [
   'oneSlotOnly', 'twoSlotLimit', 'threeSlotLimit',
+]
+
+/** One-slot cap conflicts with any card that requires or strongly prefers 2 connected slots. */
+export const ONE_SLOT_CONFLICT_GROUP: ConstraintCardType[] = [
+  'oneSlotOnly', 'twoConsecutive', 'twoWithGap', 'groupContinuous', 'regularLink',
+]
+
+export const CONSTRAINT_CARD_CONFLICT_GROUPS: ConstraintCardType[][] = [
+  CONSTRAINT_CARD_CONFLICT_GROUP,
+  DAILY_LIMIT_CONFLICT_GROUP,
+  ONE_SLOT_CONFLICT_GROUP,
 ]
 
 /** Check if a grade is "exam grade" (受験生): 高3 or 中3 */
@@ -92,14 +104,13 @@ export const isExamGrade = (grade: string): boolean => grade === '高3' || grade
  */
 export const validateConstraintCards = (cards: ConstraintCardType[]): string[] => {
   const warnings: string[] = []
-  const conflicting = cards.filter((c) => CONSTRAINT_CARD_CONFLICT_GROUP.includes(c))
-  if (conflicting.length > 1) {
+  const seen = new Set<string>()
+  for (const group of CONSTRAINT_CARD_CONFLICT_GROUPS) {
+    const conflicting = cards.filter((c) => group.includes(c))
+    if (conflicting.length <= 1) continue
     const labels = conflicting.map((c) => CONSTRAINT_CARD_LABELS[c]).join('、')
-    warnings.push(`${labels} は競合しています。どれか1つだけ選択してください。`)
-  }
-  const dailyLimitConflicting = cards.filter((c) => DAILY_LIMIT_CONFLICT_GROUP.includes(c))
-  if (dailyLimitConflicting.length > 1) {
-    const labels = dailyLimitConflicting.map((c) => CONSTRAINT_CARD_LABELS[c]).join('、')
+    if (seen.has(labels)) continue
+    seen.add(labels)
     warnings.push(`${labels} は競合しています。どれか1つだけ選択してください。`)
   }
   return warnings
@@ -148,7 +159,7 @@ export const evaluateConstraintCards = (
   let score = 0
   const date = candidateSlot.split('_')[0]
   const slotNum = getSlotNumber(candidateSlot)
-  const existingSlotNums = getStudentSlotNumbersOnDate(assignments, student.id, date)
+  const existingSlotNums = getStudentNonGroupSlotNumbersOnDate(assignments, student.id, date)
   const dayOfWeek = getIsoDayOfWeek(date)
 
   for (const card of cards) {
@@ -189,7 +200,7 @@ export const evaluateConstraintCards = (
         }
         // Already has 2+ individual slots → block
         if (existingSlotNums.length >= 2) {
-          return { score: -99999, blocked: true, blockReason: '集団後連続: 既に2コマ配置済み' }
+          return { score: -99999, blocked: true, blockReason: '集団後2コマ連続: 既に2コマ配置済み' }
         }
         break
       }
@@ -264,7 +275,7 @@ export const evaluateConstraintCards = (
       case 'oneSlotOnly': {
         // Hard limit: 1 slot per day
         if (existingSlotNums.length >= 1) {
-          return { score: -99999, blocked: true, blockReason: '一コマ限定: 既に1コマ配置済み' }
+          return { score: -99999, blocked: true, blockReason: '1コマ上限: 既に1コマ配置済み' }
         }
         score += 100 // Small bonus for being placed (since no more can be added)
         break
