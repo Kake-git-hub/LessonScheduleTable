@@ -4478,6 +4478,7 @@ const AdminPage = () => {
       .join(' / ')
     const teacherName = data.teachers.find((t) => t.id === proposal.teacherId)?.name ?? proposal.teacherId
 
+    pendingProposalStatusRefreshRef.current = true
     await updateAssignments((current) => {
       const students = actionStudentIds.map((sid) => current.students.find((s) => s.id === sid)).filter(Boolean) as Student[]
       const teacher = current.teachers.find((t) => t.id === proposal.teacherId)
@@ -4771,11 +4772,11 @@ const AdminPage = () => {
     })
 
     if (errorMessage) {
+      pendingProposalStatusRefreshRef.current = false
       alert(errorMessage)
       return
     }
     if (success) {
-      pendingProposalStatusRefreshRef.current = true
       if (nextStatusReport) {
         setStatusModal(nextStatusReport)
         setLatestStatusReport(nextStatusReport)
@@ -6961,6 +6962,21 @@ service cloud.firestore {
                               {(item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)]).map((proposal, proposalIdx) => (
                                 <li key={proposalIdx}>
                                   {proposal.choices && proposal.choices.length > 0 ? (() => {
+                                    if (proposal.choices.length === 1) {
+                                      const selectedChoice = proposal.choices[0]
+                                      return (
+                                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                          <span>{proposal.label}: {selectedChoice.label}</span>
+                                          <button
+                                            className="status-proposal-action"
+                                            type="button"
+                                            onClick={() => void applyProposalAction(selectedChoice.action)}
+                                          >
+                                            実行
+                                          </button>
+                                        </div>
+                                      )
+                                    }
                                     const choiceKey = `${section.key}:${item.label}:${proposalIdx}:${proposal.label}`
                                     const selectedValue = proposalSelections[choiceKey] ?? proposal.choices[0]?.value ?? ''
                                     const selectedChoice = proposal.choices.find((choice) => choice.value === selectedValue) ?? proposal.choices[0]
