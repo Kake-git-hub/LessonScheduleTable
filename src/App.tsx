@@ -314,6 +314,18 @@ const formatAutoDiffTooltip = (kind: 'new' | 'changed', detail?: string): string
   return `${header}\n${normalized}`
 }
 
+const normalizeStringArray = (values: string[]): string[] => [...new Set(values)].sort()
+
+const areStringArraysEqual = (left: string[], right: string[]): boolean => {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+const areSubjectSlotsEqual = (left: Record<string, number>, right: Record<string, number>): boolean => {
+  const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])]
+  return keys.every((key) => (left[key] ?? 0) === (right[key] ?? 0))
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -7197,32 +7209,37 @@ const TeacherInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey(personKeyPrefix, teacher.id)
-    const availabilityArray = Array.from(localAvailability)
+    const availabilityArray = normalizeStringArray(Array.from(localAvailability))
+    const previousAvailability = normalizeStringArray(data.availability[key] ?? [])
+    const hasChanged = !areStringArraysEqual(availabilityArray, previousAvailability)
 
     // Determine if this is initial or update submission
     const isUpdate = !!(data.teacherSubmittedAt?.[teacher.id])
-    const logEntry: SubmissionLogEntry = {
-      personId: teacher.id,
-      personType: personKeyPrefix === 'manager' ? 'teacher' : 'teacher',
-      submittedAt: Date.now(),
-      type: isUpdate ? 'update' : 'initial',
-      availability: availabilityArray,
-    }
+    if (hasChanged) {
+      const now = Date.now()
+      const logEntry: SubmissionLogEntry = {
+        personId: teacher.id,
+        personType: personKeyPrefix === 'manager' ? 'teacher' : 'teacher',
+        submittedAt: now,
+        type: isUpdate ? 'update' : 'initial',
+        availability: availabilityArray,
+      }
 
-    const next: SessionData = {
-      ...data,
-      availability: {
-        ...data.availability,
-        [key]: availabilityArray,
-      },
-      teacherSubmittedAt: {
-        ...(data.teacherSubmittedAt ?? {}),
-        [teacher.id]: Date.now(),
-      },
-      submissionLog: [...(data.submissionLog ?? []), logEntry],
+      const next: SessionData = {
+        ...data,
+        availability: {
+          ...data.availability,
+          [key]: availabilityArray,
+        },
+        teacherSubmittedAt: {
+          ...(data.teacherSubmittedAt ?? {}),
+          [teacher.id]: now,
+        },
+        submissionLog: [...(data.submissionLog ?? []), logEntry],
+      }
+      const normalizedNext = releaseUnavailableTeacherAssignments(next, new Set([teacher.id])) ?? next
+      saveSession(classroomId, sessionId, normalizedNext).catch(() => { /* ignore */ })
     }
-    const normalizedNext = releaseUnavailableTeacherAssignments(next, new Set([teacher.id])) ?? next
-    saveSession(classroomId, sessionId, normalizedNext).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const availCount = availabilityArray.length
     const personTypeLabel = personKeyPrefix === 'manager' ? '講師' : '講師'
@@ -7705,6 +7722,7 @@ const StudentInputPage = ({
   }
 
   const handleSubmit = () => {
+    const normalizedUnavailableSlots = normalizeStringArray(Array.from(unavailableSlots))
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
       .map(([subject]) => subject)
@@ -7719,39 +7737,52 @@ const StudentInputPage = ({
       .map(([d]) => d)
 
     // Determine if this is initial or update submission
+    const previousSubjects = normalizeStringArray(student.subjects ?? [])
+    const previousUnavailableDates = normalizeStringArray(student.unavailableDates ?? [])
+    const previousUnavailableSlots = normalizeStringArray(student.unavailableSlots ?? [])
+    const normalizedSubjects = normalizeStringArray(subjects)
+    const normalizedDerivedUnavailDates = normalizeStringArray(derivedUnavailDates)
+    const hasChanged = !areStringArraysEqual(normalizedSubjects, previousSubjects)
+      || !areSubjectSlotsEqual(student.subjectSlots ?? {}, subjectSlots)
+      || !areStringArraysEqual(normalizedDerivedUnavailDates, previousUnavailableDates)
+      || !areStringArraysEqual(normalizedUnavailableSlots, previousUnavailableSlots)
+
     const isUpdate = !!(student.submittedAt)
-    const logEntry: SubmissionLogEntry = {
-      personId: student.id,
-      personType: 'student',
-      submittedAt: Date.now(),
-      type: isUpdate ? 'update' : 'initial',
-      subjects,
-      subjectSlots,
-      unavailableDates: derivedUnavailDates,
-      preferredSlots: [],
-      unavailableSlots: Array.from(unavailableSlots),
-    }
+    if (hasChanged) {
+      const now = Date.now()
+      const logEntry: SubmissionLogEntry = {
+        personId: student.id,
+        personType: 'student',
+        submittedAt: now,
+        type: isUpdate ? 'update' : 'initial',
+        subjects: normalizedSubjects,
+        subjectSlots,
+        unavailableDates: normalizedDerivedUnavailDates,
+        preferredSlots: [],
+        unavailableSlots: normalizedUnavailableSlots,
+      }
 
-    const updatedStudents = data.students.map((s) =>
-      s.id === student.id
-        ? {
-            ...s,
-            subjects,
-            subjectSlots,
-            unavailableDates: derivedUnavailDates,
-            preferredSlots: [],
-            unavailableSlots: Array.from(unavailableSlots),
-            submittedAt: Date.now(),
-          }
-        : s,
-    )
+      const updatedStudents = data.students.map((s) =>
+        s.id === student.id
+          ? {
+              ...s,
+              subjects: normalizedSubjects,
+              subjectSlots,
+              unavailableDates: normalizedDerivedUnavailDates,
+              preferredSlots: [],
+              unavailableSlots: normalizedUnavailableSlots,
+              submittedAt: now,
+            }
+          : s,
+      )
 
-    const next: SessionData = {
-      ...data,
-      students: updatedStudents,
-      submissionLog: [...(data.submissionLog ?? []), logEntry],
+      const next: SessionData = {
+        ...data,
+        students: updatedStudents,
+        submissionLog: [...(data.submissionLog ?? []), logEntry],
+      }
+      saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     }
-    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     const submittedAt = new Date().toLocaleString('ja-JP')
     const subjectDetails = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
@@ -8051,34 +8082,39 @@ const MendanParentInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey('student', student.id)
-    const availabilityArray = Array.from(localAvailability)
+    const availabilityArray = normalizeStringArray(Array.from(localAvailability))
+    const previousAvailability = normalizeStringArray(data.availability[key] ?? [])
+    const hasChanged = !areStringArraysEqual(availabilityArray, previousAvailability)
 
-    const logEntry: SubmissionLogEntry = {
-      personId: student.id,
-      personType: 'student',
-      submittedAt: Date.now(),
-      type: student.submittedAt ? 'update' : 'initial',
-      availability: availabilityArray,
-    }
-
-    const updatedStudents = data.students.map((s) =>
-      s.id === student.id
-        ? { ...s, submittedAt: Date.now() }
-        : s,
-    )
-
-    const next: SessionData = {
-      ...data,
-      students: updatedStudents,
-      availability: {
-        ...data.availability,
-        [key]: availabilityArray,
-      },
-      submissionLog: [...(data.submissionLog ?? []), logEntry],
-    }
-    saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
-    const submittedAt = new Date().toLocaleString('ja-JP')
     const isUpdate = !!(student.submittedAt)
+    if (hasChanged) {
+      const now = Date.now()
+      const logEntry: SubmissionLogEntry = {
+        personId: student.id,
+        personType: 'student',
+        submittedAt: now,
+        type: isUpdate ? 'update' : 'initial',
+        availability: availabilityArray,
+      }
+
+      const updatedStudents = data.students.map((s) =>
+        s.id === student.id
+          ? { ...s, submittedAt: now }
+          : s,
+      )
+
+      const next: SessionData = {
+        ...data,
+        students: updatedStudents,
+        availability: {
+          ...data.availability,
+          [key]: availabilityArray,
+        },
+        submissionLog: [...(data.submissionLog ?? []), logEntry],
+      }
+      saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
+    }
+    const submittedAt = new Date().toLocaleString('ja-JP')
     const availCount = availabilityArray.length
     void downloadSubmissionReceiptPdf({
       sessionName: data.settings.name,
