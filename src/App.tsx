@@ -144,6 +144,14 @@ const mergeUnplacedMakeupEntries = (entries: UnplacedMakeupEntry[]): UnplacedMak
   return [...merged.values()]
 }
 
+const STATUS_NO_CANDIDATE = '候補なし'
+const STATUS_REVIEW_CONSTRAINTS = '候補なし。制約を見直してください'
+const STATUS_REVIEW_COUNTS = '必要なら希望/実績を見直してください'
+const STATUS_ADJUST_OVER = '手動で調整するか再提案してください'
+const STATUS_ADD_TEACHER = '講師の空きコマを増やしてください'
+const STATUS_ADD_STUDENT = '生徒の不可日・不可コマを減らしてください'
+const STATUS_ALIGN_AVAILABILITY = '講師と生徒の空きが重なるよう調整してください'
+
 const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?: Set<string>): SessionData | null => {
   if (current.settings.sessionType === 'mendan') return null
 
@@ -3882,9 +3890,9 @@ const AdminPage = () => {
       if (proposals.length > 0) {
         reason = `${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
       } else if (analysis.blockers.length > 0) {
-        reason = `${reason} / 提案候補なし: ${analysis.blockers.join(', ')}`
+        reason = `${reason} / 候補なし: ${analysis.blockers.join(', ')}`
       } else {
-        reason = `${reason} / 提案候補なし: 机数上限・相性不可・出席可能日を確認してください`
+        reason = `${reason} / 候補なし: 机数上限・相性不可・出席可能日を確認してください`
       }
       unplacedMakeupEntries.push({ studentId: student.id, teacherId: um.teacherId, studentName: student.name, subject: um.subject, causes, proposals, reason, count: 1 })
     }
@@ -3955,14 +3963,14 @@ const AdminPage = () => {
               proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
             }
           }
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal('生徒の出席不可日・不可コマを減らしてください'))
-          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal('講師出席可能コマと生徒出席可能日が重なるように調整してください'))
+          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
+          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
+          if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal(STATUS_ALIGN_AVAILABILITY))
           const proposals = dedupeStatusProposals(proposalPool)
           return {
             label: student.name,
             causes,
-            proposals: proposals.length > 0 ? proposals : [toStatusProposal('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')],
+            proposals: proposals.length > 0 ? proposals : [toStatusProposal(STATUS_REVIEW_CONSTRAINTS)],
           }
         }),
         },
@@ -3972,7 +3980,7 @@ const AdminPage = () => {
           items: makeupEntries.map((item) => ({
             label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
             causes: item.causes.length > 0 ? item.causes : [item.reason],
-            proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')],
+            proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)],
           })),
       },
       {
@@ -3981,7 +3989,7 @@ const AdminPage = () => {
         items: overAssigned.map((student) => ({
           label: student.name,
           causes: student.remaining.filter((entry) => entry.rem < 0).map((entry) => `${entry.subj}${entry.rem}`),
-          proposals: [toStatusProposal('後ろのコマから手動調整するか、自動提案を再実行して過割当解除を確認してください')],
+          proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
         })),
       },
       {
@@ -3997,7 +4005,7 @@ const AdminPage = () => {
 
     return {
       title: '現在のコマ割り状況',
-      summary: sections.length > 0 ? '全員割当以外の項目に対する原因と提案を表示しています。' : '現在、未解決の項目はありません。',
+      summary: sections.length > 0 ? '未解決項目' : '未解決項目なし',
       sections,
     }
   }
@@ -4354,12 +4362,12 @@ const AdminPage = () => {
       items: overRemovedEntries.map((item) => ({
         label: slotLabel(item.slot, isMendan, mendanStart),
         causes: item.detail.split('\n').filter(Boolean),
-        proposals: [toStatusProposal('必要なら希望コマ数や実績を見直してください')],
+        proposals: [toStatusProposal(STATUS_REVIEW_COUNTS)],
       })),
     }
     const report: StatusReport = {
       title: '自動提案結果',
-      summary: changeLog.length > 0 ? `${changeLog.length}件の変更がありました。` : '変更はありませんでした。',
+      summary: changeLog.length > 0 ? `${changeLog.length}件変更` : '変更なし',
       sections: [underSection, makeupSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0),
     }
     setLatestStatusReport(report)
@@ -5462,14 +5470,14 @@ service cloud.firestore {
                           proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
                         }
                       }
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal('生徒の出席不可日・不可コマを減らしてください'))
-                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal('講師出席可能コマと生徒出席可能日が重なるように調整してください'))
+                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
+                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
+                      if (proposalPool.length === 0 && s.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal(STATUS_ALIGN_AVAILABILITY))
                       const proposals = dedupeStatusProposals(proposalPool)
                       return {
                         label: s.name,
                         causes,
-                        proposals: proposals.length > 0 ? proposals : [toStatusProposal('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')],
+                        proposals: proposals.length > 0 ? proposals : [toStatusProposal(STATUS_REVIEW_CONSTRAINTS)],
                       }
                     }),
                   },
@@ -5479,7 +5487,7 @@ service cloud.firestore {
                     items: makeupEntries.map((item) => ({
                       label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
                       causes: item.causes.length > 0 ? item.causes : [item.reason],
-                      proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')],
+                      proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)],
                     })),
                   },
                   {
@@ -5488,7 +5496,7 @@ service cloud.firestore {
                     items: overAssigned.map((s) => ({
                       label: s.name,
                       causes: s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`),
-                      proposals: [toStatusProposal('後ろのコマから手動調整するか、自動提案を再実行して過割当解除を確認してください')],
+                      proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
                     })),
                   },
                   {
@@ -5503,7 +5511,7 @@ service cloud.firestore {
                 ].filter((section) => section.items.length > 0)
                 const currentStatusReport: StatusReport = {
                   title: '現在のコマ割り状況',
-                  summary: '全員割当以外の項目に対する原因と提案を表示しています。',
+                  summary: '未解決項目',
                   sections: currentSections,
                 }
 
@@ -6376,7 +6384,7 @@ service cloud.firestore {
                           <div className="status-item-block">
                             <strong>提案</strong>
                             <ul>
-                              {(item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')]).map((proposal, proposalIdx) => (
+                              {(item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)]).map((proposal, proposalIdx) => (
                                 <li key={proposalIdx}>
                                   {proposal.choices && proposal.choices.length > 0 ? (() => {
                                     const choiceKey = `${section.key}:${item.label}:${proposalIdx}:${proposal.label}`
