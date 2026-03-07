@@ -2680,6 +2680,18 @@ const AdminPage = () => {
   // Mendan (interview) mode: managers act as instructors instead of teachers
   const isMendan = data?.settings.sessionType === 'mendan'
   const mendanStart = data?.settings.mendanStartHour ?? 10
+  const shouldShowAutoAssignButton = useMemo(() => {
+    if (!data) return false
+    if (isMendan) return true
+
+    const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
+    if (!lastAutoAt) return true
+
+    if (data.students.some((student) => student.submittedAt > lastAutoAt)) return true
+    if (data.teachers.some((teacher) => ((data.teacherSubmittedAt ?? {})[teacher.id] ?? 0) > lastAutoAt)) return true
+
+    return false
+  }, [data, isMendan])
 
   // For mendan: compute which slot numbers actually have manager availability
   const mendanActiveSlots = useMemo(() => {
@@ -5639,9 +5651,11 @@ service cloud.firestore {
                   </>
                 )
               })()}
-              <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
-                {isMendan ? '自動割当（先着順）' : '自動提案'}
-              </button>
+              {shouldShowAutoAssignButton && (
+                <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading}>
+                  {isMendan ? '自動割当（先着順）' : '自動提案'}
+                </button>
+              )}
               {latestStatusReport && !autoAssignLoading && (
                 <button className="btn secondary" type="button" onClick={() => setStatusModal(latestStatusReport)}>
                   結果詳細
