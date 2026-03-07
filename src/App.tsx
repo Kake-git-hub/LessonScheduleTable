@@ -23,12 +23,12 @@ import type {
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
 import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
-import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
+import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.35'
+const APP_VERSION = '1.3.36'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -2893,7 +2893,7 @@ const AdminPage = () => {
         const availableStudentIds = lesson.studentIds.filter((sid) => {
           const student = data.students.find((s) => s.id === sid)
           if (!student) return false
-          return isStudentAvailable(student, slot)
+          return isStudentAvailableForRegularLesson(student, slot)
         })
         return {
           teacherId: lesson.teacherId,
@@ -3394,7 +3394,7 @@ const AdminPage = () => {
           if (dow !== rl.dayOfWeek || getSlotNumber(slot) !== rl.slotNumber) continue
           const actualForSlot = actualResults?.[slot]
           const absentFromActual = actualForSlot != null && !actualForSlot.some((r) => r.studentIds.includes(sid))
-          const needsMakeup = !isStudentAvailable(student, slot)
+          const needsMakeup = !isStudentAvailableForRegularLesson(student, slot)
           if (!needsMakeup && !absentFromActual) continue
           demands.push({
             studentId: sid,

@@ -1,4 +1,4 @@
-import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan, isRegularLessonPair } from '../constraints'
+import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan, isRegularLessonPair } from '../constraints'
 import type { PairConstraint, Student, RegularLesson } from '../../types'
 
 describe('constraintFor', () => {
@@ -77,6 +77,14 @@ describe('isStudentAvailable', () => {
 
   it('returns true when student is available', () => {
     expect(isStudentAvailable(makeStudent(), '2026-07-21_1')).toBe(true)
+  })
+
+  it('treats unsubmitted student as available for regular lessons', () => {
+    expect(isStudentAvailableForRegularLesson(makeStudent({ submittedAt: 0 }), '2026-07-21_1')).toBe(true)
+  })
+
+  it('still respects unavailable slots for regular lessons', () => {
+    expect(isStudentAvailableForRegularLesson(makeStudent({ submittedAt: 0, unavailableSlots: ['2026-07-21_1'] }), '2026-07-21_1')).toBe(false)
   })
 })
 

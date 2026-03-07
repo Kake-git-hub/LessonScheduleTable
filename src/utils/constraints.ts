@@ -31,6 +31,12 @@ export const isStudentAvailable = (student: Student, slotKey: string): boolean =
   return !student.unavailableDates.includes(date)
 }
 
+export const isStudentAvailableForRegularLesson = (student: Student, slotKey: string): boolean => {
+  if ((student.unavailableSlots ?? []).includes(slotKey)) return false
+  const [date] = slotKey.split('_')
+  return !student.unavailableDates.includes(date)
+}
+
 /** For mendan sessions: check if parent has positive availability for a slot */
 export const isParentAvailableForMendan = (
   availability: SessionData['availability'],

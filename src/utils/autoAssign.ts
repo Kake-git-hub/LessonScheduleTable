@@ -1,6 +1,6 @@
 import type { Assignment, SessionData } from '../types'
 import { personKey } from './schedule'
-import { constraintFor, hasAvailability, isStudentAvailable } from './constraints'
+import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
 import { evaluateConstraintCards, getDefaultConstraintCards } from './slotConstraints'
 import {
@@ -173,7 +173,7 @@ export const buildIncrementalAutoAssignments = async (
         const dow = getIsoDayOfWeek(date)
         if (dow === rl.dayOfWeek && getSlotNumber(slot) === rl.slotNumber) {
           // Case 1: student is unavailable for this slot
-          const needsMakeup = !isStudentAvailable(student, slot)
+          const needsMakeup = !isStudentAvailableForRegularLesson(student, slot)
           // Case 2: slot has actual results recorded and student was removed (absent)
           // Use regularLessons as source of truth (not data.assignments which may be corrupted)
           const actualForSlot = data.actualResults?.[slot]
