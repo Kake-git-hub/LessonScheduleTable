@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.27'
+const APP_VERSION = '1.3.28'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3055,6 +3055,46 @@ const AdminPage = () => {
     return null
   }
 
+  const summarizeProposalNames = (names: string[], maxNames = 3): string => {
+    const uniqueNames = [...new Set(names)]
+    if (uniqueNames.length <= maxNames) return uniqueNames.join('・')
+    return `${uniqueNames.slice(0, maxNames).join('・')} 他${uniqueNames.length - maxNames}名`
+  }
+
+  const summarizeProposalSlots = (slots: string[], maxSlots = 5): string => {
+    const uniqueSlots = [...new Set(slots)]
+    if (uniqueSlots.length <= maxSlots) return uniqueSlots.join('、')
+    return `${uniqueSlots.slice(0, maxSlots).join('、')} ほか${uniqueSlots.length - maxSlots}コマ`
+  }
+
+  const buildAttendanceAdjustmentProposals = (
+    kind: 'teacher' | 'student',
+    items: Array<{ teacherName: string; subject: string; slots: string[] }>,
+  ): StatusProposal[] => {
+    const grouped = new Map<string, { teacherNames: string[]; subject: string; slots: string[] }>()
+
+    for (const item of items) {
+      const limitedSlots = [...new Set(item.slots)].slice(0, 5)
+      const key = `${item.subject}|${limitedSlots.join('|')}`
+      const existing = grouped.get(key)
+      if (existing) {
+        existing.teacherNames.push(item.teacherName)
+      } else {
+        grouped.set(key, { teacherNames: [item.teacherName], subject: item.subject, slots: limitedSlots })
+      }
+    }
+
+    return [...grouped.values()]
+      .map((item) => {
+        const nameSummary = summarizeProposalNames(item.teacherNames)
+        const slotSummary = summarizeProposalSlots(item.slots)
+        return kind === 'teacher'
+          ? toStatusProposal(`講師出席追加案: ${nameSummary} / ${slotSummary} / ${item.subject}`)
+          : toStatusProposal(`生徒出席緩和案: ${slotSummary} / ${nameSummary} / ${item.subject}`)
+      })
+      .slice(0, 5)
+  }
+
   const collectPendingMakeupDemands = (
     assignmentState: Record<string, Assignment[]>,
     actualResultsOverride?: Record<string, ActualResult[]>,
@@ -3306,12 +3346,8 @@ const AdminPage = () => {
     return {
       force,
       substitute,
-      teacher: [...teacherSuggestions.values()]
-        .map((item) => toStatusProposal(`講師出席追加案: ${item.teacherName} を ${item.slots.join('、')} 出席可にすると ${item.subject} を追加候補`))
-        .slice(0, 5),
-      student: [...studentSuggestions.values()]
-        .map((item) => toStatusProposal(`生徒出席緩和案: ${item.slots.join('、')} を出席可にすると 講師(${item.teacherName}) で ${item.subject} を追加候補`))
-        .slice(0, 5),
+      teacher: buildAttendanceAdjustmentProposals('teacher', [...teacherSuggestions.values()]),
+      student: buildAttendanceAdjustmentProposals('student', [...studentSuggestions.values()]),
       cards: [...cardSuggestions.values()].slice(0, 5),
       blockers: [...blockerReasons].slice(0, 8),
     }
@@ -3438,13 +3474,14 @@ const AdminPage = () => {
     }
 
     if (orderedCompatibleTeachers.length > 0) {
-      const adjustmentLabels = orderedCompatibleTeachers.slice(0, 8).map((teacher) => {
+      const adjustmentLabels = orderedCompatibleTeachers.slice(0, 5).map((teacher) => {
         const [date] = item.slot.split('_')
         const sameDaySlots = Object.entries(assignmentState)
           .filter(([sk, slotAssignments]) => sk.startsWith(`${date}_`) && slotAssignments.some((assignment) => assignment.teacherId === teacher.id))
           .map(([sk]) => slotLabel(sk, isMendan, mendanStart))
-        return sameDaySlots.length > 0
-          ? `${teacher.name}(${sameDaySlots.join('、')})`
+        const slotSummary = sameDaySlots.length > 0 ? summarizeProposalSlots(sameDaySlots, 5) : ''
+        return slotSummary
+          ? `${teacher.name}(${slotSummary})`
           : teacher.name
       })
       return [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
