@@ -28,6 +28,15 @@ export interface ChangeLogEntry {
 /** Yield helper — resolves on next macrotask so the UI stays responsive. */
 const yieldToMain = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
+const hasTeacherAvailabilityForAutoAssign = (data: SessionData, teacherId: string, slot: string): boolean => {
+  if (hasAvailability(data.availability, 'teacher', teacherId, slot)) return true
+  if ((data.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
+  const [date] = slot.split('_')
+  const dayOfWeek = getIsoDayOfWeek(date)
+  const slotNumber = getSlotNumber(slot)
+  return data.regularLessons.some((lesson) => lesson.teacherId === teacherId && lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber)
+}
+
 export const buildIncrementalAutoAssignments = async (
   data: SessionData,
   slots: string[],
@@ -141,7 +150,7 @@ export const buildIncrementalAutoAssignments = async (
   const teacherAvailableSlotCount = new Map(
     data.teachers.map((teacher) => [
       teacher.id,
-      slots.filter((slot) => hasAvailability(data.availability, 'teacher', teacher.id, slot)).length,
+      slots.filter((slot) => hasTeacherAvailabilityForAutoAssign(data, teacher.id, slot)).length,
     ]),
   )
   const result: Record<string, Assignment[]> = {}
@@ -310,7 +319,7 @@ export const buildIncrementalAutoAssignments = async (
       }
 
       // Check teacher still has availability for this slot
-      if (!hasAvailability(data.availability, 'teacher', assignment.teacherId, slot)) {
+      if (!hasTeacherAvailabilityForAutoAssign(data, assignment.teacherId, slot)) {
         const teacherName = data.teachers.find((t) => t.id === assignment.teacherId)?.name ?? '?'
         const teacherChangeInfo = describeTeacherSubmissionChange(assignment.teacherId)
         const usedTeachers = new Set(cleaned.map((a) => a.teacherId))
@@ -321,7 +330,7 @@ export const buildIncrementalAutoAssignments = async (
         }).filter(p => p.grade && p.subject)
         const replacement = data.teachers.find((t) => {
           if (usedTeachers.has(t.id)) return false
-          if (!hasAvailability(data.availability, 'teacher', t.id, slot)) return false
+          if (!hasTeacherAvailabilityForAutoAssign(data, t.id, slot)) return false
           return studentSubjectPairs2.every(({ grade, subject }) => canTeachSubject(t.subjects, grade, subject))
         })
         if (replacement) {
@@ -606,7 +615,7 @@ export const buildIncrementalAutoAssignments = async (
     const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === currentDayOfWeek)
 
     const teachers = data.teachers.filter((teacher) =>
-      hasAvailability(data.availability, 'teacher', teacher.id, slot),
+      hasTeacherAvailabilityForAutoAssign(data, teacher.id, slot),
     )
 
     // Sort teachers: strongly prefer those already assigned on this date (minimize total attendance days)

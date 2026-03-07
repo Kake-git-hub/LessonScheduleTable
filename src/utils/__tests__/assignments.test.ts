@@ -7,7 +7,7 @@ import {
   countStudentLoad, countStudentSubjectLoad,
   collectTeacherShortages, assignmentSignature, hasMeaningfulManualAssignment,
   getTeacherStudentSlotsOnDate, getStudentSubjectsOnAdjacentSlots,
-  findRegularLessonsForSlot, getDatesInRange,
+  findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress,
   normalizeAssignment,
 } from '../assignments'
 import type { Assignment, SessionData } from '../../types'
@@ -382,5 +382,44 @@ describe('getDatesInRange', () => {
   it('returns empty for missing dates', () => {
     const settings = { name: '', adminPassword: '', startDate: '', endDate: '', slotsPerDay: 3, holidays: [] as string[] }
     expect(getDatesInRange(settings)).toEqual([])
+  })
+})
+
+describe('getRegularSubjectProgress', () => {
+  it('counts only occurrences defined by regular lessons', () => {
+    const data = makeSessionData({
+      settings: { name: '', adminPassword: '', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 3, holidays: [] },
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      assignments: {
+        '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', isRegular: true }],
+        '2026-07-21_2': [{ teacherId: 't1', studentIds: ['s1'], subject: '英', isRegular: true }],
+      },
+    })
+    const result = getRegularSubjectProgress(data, data.assignments, 's1')
+    expect(result.desiredBySubject).toEqual({ 数: 1 })
+    expect(result.assignedBySubject).toEqual({ 数: 1 })
+  })
+
+  it('counts makeup against its source occurrence only once', () => {
+    const data = makeSessionData({
+      settings: { name: '', adminPassword: '', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 3, holidays: [] },
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      assignments: {
+        '2026-07-21_2': [{
+          teacherId: 't1',
+          studentIds: ['s1'],
+          subject: '数',
+          regularMakeupInfo: { s1: { dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' } },
+        }],
+        '2026-07-21_3': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', isRegular: true }],
+      },
+    })
+    const result = getRegularSubjectProgress(data, data.assignments, 's1')
+    expect(result.desiredBySubject).toEqual({ 数: 1 })
+    expect(result.assignedBySubject).toEqual({ 数: 1 })
   })
 })

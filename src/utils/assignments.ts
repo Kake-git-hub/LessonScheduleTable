@@ -359,3 +359,62 @@ export const getDatesInRange = (settings: SessionData['settings']): string[] => 
 
   return dates
 }
+
+export const getRegularSubjectProgress = (
+  data: Pick<SessionData, 'settings' | 'regularLessons' | 'groupLessons'>,
+  effectiveAssignments: Record<string, Assignment[]>,
+  studentId: string,
+): { desiredBySubject: Record<string, number>; assignedBySubject: Record<string, number> } => {
+  const groupSubjectSet = new Set(
+    (data.groupLessons ?? [])
+      .filter((lesson) => lesson.studentIds.includes(studentId))
+      .map((lesson) => lesson.subject),
+  )
+
+  const occurrences: { date: string; slot: string; dayOfWeek: number; slotNumber: number; subject: string }[] = []
+  const desiredBySubject: Record<string, number> = {}
+
+  for (const date of getDatesInRange(data.settings)) {
+    const dayOfWeek = getIsoDayOfWeek(date)
+    for (const lesson of data.regularLessons) {
+      if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(studentId)) continue
+      const subject = lesson.studentSubjects?.[studentId] ?? lesson.subject
+      if (groupSubjectSet.has(subject)) continue
+      desiredBySubject[subject] = (desiredBySubject[subject] ?? 0) + 1
+      occurrences.push({ date, slot: `${date}_${lesson.slotNumber}`, dayOfWeek, slotNumber: lesson.slotNumber, subject })
+    }
+  }
+
+  const regularLikeAssignments = Object.entries(effectiveAssignments).flatMap(([slot, slotAssignments]) =>
+    slotAssignments
+      .filter((assignment) => assignment.studentIds.includes(studentId) && !assignment.isGroupLesson)
+      .map((assignment) => ({ slot, assignment, subject: getStudentSubject(assignment, studentId), used: false })),
+  )
+
+  const assignedBySubject: Record<string, number> = {}
+  for (const occurrence of occurrences) {
+    const matchIndex = regularLikeAssignments.findIndex((entry) => {
+      if (entry.used || entry.subject !== occurrence.subject) return false
+      if (entry.assignment.isRegular && entry.slot === occurrence.slot) return true
+
+      const makeupInfo = entry.assignment.regularMakeupInfo?.[studentId]
+      if (makeupInfo && makeupInfo.dayOfWeek === occurrence.dayOfWeek && makeupInfo.slotNumber === occurrence.slotNumber) {
+        return !makeupInfo.date || makeupInfo.date === occurrence.date
+      }
+
+      const substituteInfo = entry.assignment.regularSubstituteInfo?.[studentId]
+      if (substituteInfo && substituteInfo.dayOfWeek === occurrence.dayOfWeek && substituteInfo.slotNumber === occurrence.slotNumber) {
+        return !substituteInfo.date || substituteInfo.date === occurrence.date
+      }
+
+      return false
+    })
+
+    if (matchIndex >= 0) {
+      regularLikeAssignments[matchIndex].used = true
+      assignedBySubject[occurrence.subject] = (assignedBySubject[occurrence.subject] ?? 0) + 1
+    }
+  }
+
+  return { desiredBySubject, assignedBySubject }
+}

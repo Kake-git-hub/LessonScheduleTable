@@ -24,11 +24,11 @@ import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel }
 import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isParentAvailableForMendan } from './utils/constraints'
-import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange } from './utils/assignments'
+import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.34'
+const APP_VERSION = '1.3.35'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -112,6 +112,36 @@ const sameStudentSet = (left: string[], right: string[]): boolean => {
   const leftSorted = [...left].sort()
   const rightSorted = [...right].sort()
   return leftSorted.every((id, index) => id === rightSorted[index])
+}
+
+const mergeStringList = (values: string[]): string[] => [...new Set(values.filter(Boolean))]
+
+type UnplacedMakeupEntry = {
+  studentId: string
+  teacherId: string
+  studentName: string
+  subject: string
+  causes: string[]
+  proposals: StatusProposal[]
+  reason: string
+  count: number
+}
+
+const mergeUnplacedMakeupEntries = (entries: UnplacedMakeupEntry[]): UnplacedMakeupEntry[] => {
+  const merged = new Map<string, UnplacedMakeupEntry>()
+  for (const entry of entries) {
+    const key = `${entry.studentId}|${entry.teacherId}|${entry.subject}`
+    const existing = merged.get(key)
+    if (!existing) {
+      merged.set(key, { ...entry, causes: mergeStringList(entry.causes), proposals: dedupeStatusProposals(entry.proposals), count: entry.count || 1 })
+      continue
+    }
+    existing.causes = mergeStringList([...existing.causes, ...entry.causes])
+    existing.proposals = dedupeStatusProposals([...existing.proposals, ...entry.proposals])
+    existing.reason = mergeStringList([existing.reason, entry.reason]).join(' / ')
+    existing.count += entry.count || 1
+  }
+  return [...merged.values()]
 }
 
 const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?: Set<string>): SessionData | null => {
@@ -1971,31 +2001,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
         return { subject: subj, desired, assigned, diff: assigned - desired }
       })
 
-      const regularDesiredBySubject = sessionDates.reduce<Record<string, number>>((acc, date) => {
-        const dayOfWeek = getIsoDayOfWeek(date)
-        for (const lesson of data.regularLessons) {
-          if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
-          const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
-          if (groupSubjectSet.has(subject)) continue
-          acc[subject] = (acc[subject] ?? 0) + 1
-        }
-        return acc
-      }, {})
-
-      const regularAssignedBySubject = myAssignments.reduce<Record<string, number>>((acc, entry) => {
-        if (entry.assignment.isGroupLesson) {
-          return acc
-        }
-        if (!entry.assignment.isRegular && !entry.assignment.regularMakeupInfo?.[student.id] && !entry.assignment.regularSubstituteInfo?.[student.id]) {
-          return acc
-        }
-        const subject = getStudentSubject(entry.assignment, student.id)
-        if (groupSubjectSet.has(subject)) {
-          return acc
-        }
-        acc[subject] = (acc[subject] ?? 0) + 1
-        return acc
-      }, {})
+      const { desiredBySubject: regularDesiredBySubject, assignedBySubject: regularAssignedBySubject } = getRegularSubjectProgress(data, effectiveAssignmentsMap, student.id)
 
       const regularSubjectNames = [...new Set([...Object.keys(regularDesiredBySubject), ...Object.keys(regularAssignedBySubject)])].sort((a, b) => a.localeCompare(b, 'ja'))
       const regularSubjectDetails = regularSubjectNames.map((subject) => {
@@ -2635,6 +2641,18 @@ const AdminPage = () => {
     await saveSession(classroomId, sessionId, next)
   }
 
+  const hasInstructorAvailability = (personType: PersonType, id: string, slot: string): boolean => {
+    if (!data) return false
+    if (personType !== 'teacher') return hasAvailability(data.availability, personType, id, slot)
+    if (hasAvailability(data.availability, 'teacher', id, slot)) return true
+    if (isMendan) return false
+    if ((data.teacherSubmittedAt?.[id] ?? 0) > 0) return false
+    const [date] = slot.split('_')
+    const dayOfWeek = getIsoDayOfWeek(date)
+    const slotNumber = getSlotNumber(slot)
+    return data.regularLessons.some((lesson) => lesson.teacherId === id && lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber)
+  }
+
   const update = async (updater: (current: SessionData) => SessionData): Promise<void> => {
     if (!data) return
     await persist(updater(data))
@@ -3263,10 +3281,10 @@ const AdminPage = () => {
             if (getSlotNumber(futureSlot) === 0) return false
             return true
           })
-          const teacherAvailSlots = futureCandidates.filter((futureSlot) => hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot))
+          const teacherAvailSlots = futureCandidates.filter((futureSlot) => hasInstructorAvailability(instructorPersonType, origTeacherId, futureSlot))
           const studentAvailSlots = futureCandidates.filter((futureSlot) => isStudentAvailable(student, futureSlot))
           const matchedSlots = futureCandidates.filter((futureSlot) =>
-            isStudentAvailable(student, futureSlot) && hasAvailability(data.availability, instructorPersonType, origTeacherId, futureSlot),
+            isStudentAvailable(student, futureSlot) && hasInstructorAvailability(instructorPersonType, origTeacherId, futureSlot),
           )
           const reasons: NoMakeupReason[] = []
           if (teacherAvailSlots.length === 0) reasons.push('no_teacher')
@@ -3346,32 +3364,7 @@ const AdminPage = () => {
     effectiveAssignments: Record<string, Assignment[]>,
   ): Record<string, number> => {
     if (!data) return {}
-
-    const groupSubjectSet = getGroupSubjectSetForStudent(student.id)
-
-    const desiredBySubject: Record<string, number> = {}
-    for (const date of getDatesInRange(data.settings)) {
-      const dayOfWeek = getIsoDayOfWeek(date)
-      for (const lesson of data.regularLessons) {
-        if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
-        const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
-        if (groupSubjectSet.has(subject)) continue
-        desiredBySubject[subject] = (desiredBySubject[subject] ?? 0) + 1
-      }
-    }
-
-    const assignedBySubject: Record<string, number> = {}
-    for (const slot of slotKeys) {
-      const slotAssignments = effectiveAssignments[slot] ?? []
-      for (const assignment of slotAssignments) {
-        if (!assignment.studentIds.includes(student.id)) continue
-        if (assignment.isGroupLesson) continue
-        if (!assignment.isRegular && !assignment.regularMakeupInfo?.[student.id] && !assignment.regularSubstituteInfo?.[student.id]) continue
-        const subject = getStudentSubject(assignment, student.id)
-        if (groupSubjectSet.has(subject)) continue
-        assignedBySubject[subject] = (assignedBySubject[subject] ?? 0) + 1
-      }
-    }
+    const { desiredBySubject, assignedBySubject } = getRegularSubjectProgress(data, effectiveAssignments, student.id)
 
     return Object.entries(desiredBySubject).reduce<Record<string, number>>((acc, [subject, desired]) => {
       const missing = desired - (assignedBySubject[subject] ?? 0)
@@ -3489,7 +3482,7 @@ const AdminPage = () => {
         if (slotAssignments.some((a) => a.studentIds.includes(student.id))) continue
 
         const teacherAssignment = slotAssignments.find((a) => a.teacherId === teacher.id && !a.isGroupLesson)
-        const teacherAvailable = hasAvailability(data.availability, instructorPersonType, teacher.id, slot)
+        const teacherAvailable = hasInstructorAvailability(instructorPersonType, teacher.id, slot)
         const studentAvailable = isStudentAvailable(student, slot)
         const teacherStudentIncompatible = constraintFor(data.constraints, teacher.id, student.id) === 'incompatible'
         const existingStudentIncompatible = !!teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')
@@ -3588,7 +3581,7 @@ const AdminPage = () => {
         for (const teacher of data.teachers) {
           if (teacher.id === makeupDemand.teacherId) continue
           if (!canTeachSubject(teacher.subjects, student.grade, subject)) continue
-          if (!hasAvailability(data.availability, instructorPersonType, teacher.id, slot)) continue
+          if (!hasInstructorAvailability(instructorPersonType, teacher.id, slot)) continue
           if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') continue
 
           const teacherAssignment = slotAssignments.find((a) => a.teacherId === teacher.id && !a.isGroupLesson)
@@ -3737,7 +3730,7 @@ const AdminPage = () => {
       return leftRank[2].localeCompare(rightRank[2], 'ja')
     })
 
-    const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasAvailability(data.availability, 'teacher', teacher.id, item.slot))
+    const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
     if (availableCandidates.length > 0) {
       return [toStatusProposal(
         '通常代行候補',
@@ -3883,7 +3876,7 @@ const AdminPage = () => {
         errorMessage = '生徒または講師が見つからないため、強制割当できませんでした。'
         return current
       }
-      if (!hasAvailability(current.availability, 'teacher', proposal.teacherId, proposal.slot)) {
+      if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.slot)) {
         errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
         return current
       }
@@ -4137,7 +4130,7 @@ const AdminPage = () => {
 
     // Build unplaced makeup message with reasons
     const pendingMakeupDemands = collectPendingMakeupDemands(nextAssignments)
-    const unplacedMakeupEntries: { studentName: string; subject: string; causes: string[]; proposals: StatusProposal[]; reason: string }[] = []
+    const unplacedMakeupEntries: UnplacedMakeupEntry[] = []
     for (const um of unplacedMakeup) {
       const student = data.students.find((s) => s.id === um.studentId)
       if (!student) continue
@@ -4153,9 +4146,9 @@ const AdminPage = () => {
         return true
       })
       const studentAvail = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
-      const teacherAvail = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, um.teacherId, fs))
+      const teacherAvail = futureCandidates.filter((fs) => hasInstructorAvailability(instructorPersonType, um.teacherId, fs))
       const bothAvail = futureCandidates.filter((fs) =>
-        isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, um.teacherId, fs)
+        isStudentAvailable(student, fs) && hasInstructorAvailability(instructorPersonType, um.teacherId, fs)
       )
       let reason: string
       if (bothAvail.length === 0) {
@@ -4259,8 +4252,9 @@ const AdminPage = () => {
       } else {
         reason = `${reason} / 提案候補なし: 机数上限・相性不可・出席可能日を確認してください`
       }
-      unplacedMakeupEntries.push({ studentName: student.name, subject: um.subject, causes, proposals, reason })
+      unplacedMakeupEntries.push({ studentId: student.id, teacherId: um.teacherId, studentName: student.name, subject: um.subject, causes, proposals, reason, count: 1 })
     }
+    const mergedUnplacedMakeupEntries = mergeUnplacedMakeupEntries(unplacedMakeupEntries)
 
     // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
     const validStudentIdSet2 = new Set(data.students.map((s) => s.id))
@@ -4284,7 +4278,7 @@ const AdminPage = () => {
       return {
         ...current,
         assignments: mergedAssignments,
-        autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails, unplacedMakeup: unplacedMakeup.map((um) => ({ studentId: um.studentId, teacherId: um.teacherId, subject: um.subject, reason: unplacedMakeupEntries.find((e) => e.studentName === (data.students.find((s) => s.id === um.studentId)?.name ?? ''))?.reason ?? '' })) },
+        autoAssignHighlights: { added: highlightAdded, changed: highlightChanged, makeup: highlightMakeup, changeDetails: highlightDetails, unplacedMakeup: unplacedMakeup.map((um) => ({ studentId: um.studentId, teacherId: um.teacherId, subject: um.subject, reason: mergedUnplacedMakeupEntries.find((e) => e.studentId === um.studentId && e.teacherId === um.teacherId && e.subject === um.subject)?.reason ?? '' })) },
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
@@ -4340,8 +4334,8 @@ const AdminPage = () => {
     const makeupSection: StatusSection = {
       key: 'makeup',
       title: '振替未配置',
-      items: unplacedMakeupEntries.map((item) => ({
-        label: `${item.studentName}: ${item.subject}`,
+      items: mergedUnplacedMakeupEntries.map((item) => ({
+        label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
         causes: item.causes.length > 0 ? item.causes : [item.reason],
         proposals: item.proposals,
       })),
