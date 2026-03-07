@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.26'
+const APP_VERSION = '1.3.27'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -4523,6 +4523,7 @@ const AdminPage = () => {
       // Determine if this student is a regular student being moved (needs regularMakeupInfo)
       const isRegularSource = srcAssignment.isRegular
       const existingMakeupInfo = srcAssignment.regularMakeupInfo?.[studentId]
+      const existingSubstituteInfo = srcAssignment.regularSubstituteInfo?.[studentId]
       const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot), date: sourceSlot.split('_')[0] } : undefined)
 
       // Remove student from source assignment
@@ -4546,12 +4547,16 @@ const AdminPage = () => {
         const updatedTargetMakeupInfo = studentMakeupInfo
           ? { ...(targetAssignment.regularMakeupInfo ?? {}), [studentId]: studentMakeupInfo }
           : targetAssignment.regularMakeupInfo
+        const updatedTargetSubstituteInfo = existingSubstituteInfo
+          ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [studentId]: existingSubstituteInfo }
+          : targetAssignment.regularSubstituteInfo
         targetAssignments[targetIdx] = {
           ...targetAssignment,
           studentIds: updatedTargetStudentIds,
           studentSubjects: updatedTargetStudentSubjects,
           isRegular: false, // Mark as manual so auto-fill won't overwrite
           ...(updatedTargetMakeupInfo ? { regularMakeupInfo: updatedTargetMakeupInfo } : {}),
+          ...(updatedTargetSubstituteInfo ? { regularSubstituteInfo: updatedTargetSubstituteInfo } : {}),
         }
       } else {
         // Create new assignment in target slot with just this student
@@ -4591,6 +4596,7 @@ const AdminPage = () => {
           subject: studentSubject,
           studentSubjects: { [studentId]: studentSubject },
           ...(studentMakeupInfo ? { regularMakeupInfo: { [studentId]: studentMakeupInfo } } : {}),
+          ...(existingSubstituteInfo ? { regularSubstituteInfo: { [studentId]: existingSubstituteInfo } } : {}),
         })
       }
 
@@ -4600,13 +4606,16 @@ const AdminPage = () => {
       } else {
         // Remove moved student's regularMakeupInfo but keep isRegular for remaining students
         const updatedSrcMakeupInfo = { ...(srcAssignment.regularMakeupInfo ?? {}) }
+        const updatedSrcSubstituteInfo = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
         delete updatedSrcMakeupInfo[studentId]
+        delete updatedSrcSubstituteInfo[studentId]
         srcAssignments[sourceIdx] = {
           ...srcAssignment,
           studentIds: updatedSrcStudentIds,
           studentSubjects: updatedSrcStudentSubjects,
           // Keep isRegular if the source was regular — remaining students are still regular
           ...(Object.keys(updatedSrcMakeupInfo).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo } : {}),
+          ...(Object.keys(updatedSrcSubstituteInfo).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo } : {}),
         }
       }
 
@@ -4627,12 +4636,15 @@ const AdminPage = () => {
           mergedAssignments.splice(sourceIdx, 1)
         } else {
           const updatedSrcMakeupInfo2 = { ...(srcAssignment.regularMakeupInfo ?? {}) }
+          const updatedSrcSubstituteInfo2 = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
           delete updatedSrcMakeupInfo2[studentId]
+          delete updatedSrcSubstituteInfo2[studentId]
           mergedAssignments[sourceIdx] = {
             ...srcAssignment,
             studentIds: updatedSrcStudentIds,
             studentSubjects: updatedSrcStudentSubjects,
             ...(Object.keys(updatedSrcMakeupInfo2).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo2 } : {}),
+            ...(Object.keys(updatedSrcSubstituteInfo2).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo2 } : {}),
           }
         }
         nextAssignments[sourceSlot] = mergedAssignments
@@ -6048,7 +6060,9 @@ service cloud.firestore {
                                         onClick={() => {
                                           // Find the regular lesson teacher for this student (if any)
                                           const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId))
-                                          const isRegularStudent = !!(starBadge || regLesson)
+                                          const substituteInfo = assignment.regularSubstituteInfo?.[currentStudentId]
+                                          const makeupInfo = assignment.regularMakeupInfo?.[currentStudentId]
+                                          const shouldRestrictToRegularTeacher = !substituteInfo && !!(assignment.isRegular || makeupInfo) && !!regLesson
                                           setDragInfo({
                                             sourceSlot: slot,
                                             sourceIdx: idx,
@@ -6056,7 +6070,7 @@ service cloud.firestore {
                                             studentIds: [currentStudentId],
                                             studentDragId: currentStudentId,
                                             studentDragSubject: studentSubject,
-                                            ...(isRegularStudent && regLesson ? { regularTeacherId: regLesson.teacherId } : {}),
+                                            ...(shouldRestrictToRegularTeacher && regLesson ? { regularTeacherId: regLesson.teacherId } : {}),
                                           })
                                           setTransferSlot(slot)
                                         }}
