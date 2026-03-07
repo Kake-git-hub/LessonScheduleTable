@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth, signInAnonymously, type User } from 'firebase/auth'
+import { getAuth, onAuthStateChanged, signInAnonymously, type User } from 'firebase/auth'
 import {
   addDoc,
   collection,
@@ -48,12 +48,44 @@ let authReady: Promise<User | null> | null = null
 
 export const initAuth = (): Promise<User | null> => {
   if (authReady) return authReady
-  authReady = signInAnonymously(auth)
-    .then((cred) => cred.user)
-    .catch((e) => {
-      console.warn('Anonymous auth failed:', e)
-      return null
+  if (auth.currentUser) {
+    authReady = Promise.resolve(auth.currentUser)
+    return authReady
+  }
+
+  authReady = new Promise<User | null>((resolve) => {
+    let settled = false
+    let unsubscribe: Unsubscribe | (() => void) = () => {}
+
+    const finish = (user: User | null) => {
+      if (settled) return
+      settled = true
+      unsubscribe()
+      resolve(user)
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      console.warn('Anonymous auth timed out; continuing without confirmed auth state.')
+      finish(auth.currentUser ?? null)
+    }, 8000)
+
+    unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) return
+      window.clearTimeout(timeoutId)
+      finish(user)
     })
+
+    signInAnonymously(auth)
+      .then((cred) => {
+        window.clearTimeout(timeoutId)
+        finish(cred.user)
+      })
+      .catch((e) => {
+        window.clearTimeout(timeoutId)
+        console.warn('Anonymous auth failed:', e)
+        finish(auth.currentUser ?? null)
+      })
+  })
   return authReady
 }
 
