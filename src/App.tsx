@@ -6865,6 +6865,8 @@ const TeacherInputPage = ({
 
   const toggleDateAllSlots = (date: string) => {
     const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+      .filter((slotKey) => personKeyPrefix === 'manager' || !regularSlotKeys.has(slotKey))
+    if (allSlotKeys.length === 0) return
     const allOn = allSlotKeys.every((sk) => localAvailability.has(sk))
     setLocalAvailability((prev) => {
       const next = new Set(prev)
@@ -6879,6 +6881,7 @@ const TeacherInputPage = ({
 
   const toggleColumnAllSlots = (slotNum: number) => {
     const targetKeys = dates.map((date) => `${date}_${slotNum}`)
+      .filter((slotKey) => personKeyPrefix === 'manager' || !regularSlotKeys.has(slotKey))
     if (targetKeys.length === 0) return
     const allOn = targetKeys.every((slotKey) => localAvailability.has(slotKey))
     setLocalAvailability((prev) => {
@@ -7187,7 +7190,7 @@ const TeacherInputPage = ({
         <p>
           対象: <strong>{teacher.name}</strong>
         </p>
-        <p className="muted">出席可能なコマをタップして選択してください。「通」は通常授業コマです。通常授業も出席不可に変更できます。</p>
+        <p className="muted">出席可能なコマをタップして選択してください。「通」は通常授業コマです。通常授業はそのコマを直接タップした時だけ変更されます。</p>
       </div>
 
       <div className="teacher-table-wrapper">
@@ -7200,7 +7203,7 @@ const TeacherInputPage = ({
                   key={i}
                   style={{ cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => toggleColumnAllSlots(i + 1)}
-                  title="この時限を一括切替"
+                  title="この時限を一括切替（通常コマを除く）"
                 >
                   {`${i + 1}限`}
                 </th>
@@ -7210,14 +7213,15 @@ const TeacherInputPage = ({
           <tbody>
             {dates.map((date) => {
               const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
-              const allOn = allSlotKeys.length > 0 && allSlotKeys.every((sk) => localAvailability.has(sk))
+              const nonRegularKeys = allSlotKeys.filter((slotKey) => !regularSlotKeys.has(slotKey))
+              const allOn = nonRegularKeys.length > 0 && nonRegularKeys.every((sk) => localAvailability.has(sk))
               return (
               <tr key={date}>
                 <td
                   className="date-cell"
                   style={{ cursor: 'pointer', userSelect: 'none' }}
                   onClick={() => toggleDateAllSlots(date)}
-                  title="全時限を一括切替"
+                  title="全時限を一括切替（通常コマを除く）"
                 >
                   <span style={{ fontWeight: allOn ? 700 : 400, color: allOn ? '#2563eb' : undefined }}>
                     {formatShortDate(date)}
