@@ -151,6 +151,32 @@ const STATUS_ADJUST_OVER = '手動で調整するか再提案してください'
 const STATUS_ADD_TEACHER = '講師の空きコマを増やしてください'
 const STATUS_ADD_STUDENT = '生徒の不可日・不可コマを減らしてください'
 const STATUS_ALIGN_AVAILABILITY = '講師と生徒の空きが重なるよう調整してください'
+const STATUS_ADJUST_DESKS = '同時間の割当を減らすか机数を増やしてください'
+const STATUS_REVIEW_COMPATIBILITY = '相性不可の組み合わせや既存ペアを見直してください'
+const STATUS_REVIEW_DAILY_LIMIT = 'その日の別コマを減らすか制約カードを見直してください'
+const STATUS_MOVE_SAME_SLOT = '同時間の別割当を移すか他のコマで調整してください'
+const STATUS_REVIEW_SUBJECTS = '講師の担当科目設定を見直してください'
+
+const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
+  const labels: string[] = []
+  const add = (label: string) => {
+    if (!labels.includes(label)) labels.push(label)
+  }
+
+  for (const cause of causes) {
+    if (cause.includes('講師(') && (cause.includes('未出席') || cause.includes('出席可能日なし'))) add(STATUS_ADD_TEACHER)
+    if (cause.includes('生徒') && (cause.includes('未出席') || cause.includes('出席可能日なし') || cause.includes('出席不可'))) add(STATUS_ADD_STUDENT)
+    if (cause.includes('マッチする日なし') || cause.includes('両方が未出席')) add(STATUS_ALIGN_AVAILABILITY)
+    if (cause.includes('机数上限') || cause.includes('ペアが満席')) add(STATUS_ADJUST_DESKS)
+    if (cause.includes('相性不可')) add(STATUS_REVIEW_COMPATIBILITY)
+    if (cause.includes('同コマに既に割当済み')) add(STATUS_MOVE_SAME_SLOT)
+    if (cause.includes('コマ上限')) add(STATUS_REVIEW_DAILY_LIMIT)
+    if (cause.includes('担当外科目')) add(STATUS_REVIEW_SUBJECTS)
+  }
+
+  if (labels.length === 0) add(STATUS_REVIEW_CONSTRAINTS)
+  return labels.map((label) => toStatusProposal(label))
+}
 
 const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?: Set<string>): SessionData | null => {
   if (current.settings.sessionType === 'mendan') return null
@@ -3970,7 +3996,7 @@ const AdminPage = () => {
           return {
             label: student.name,
             causes,
-            proposals: proposals.length > 0 ? proposals : [toStatusProposal(STATUS_REVIEW_CONSTRAINTS)],
+            proposals: proposals.length > 0 ? proposals : buildNoCandidateProposals(causes),
           }
         }),
         },
@@ -3980,7 +4006,7 @@ const AdminPage = () => {
           items: makeupEntries.map((item) => ({
             label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
             causes: item.causes.length > 0 ? item.causes : [item.reason],
-            proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)],
+            proposals: item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
           })),
       },
       {
@@ -5477,7 +5503,7 @@ service cloud.firestore {
                       return {
                         label: s.name,
                         causes,
-                        proposals: proposals.length > 0 ? proposals : [toStatusProposal(STATUS_REVIEW_CONSTRAINTS)],
+                        proposals: proposals.length > 0 ? proposals : buildNoCandidateProposals(causes),
                       }
                     }),
                   },
@@ -5487,7 +5513,7 @@ service cloud.firestore {
                     items: makeupEntries.map((item) => ({
                       label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
                       causes: item.causes.length > 0 ? item.causes : [item.reason],
-                      proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal(STATUS_NO_CANDIDATE)],
+                      proposals: item.proposals.length > 0 ? item.proposals : buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
                     })),
                   },
                   {
