@@ -28,7 +28,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.28'
+const APP_VERSION = '1.3.29'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3530,7 +3530,8 @@ const AdminPage = () => {
           const origAssignment = planned.find((assignment) => assignment.studentIds.includes(student.id))
           const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
           const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
-          if (!isRegularAbsence && !isMakeupAbsence) continue
+          const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
+          if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
 
           let absentSubj: string
           let origTeacherId: string
@@ -5115,7 +5116,8 @@ service cloud.firestore {
                         const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
                         const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
                         const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
-                        if (!isRegularAbsence && !isMakeupAbsence) continue
+                        const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
+                        if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
                         // Get subject from assignment or regularLesson
                         let absentSubj: string
                         let origTeacherId: string
