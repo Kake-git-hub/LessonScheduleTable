@@ -3768,6 +3768,130 @@ const AdminPage = () => {
     return [toStatusProposal('担当可能な講師候補なし: 講師科目設定または出席可能コマを確認してください')]
   }
 
+  const buildUnplacedMakeupEntries = (
+    assignmentState: Record<string, Assignment[]>,
+    effectiveAssignments: Record<string, Assignment[]>,
+    availableSlotKeys: string[],
+    sourceEntries: Array<{ studentId: string; teacherId: string; subject: string; absentDate?: string }>,
+    pendingMakeupDemands: PendingMakeupDemand[] = collectPendingMakeupDemands(assignmentState),
+  ): UnplacedMakeupEntry[] => {
+    if (!data) return []
+
+    const unplacedMakeupEntries: UnplacedMakeupEntry[] = []
+    for (const um of sourceEntries) {
+      const student = data.students.find((s) => s.id === um.studentId)
+      if (!student) continue
+      const teacher = data.teachers.find((t) => t.id === um.teacherId)
+      const teacherName = teacher?.name ?? '?'
+      const futureCandidates = availableSlotKeys.filter((fs) => {
+        if (um.absentDate) {
+          const [fd] = fs.split('_')
+          if (fd <= um.absentDate) return false
+        }
+        if (getSlotNumber(fs) === 0) return false
+        return true
+      })
+      const studentAvail = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
+      const teacherAvail = futureCandidates.filter((fs) => hasInstructorAvailability(instructorPersonType, um.teacherId, fs))
+      const bothAvail = futureCandidates.filter((fs) =>
+        isStudentAvailable(student, fs) && hasInstructorAvailability(instructorPersonType, um.teacherId, fs),
+      )
+      let reason: string
+      if (bothAvail.length === 0) {
+        if (studentAvail.length === 0 && teacherAvail.length === 0) {
+          reason = `講師(${teacherName})と生徒の出席可能日なし`
+        } else if (studentAvail.length === 0) {
+          reason = '生徒の出席可能日なし'
+        } else if (teacherAvail.length === 0) {
+          reason = `講師(${teacherName})の出席可能日なし`
+        } else {
+          reason = `講師(${teacherName})と生徒のマッチする日なし`
+        }
+      } else {
+        const specificReasons: string[] = []
+        const deskLimit = data.settings.deskCount ?? 0
+        for (const fs of bothAvail) {
+          const slotAssigns = assignmentState[fs] ?? []
+          const reasons: string[] = []
+          if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
+            reasons.push('机数上限')
+          }
+          if (slotAssigns.some((a) => a.teacherId === um.teacherId)) {
+            const teacherAssign = slotAssigns.find((a) => a.teacherId === um.teacherId)
+            if (teacherAssign && teacherAssign.studentIds.length >= 2) {
+              reasons.push(`講師(${teacherName})のペアが満席`)
+            } else if (teacherAssign && teacherAssign.studentIds.some((sid) => constraintFor(data.constraints, sid, um.studentId) === 'incompatible')) {
+              reasons.push('既存生徒との相性不可')
+            }
+          } else if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
+            reasons.push('机数上限で新規ペア不可')
+          }
+          if (constraintFor(data.constraints, um.teacherId, um.studentId) === 'incompatible') {
+            reasons.push(`講師(${teacherName})と生徒の相性不可`)
+          }
+          if (slotAssigns.some((a) => a.studentIds.includes(um.studentId))) {
+            reasons.push('同コマに既に割当済み')
+          }
+          const [fsDate] = fs.split('_')
+          const slotsOnDate = Object.keys(assignmentState).filter((k) => k.startsWith(fsDate + '_')).reduce((count, k) =>
+            count + ((assignmentState[k] ?? []).some((a) => a.studentIds.includes(um.studentId)) ? 1 : 0), 0)
+          const umStudent = data.students.find((s) => s.id === um.studentId)
+          const umCards = umStudent?.constraintCards ?? getDefaultConstraintCards(umStudent?.grade ?? '')
+          const dailyLimit = umCards.includes('oneSlotOnly') ? 1 : umCards.includes('threeSlotLimit') ? 3 : 2
+          if (slotsOnDate >= dailyLimit) {
+            reasons.push(`1日${dailyLimit}コマ上限`)
+          }
+          for (const item of reasons) {
+            if (!specificReasons.includes(item)) specificReasons.push(item)
+          }
+        }
+        reason = specificReasons.length > 0
+          ? `講師(${teacherName}): ${specificReasons.join(', ')}`
+          : `講師(${teacherName})の空き枠あるが配置されず(原因不明)`
+      }
+
+      const matchedPendingDemands = pendingMakeupDemands.filter((demand) =>
+        demand.studentId === um.studentId
+        && demand.teacherId === um.teacherId
+        && demand.subject === um.subject
+        && (!um.absentDate || demand.absentDate === um.absentDate),
+      )
+      const pendingDemand = matchedPendingDemands.find((demand) => demand.absentDate === um.absentDate) ?? matchedPendingDemands[0]
+      const analysis = teacher && pendingDemand
+        ? analyzePlacementOptions(
+            assignmentState,
+            effectiveAssignments,
+            availableSlotKeys,
+            student,
+            um.subject,
+            [teacher],
+            {
+              slotFilter: (fs) => !pendingDemand.absentDate || fs.split('_')[0] > pendingDemand.absentDate,
+              makeupDemand: pendingDemand,
+            },
+          )
+        : { force: [], substitute: [], teacher: [], cards: [], student: [], blockers: [] }
+      const proposals = dedupeStatusProposals([
+        ...analysis.force,
+        ...analysis.substitute,
+        ...analysis.teacher,
+        ...analysis.student,
+        ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
+      ])
+      const causes = [reason, ...analysis.blockers]
+      if (proposals.length > 0) {
+        reason = `${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
+      } else if (analysis.blockers.length > 0) {
+        reason = `${reason} / 提案候補なし: ${analysis.blockers.join(', ')}`
+      } else {
+        reason = `${reason} / 提案候補なし: 机数上限・相性不可・出席可能日を確認してください`
+      }
+      unplacedMakeupEntries.push({ studentId: student.id, teacherId: um.teacherId, studentName: student.name, subject: um.subject, causes, proposals, reason, count: 1 })
+    }
+
+    return mergeUnplacedMakeupEntries(unplacedMakeupEntries)
+  }
+
   const buildShortageOnlyReport = (
     assignmentState: Record<string, Assignment[]>,
     highlightSource?: Array<{ studentId: string; teacherId: string; subject: string; reason?: string; absentDate?: string }>,
@@ -3787,6 +3911,13 @@ const AdminPage = () => {
     const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
     const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
     const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
+    const makeupEntries = buildUnplacedMakeupEntries(
+      assignmentState,
+      effectiveAssignments,
+      currentAvailableSlotKeys,
+      currentPendingMakeupDemands,
+      currentPendingMakeupDemands,
+    )
 
     const sections: StatusSection[] = [
       {
@@ -3834,6 +3965,15 @@ const AdminPage = () => {
             proposals: proposals.length > 0 ? proposals : [toStatusProposal('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')],
           }
         }),
+        },
+        {
+          key: 'makeup' as const,
+          title: '振替未配置',
+          items: makeupEntries.map((item) => ({
+            label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
+            causes: item.causes.length > 0 ? item.causes : [item.reason],
+            proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')],
+          })),
       },
       {
         key: 'over' as const,
@@ -4132,133 +4272,14 @@ const AdminPage = () => {
 
     const shortageEntries = collectTeacherShortageItems(nextAssignments)
 
-    // Build unplaced makeup message with reasons
     const pendingMakeupDemands = collectPendingMakeupDemands(nextAssignments)
-    const unplacedMakeupEntries: UnplacedMakeupEntry[] = []
-    for (const um of unplacedMakeup) {
-      const student = data.students.find((s) => s.id === um.studentId)
-      if (!student) continue
-      const teacher = data.teachers.find((t) => t.id === um.teacherId)
-      const teacherName = teacher?.name ?? '?'
-      // Determine reason: check future availability
-      const futureCandidates = availableSlotKeys.filter((fs) => {
-        if (um.absentDate) {
-          const [fd] = fs.split('_')
-          if (fd <= um.absentDate) return false
-        }
-        if (getSlotNumber(fs) === 0) return false
-        return true
-      })
-      const studentAvail = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
-      const teacherAvail = futureCandidates.filter((fs) => hasInstructorAvailability(instructorPersonType, um.teacherId, fs))
-      const bothAvail = futureCandidates.filter((fs) =>
-        isStudentAvailable(student, fs) && hasInstructorAvailability(instructorPersonType, um.teacherId, fs)
-      )
-      let reason: string
-      if (bothAvail.length === 0) {
-        if (studentAvail.length === 0 && teacherAvail.length === 0) {
-          reason = `講師(${teacherName})と生徒の出席可能日なし`
-        } else if (studentAvail.length === 0) {
-          reason = '生徒の出席可能日なし'
-        } else if (teacherAvail.length === 0) {
-          reason = `講師(${teacherName})の出席可能日なし`
-        } else {
-          reason = `講師(${teacherName})と生徒のマッチする日なし`
-        }
-      } else {
-        // Both available but still not placed — check specific constraints
-        const specificReasons: string[] = []
-        const deskLimit = data.settings.deskCount ?? 0
-        for (const fs of bothAvail) {
-          const slotAssigns = nextAssignments[fs] ?? []
-          const reasons: string[] = []
-          // Desk count limit
-          if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
-            reasons.push('机数上限')
-          }
-          // Teacher already used in slot
-          if (slotAssigns.some((a) => a.teacherId === um.teacherId)) {
-            const teacherAssign = slotAssigns.find((a) => a.teacherId === um.teacherId)
-            if (teacherAssign && teacherAssign.studentIds.length >= 2) {
-              reasons.push(`講師(${teacherName})のペアが満席`)
-            } else if (teacherAssign) {
-              // Teacher has space but student not placed — check student constraints
-              if (teacherAssign.studentIds.some((sid) => constraintFor(data.constraints, sid, um.studentId) === 'incompatible')) {
-                reasons.push('既存生徒との相性不可')
-              }
-            }
-          } else {
-            // Teacher not in slot — would need new pair
-            if (deskLimit > 0 && slotAssigns.length >= deskLimit) {
-              reasons.push('机数上限で新規ペア不可')
-            }
-          }
-          // Teacher-student incompatible
-          if (constraintFor(data.constraints, um.teacherId, um.studentId) === 'incompatible') {
-            reasons.push(`講師(${teacherName})と生徒の相性不可`)
-          }
-          // Student already in another pair in this slot
-          if (slotAssigns.some((a) => a.studentIds.includes(um.studentId))) {
-            reasons.push('同コマに既に割当済み')
-          }
-          // 1日コマ上限 (per-student constraint card)
-          const [fsDate] = fs.split('_')
-          const slotsOnDate = Object.keys(nextAssignments).filter((k) => k.startsWith(fsDate + '_')).reduce((count, k) => 
-            count + (nextAssignments[k]?.some((a) => a.studentIds.includes(um.studentId)) ? 1 : 0), 0)
-          const umStudent = data.students.find((s) => s.id === um.studentId)
-          const umCards = umStudent?.constraintCards ?? getDefaultConstraintCards(umStudent?.grade ?? '')
-          const dailyLimit = umCards.includes('oneSlotOnly') ? 1 : umCards.includes('threeSlotLimit') ? 3 : 2
-          if (slotsOnDate >= dailyLimit) {
-            reasons.push(`1日${dailyLimit}コマ上限`)
-          }
-          if (reasons.length > 0) {
-            for (const r of reasons) {
-              if (!specificReasons.includes(r)) specificReasons.push(r)
-            }
-          }
-        }
-        reason = specificReasons.length > 0
-          ? `講師(${teacherName}): ${specificReasons.join(', ')}`
-          : `講師(${teacherName})の空き枠あるが配置されず(原因不明)`
-      }
-      const pendingDemand = pendingMakeupDemands.find((demand) =>
-        demand.studentId === um.studentId
-        && demand.teacherId === um.teacherId
-        && demand.subject === um.subject
-        && demand.absentDate === um.absentDate,
-      )
-      const analysis = teacher && pendingDemand
-        ? analyzePlacementOptions(
-            nextAssignments,
-            effectiveForCounting,
-            availableSlotKeys,
-            student,
-            um.subject,
-            [teacher],
-            {
-              slotFilter: (fs) => !um.absentDate || fs.split('_')[0] > um.absentDate,
-              makeupDemand: pendingDemand,
-            },
-          )
-        : { force: [], substitute: [], teacher: [], cards: [], student: [], blockers: [] }
-      const proposals = dedupeStatusProposals([
-        ...analysis.force,
-        ...analysis.substitute,
-        ...analysis.teacher,
-        ...analysis.student,
-        ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
-      ])
-      const causes = [reason, ...analysis.blockers]
-      if (proposals.length > 0) {
-        reason = `${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
-      } else if (analysis.blockers.length > 0) {
-        reason = `${reason} / 提案候補なし: ${analysis.blockers.join(', ')}`
-      } else {
-        reason = `${reason} / 提案候補なし: 机数上限・相性不可・出席可能日を確認してください`
-      }
-      unplacedMakeupEntries.push({ studentId: student.id, teacherId: um.teacherId, studentName: student.name, subject: um.subject, causes, proposals, reason, count: 1 })
-    }
-    const mergedUnplacedMakeupEntries = mergeUnplacedMakeupEntries(unplacedMakeupEntries)
+    const mergedUnplacedMakeupEntries = buildUnplacedMakeupEntries(
+      nextAssignments,
+      effectiveForCounting,
+      availableSlotKeys,
+      unplacedMakeup,
+      pendingMakeupDemands,
+    )
 
     // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
     const validStudentIdSet2 = new Set(data.students.map((s) => s.id))
@@ -5366,6 +5387,13 @@ service cloud.firestore {
                 const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
                 const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
                 const teacherShortages = collectTeacherShortageItems(effAssignments)
+                const makeupEntries = buildUnplacedMakeupEntries(
+                  data.assignments,
+                  effAssignments,
+                  currentAvailableSlotKeys,
+                  currentPendingMakeupDemands,
+                  currentPendingMakeupDemands,
+                )
 
                 const underTooltip = underAssigned
                   .map((s) => {
@@ -5393,6 +5421,9 @@ service cloud.firestore {
                   .join('\n')
                 const shortageTooltip = teacherShortages
                   .map((item) => `${slotLabel(item.slot, isMendan, mendanStart)}: ${item.detail}`)
+                  .join('\n')
+                const makeupTooltip = makeupEntries
+                  .map((item) => `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`)
                   .join('\n')
                 const currentSections: StatusSection[] = [
                   {
@@ -5446,6 +5477,15 @@ service cloud.firestore {
                     }),
                   },
                   {
+                    key: 'makeup' as const,
+                    title: '振替未配置',
+                    items: makeupEntries.map((item) => ({
+                      label: `${item.studentName}: ${item.subject}${item.count > 1 ? ` (${item.count}件)` : ''}`,
+                      causes: item.causes.length > 0 ? item.causes : [item.reason],
+                      proposals: item.proposals.length > 0 ? item.proposals : [toStatusProposal('提案候補なし')],
+                    })),
+                  },
+                  {
                     key: 'over' as const,
                     title: '過割当',
                     items: overAssigned.map((s) => ({
@@ -5487,6 +5527,11 @@ service cloud.firestore {
                     {overAssigned.length > 0 && (
                       <span className="badge" title={overTooltip} style={{ cursor: 'pointer', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'over') })}>
                         過割当: {overAssigned.length}名
+                      </span>
+                    )}
+                    {makeupEntries.length > 0 && (
+                      <span className="badge" title={makeupTooltip} style={{ cursor: 'pointer', background: '#fff7ed', color: '#c2410c', border: '1px solid #fdba74' }} onClick={() => setStatusModal({ ...currentStatusReport, sections: currentStatusReport.sections.filter((s) => s.key === 'makeup') })}>
+                        振替未配置: {makeupEntries.length}件
                       </span>
                     )}
                     {teacherShortages.length > 0 && (
