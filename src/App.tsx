@@ -3768,7 +3768,10 @@ const AdminPage = () => {
     return [toStatusProposal('担当可能な講師候補なし: 講師科目設定または出席可能コマを確認してください')]
   }
 
-  const buildShortageOnlyReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
+  const buildShortageOnlyReport = (
+    assignmentState: Record<string, Assignment[]>,
+    highlightSource?: Array<{ studentId: string; teacherId: string; subject: string; reason?: string; absentDate?: string }>,
+  ): StatusReport | null => {
     if (!data) return null
 
     const liveActual = data.actualResults ?? {}
@@ -3777,6 +3780,7 @@ const AdminPage = () => {
       assignmentState,
       effectiveAssignments,
       liveActual,
+      highlightSource,
     )
 
     const missingTotal = (student: { missingBySubj: Record<string, number> }) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
@@ -4263,11 +4267,11 @@ const AdminPage = () => {
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
-    const {
-      studentsWithRemaining: autoAssignedStudentsWithRemaining,
-      currentPendingMakeupDemands: autoAssignPendingMakeupDemands,
-      currentAvailableSlotKeys: autoAssignAvailableSlotKeys,
-    } = buildStudentsWithRemaining(nextAssignments, effectiveForCounting, data.actualResults ?? {}, unplacedMakeup)
+    const mergedAssignments = { ...nextAssignments }
+    for (const slot of recordedSlots) {
+      mergedAssignments[slot] = data.assignments[slot] ?? []
+    }
+    const autoAssignShortageReport = buildShortageOnlyReport(mergedAssignments, unplacedMakeup)
 
     await updateAssignments((current) => {
       // Merge: auto-assign results for non-recorded slots + preserve current assignments for recorded slots
@@ -4283,54 +4287,7 @@ const AdminPage = () => {
       }
     })
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
-    const missingTotal = (student: StudentRemainingSummary) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
-    const underAssignedStudents = autoAssignedStudentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
-    const underSection: StatusSection = {
-      key: 'under',
-      title: '残コマあり',
-      items: underAssignedStudents.map((student) => {
-        const causes: string[] = []
-        const proposalPool: StatusProposal[] = []
-        const missingEntries = Object.entries(student.missingBySubj).filter(([, count]) => count > 0)
-        const currentStudent = data.students.find((entry) => entry.id === student.studentId)
-        if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
-        const specials = student.remaining.filter((entry) => entry.rem > 0)
-        if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
-        if (currentStudent) {
-          for (const special of specials) {
-            const analysis = buildRemainingSuggestions(nextAssignments, effectiveForCounting, autoAssignAvailableSlotKeys, currentStudent, special.subj)
-            proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-          }
-          const studentMakeups = autoAssignPendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
-          for (const demand of studentMakeups) {
-            const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
-            if (!teacher) continue
-            const analysis = analyzePlacementOptions(
-              nextAssignments,
-              effectiveForCounting,
-              autoAssignAvailableSlotKeys,
-              currentStudent,
-              demand.subject,
-              [teacher],
-              {
-                slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
-                makeupDemand: demand,
-              },
-            )
-            proposalPool.push(...analysis.force, ...analysis.substitute, ...analysis.teacher, ...analysis.student, ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []))
-          }
-        }
-        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal('講師の出席可能コマを増やしてください'))
-        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal('生徒の出席不可日・不可コマを減らしてください'))
-        if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_match')) proposalPool.push(toStatusProposal('講師出席可能コマと生徒出席可能日が重なるように調整してください'))
-        const proposals = dedupeStatusProposals(proposalPool)
-        return {
-          label: student.name,
-          causes,
-          proposals: proposals.length > 0 ? proposals : [toStatusProposal('自動提案結果モーダルで個別候補を確認するか、該当生徒の制約カードと出席希望を見直してください')],
-        }
-      }),
-    }
+    const underSection = autoAssignShortageReport?.sections.find((section) => section.key === 'under') ?? { key: 'under', title: '残コマあり', items: [] }
     const makeupSection: StatusSection = {
       key: 'makeup',
       title: '振替未配置',
