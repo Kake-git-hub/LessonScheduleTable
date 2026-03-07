@@ -53,7 +53,25 @@ type MoveTeacherShortageAction = {
   assignmentStudentSubjects?: Record<string, string>
 }
 
-type ProposalAction = ForceAssignAction | MoveTeacherShortageAction
+type UpdateStudentConstraintsAction = {
+  type: 'update-student-constraints'
+  slot: string
+  teacherId: string
+  studentId: string
+  subject: string
+  nextConstraintCards: ConstraintCardType[]
+  changeLabel: string
+}
+
+type RemoveStudentAssignmentAction = {
+  type: 'remove-student-assignment'
+  slot: string
+  teacherId: string
+  studentId: string
+  subject: string
+}
+
+type ProposalAction = ForceAssignAction | MoveTeacherShortageAction | UpdateStudentConstraintsAction | RemoveStudentAssignmentAction
 
 type StatusProposalChoice = {
   value: string
@@ -104,16 +122,25 @@ type PlacementAnalysis = {
 
 const toStatusProposal = (label: string, action?: ProposalAction, choices?: StatusProposalChoice[]): StatusProposal => ({ label, ...(action ? { action } : {}), ...(choices && choices.length > 0 ? { choices } : {}) })
 
+const proposalActionKey = (action: ProposalAction): string => {
+  if (action.type === 'force-assign') {
+    return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}|${action.makeupInfo?.dayOfWeek ?? ''}|${action.makeupInfo?.slotNumber ?? ''}|${action.makeupInfo?.date ?? ''}|${action.substituteInfo?.regularTeacherId ?? ''}|${action.substituteInfo?.dayOfWeek ?? ''}|${action.substituteInfo?.slotNumber ?? ''}|${action.substituteInfo?.date ?? ''}`
+  }
+  if (action.type === 'move-teacher-shortage') {
+    return `${action.type}|${action.sourceSlot}|${action.targetSlot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds.join(',')}`
+  }
+  if (action.type === 'update-student-constraints') {
+    return `${action.type}|${action.studentId}|${action.slot}|${action.teacherId}|${action.subject}|${action.nextConstraintCards.join(',')}`
+  }
+  return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}`
+}
+
 const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] => {
   const seen = new Set<string>()
   const unique: StatusProposal[] = []
   for (const proposal of proposals) {
-    const actionKey = proposal.action
-      ? proposal.action.type === 'force-assign'
-        ? `${proposal.action.type}|${proposal.action.slot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds?.join(',') ?? ''}|${proposal.action.makeupInfo?.dayOfWeek ?? ''}|${proposal.action.makeupInfo?.slotNumber ?? ''}|${proposal.action.makeupInfo?.date ?? ''}`
-        : `${proposal.action.type}|${proposal.action.sourceSlot}|${proposal.action.targetSlot}|${proposal.action.teacherId}|${proposal.action.studentId}|${proposal.action.subject}|${proposal.action.assignmentStudentIds.join(',')}`
-      : ''
-    const choiceKey = proposal.choices?.map((choice) => `${choice.value}:${choice.label}:${choice.action.type}:${choice.action.teacherId}`).join('|') ?? ''
+    const actionKey = proposal.action ? proposalActionKey(proposal.action) : ''
+    const choiceKey = proposal.choices?.map((choice) => `${choice.value}:${choice.label}:${proposalActionKey(choice.action)}`).join('|') ?? ''
     const key = `${proposal.label}|${actionKey}|${choiceKey}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -130,6 +157,27 @@ const sameStudentSet = (left: string[], right: string[]): boolean => {
 }
 
 const mergeStringList = (values: string[]): string[] => [...new Set(values.filter(Boolean))]
+
+const sortConstraintCards = (cards: ConstraintCardType[]): ConstraintCardType[] => {
+  const order = new Map(ALL_CONSTRAINT_CARDS.map((card, index) => [card, index]))
+  return [...new Set(cards)].sort((left, right) => (order.get(left) ?? 999) - (order.get(right) ?? 999))
+}
+
+const buildNextConstraintCards = (
+  currentCards: ConstraintCardType[],
+  options: { remove?: ConstraintCardType[]; add?: ConstraintCardType },
+): ConstraintCardType[] => {
+  let nextCards = currentCards.filter((card) => !(options.remove ?? []).includes(card))
+  if (options.add) {
+    for (const group of CONSTRAINT_CARD_CONFLICT_GROUPS) {
+      if (group.includes(options.add)) {
+        nextCards = nextCards.filter((card) => !group.includes(card))
+      }
+    }
+    nextCards.push(options.add)
+  }
+  return sortConstraintCards(nextCards)
+}
 
 type UnplacedMakeupEntry = {
   studentId: string
@@ -3565,25 +3613,156 @@ const AdminPage = () => {
 
   const buildConstraintSuggestion = (student: Student, blockReason: string, slot: string, teacherName: string): StatusProposal | null => {
     const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
+    const slotText = slotLabel(slot, isMendan, mendanStart)
+    const buildConstraintAction = (changeLabel: string, nextConstraintCards: ConstraintCardType[]): UpdateStudentConstraintsAction => ({
+      type: 'update-student-constraints',
+      slot,
+      teacherId: '',
+      studentId: student.id,
+      subject: '',
+      nextConstraintCards,
+      changeLabel,
+    })
+    const buildConstraintChoices = (prefix: string, options: Array<{ value: string; changeLabel: string; nextConstraintCards: ConstraintCardType[] }>): StatusProposal =>
+      toStatusProposal(
+        `${prefix}: ${slotText} で講師(${teacherName})に追加候補`,
+        undefined,
+        options.map((option) => ({
+          value: option.value,
+          label: option.changeLabel,
+          action: buildConstraintAction(option.changeLabel, option.nextConstraintCards),
+        })),
+      )
+
     if (blockReason.startsWith('1コマ上限') && cards.includes('oneSlotOnly')) {
-      return toStatusProposal(`制約カード変更案: 1コマ上限 -> 2コマ上限 または 3コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return buildConstraintChoices('制約カード変更案', [
+        {
+          value: 'one-to-two',
+          changeLabel: '1コマ上限 → 2コマ上限',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['oneSlotOnly'], add: 'twoSlotLimit' }),
+        },
+        {
+          value: 'one-to-three',
+          changeLabel: '1コマ上限 → 3コマ上限',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['oneSlotOnly'], add: 'threeSlotLimit' }),
+        },
+      ])
     }
     if (blockReason.startsWith('2コマ上限') && cards.includes('twoSlotLimit')) {
-      return toStatusProposal(`制約カード変更案: 2コマ上限 -> 3コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      const changeLabel = '2コマ上限 → 3コマ上限'
+      return toStatusProposal(
+        `制約カード変更案: ${changeLabel} にすると ${slotText} で講師(${teacherName})に追加候補`,
+        buildConstraintAction(changeLabel, buildNextConstraintCards(cards, { remove: ['twoSlotLimit'], add: 'threeSlotLimit' })),
+      )
     }
     if (blockReason.startsWith('2コマ連続') && cards.includes('twoConsecutive')) {
-      return toStatusProposal(`制約カード変更案: 2コマ連続 を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return buildConstraintChoices('制約カード変更案', [
+        {
+          value: 'remove-two-consecutive',
+          changeLabel: '2コマ連続 を外す',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['twoConsecutive'] }),
+        },
+        {
+          value: 'two-consecutive-to-two-limit',
+          changeLabel: '2コマ連続 → 2コマ上限',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['twoConsecutive'], add: 'twoSlotLimit' }),
+        },
+      ])
     }
     if (blockReason.startsWith('2コマ連続(一コマ空け)') && cards.includes('twoWithGap')) {
-      return toStatusProposal(`制約カード変更案: 2コマ連続(一コマ空け) を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return buildConstraintChoices('制約カード変更案', [
+        {
+          value: 'remove-two-with-gap',
+          changeLabel: '2コマ連続(一コマ空け) を外す',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['twoWithGap'] }),
+        },
+        {
+          value: 'two-with-gap-to-two-limit',
+          changeLabel: '2コマ連続(一コマ空け) → 2コマ上限',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['twoWithGap'], add: 'twoSlotLimit' }),
+        },
+      ])
     }
     if (blockReason.startsWith('通常授業連結') && cards.includes('regularLink')) {
-      return toStatusProposal(`制約カード変更案: 通常授業連結 を外すか 2コマ上限 に変更すると ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      return buildConstraintChoices('制約カード変更案', [
+        {
+          value: 'remove-regular-link',
+          changeLabel: '通常授業連結 を外す',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['regularLink'] }),
+        },
+        {
+          value: 'regular-link-to-two-limit',
+          changeLabel: '通常授業連結 → 2コマ上限',
+          nextConstraintCards: buildNextConstraintCards(cards, { remove: ['regularLink'], add: 'twoSlotLimit' }),
+        },
+      ])
     }
     if (blockReason.startsWith('集団後2コマ連続') && cards.includes('groupContinuous')) {
-      return toStatusProposal(`制約カード変更案: 集団後2コマ連続 を外すと ${slotLabel(slot, isMendan, mendanStart)} で講師(${teacherName})に追加候補`)
+      const changeLabel = '集団後2コマ連続 を外す'
+      return toStatusProposal(
+        `制約カード変更案: ${changeLabel} と ${slotText} で講師(${teacherName})に追加候補`,
+        buildConstraintAction(changeLabel, buildNextConstraintCards(cards, { remove: ['groupContinuous'] })),
+      )
     }
     return null
+  }
+
+  const buildOverAssignedDetailItems = (
+    assignmentState: Record<string, Assignment[]>,
+    overAssigned: StudentRemainingSummary[],
+  ): StatusDetail[] => {
+    if (!data) return []
+
+    return overAssigned.map((student) => {
+      const causes: string[] = []
+      const proposalPool: StatusProposal[] = []
+
+      for (const entry of student.remaining.filter((item) => item.rem < 0)) {
+        const excessCount = Math.abs(entry.rem)
+        causes.push(`希望より ${entry.subj} が ${excessCount}コマ多く入っています`)
+
+        const candidateAssignments = Object.entries(assignmentState)
+          .flatMap(([slot, slotAssignments]) =>
+            slotAssignments.map((assignment) => ({ slot, assignment })),
+          )
+          .filter(({ assignment }) =>
+            !assignment.isGroupLesson
+            && !assignment.isRegular
+            && assignment.studentIds.includes(student.studentId)
+            && getStudentSubject(assignment, student.studentId) === entry.subj,
+          )
+          .sort((left, right) => right.slot.localeCompare(left.slot, 'ja'))
+
+        const choices = candidateAssignments.slice(0, 5).map(({ slot, assignment }, index) => {
+          const teacherName = data.teachers.find((teacher) => teacher.id === assignment.teacherId)?.name ?? assignment.teacherId
+          return {
+            value: `${entry.subj}-${index + 1}`,
+            label: `${slotLabel(slot, isMendan, mendanStart)} / ${teacherName} / ${entry.subj} を外す`,
+            action: {
+              type: 'remove-student-assignment' as const,
+              slot,
+              teacherId: assignment.teacherId,
+              studentId: student.studentId,
+              subject: entry.subj,
+            },
+          }
+        })
+
+        if (choices.length === 1) {
+          proposalPool.push(toStatusProposal(`過割当解消案: ${choices[0].label}`, choices[0].action))
+        } else if (choices.length > 1) {
+          proposalPool.push(toStatusProposal(`過割当解消案: ${entry.subj} を外す候補を選択`, undefined, choices))
+        } else {
+          proposalPool.push(toStatusProposal(`過割当解消案: ${entry.subj} の特別割当が見つからないため、希望コマ数か通常授業側を見直してください`))
+        }
+      }
+
+      return {
+        label: student.name,
+        causes,
+        proposals: dedupeStatusProposals(proposalPool.length > 0 ? proposalPool : [toStatusProposal(STATUS_ADJUST_OVER)]),
+      }
+    })
   }
 
   const summarizeProposalNames = (names: string[], maxNames = 3): string => {
@@ -4572,6 +4751,7 @@ const AdminPage = () => {
       makeupEntries,
       { blockAssignmentsUntilShortagesResolved },
     )
+    const overAssignedDetailItems = buildOverAssignedDetailItems(assignmentState, overAssigned)
 
     const sections = sortStatusSections([
       {
@@ -4582,11 +4762,7 @@ const AdminPage = () => {
       {
         key: 'over' as const,
         title: '過割当',
-        items: overAssigned.map((student) => ({
-          label: student.name,
-          causes: student.remaining.filter((entry) => entry.rem < 0).map((entry) => `${entry.subj}${entry.rem}`),
-          proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
-        })),
+        items: overAssignedDetailItems,
       },
       {
         key: 'shortage' as const,
@@ -4687,13 +4863,50 @@ const AdminPage = () => {
     let success = false
     let errorMessage = ''
     let nextStatusReport: StatusReport | null = null
-    const actionStudentIds = proposal.assignmentStudentIds ?? [proposal.studentId]
+    const actionStudentIds = proposal.type === 'move-teacher-shortage' ? proposal.assignmentStudentIds : [proposal.studentId]
     const studentName = actionStudentIds
       .map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid)
       .join(' / ')
     const teacherName = data.teachers.find((t) => t.id === proposal.teacherId)?.name ?? proposal.teacherId
 
     pendingProposalStatusRefreshRef.current = true
+
+    if (proposal.type === 'update-student-constraints') {
+      await update((current) => {
+        const targetStudent = current.students.find((student) => student.id === proposal.studentId)
+        if (!targetStudent) {
+          errorMessage = '生徒が見つからないため、制約カード変更を実行できませんでした。'
+          return current
+        }
+
+        success = true
+        const nextCurrent = {
+          ...current,
+          students: current.students.map((student) =>
+            student.id === proposal.studentId
+              ? { ...student, constraintCards: proposal.nextConstraintCards }
+              : student,
+          ),
+        }
+        nextStatusReport = buildCurrentStatusReport(nextCurrent.assignments)
+        return nextCurrent
+      })
+
+      if (errorMessage) {
+        pendingProposalStatusRefreshRef.current = false
+        alert(errorMessage)
+        return
+      }
+      if (success) {
+        if (nextStatusReport) {
+          setStatusModal(nextStatusReport)
+          setLatestStatusReport(nextStatusReport)
+        }
+        alert(`制約カード変更を実行しました。\n${studentName} / ${proposal.changeLabel}`)
+      }
+      return
+    }
+
     await updateAssignments((current) => {
       const students = actionStudentIds.map((sid) => current.students.find((s) => s.id === sid)).filter(Boolean) as Student[]
       const teacher = current.teachers.find((t) => t.id === proposal.teacherId)
@@ -4829,6 +5042,90 @@ const AdminPage = () => {
             changed: nextChanged,
             changeDetails: nextDetails,
             unplacedMakeup: filteredUnplacedMakeup,
+          },
+        }
+        nextStatusReport = buildCurrentStatusReport(nextCurrent.assignments)
+        return nextCurrent
+      }
+
+      if (proposal.type === 'remove-student-assignment') {
+        const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
+        const targetIndex = slotAssignments.findIndex((assignment) =>
+          !assignment.isGroupLesson
+          && assignment.teacherId === proposal.teacherId
+          && assignment.studentIds.includes(proposal.studentId)
+          && getStudentSubject(assignment, proposal.studentId) === proposal.subject,
+        )
+        if (targetIndex < 0) {
+          errorMessage = '外す対象の割当が見つからないため、過割当解消を実行できませんでした。'
+          return current
+        }
+
+        const targetAssignment = slotAssignments[targetIndex]
+        const previousSignature = assignmentSignature(targetAssignment)
+        if (targetAssignment.studentIds.length <= 1) {
+          slotAssignments.splice(targetIndex, 1)
+        } else {
+          const nextStudentIds = targetAssignment.studentIds.filter((studentId) => studentId !== proposal.studentId)
+          const nextStudentSubjects = Object.fromEntries(
+            Object.entries(targetAssignment.studentSubjects ?? {}).filter(([studentId]) => studentId !== proposal.studentId),
+          )
+          const nextMakeupInfo = Object.fromEntries(
+            Object.entries(targetAssignment.regularMakeupInfo ?? {}).filter(([studentId]) => studentId !== proposal.studentId),
+          )
+          const nextSubstituteInfo = Object.fromEntries(
+            Object.entries(targetAssignment.regularSubstituteInfo ?? {}).filter(([studentId]) => studentId !== proposal.studentId),
+          )
+          slotAssignments[targetIndex] = {
+            ...targetAssignment,
+            studentIds: nextStudentIds,
+            subject: nextStudentSubjects[nextStudentIds[0]] ?? targetAssignment.subject,
+            ...(Object.keys(nextStudentSubjects).length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
+            ...(Object.keys(nextMakeupInfo).length > 0 ? { regularMakeupInfo: nextMakeupInfo } : {}),
+            ...(Object.keys(nextSubstituteInfo).length > 0 ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
+          }
+          if (Object.keys(nextStudentSubjects).length === 0) delete slotAssignments[targetIndex].studentSubjects
+          if (Object.keys(nextMakeupInfo).length === 0) delete slotAssignments[targetIndex].regularMakeupInfo
+          if (Object.keys(nextSubstituteInfo).length === 0) delete slotAssignments[targetIndex].regularSubstituteInfo
+        }
+
+        success = true
+        setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
+        const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
+        const nextChanged = { ...(currentHighlights.changed ?? {}) }
+        const nextAdded = { ...(currentHighlights.added ?? {}) }
+        const nextDetails = { ...(currentHighlights.changeDetails ?? {}) }
+        if (nextChanged[proposal.slot]) {
+          nextChanged[proposal.slot] = nextChanged[proposal.slot].filter((sig) => sig !== previousSignature)
+          if (nextChanged[proposal.slot].length === 0) delete nextChanged[proposal.slot]
+        }
+        if (nextAdded[proposal.slot]) {
+          nextAdded[proposal.slot] = nextAdded[proposal.slot].filter((sig) => sig !== previousSignature)
+          if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
+        }
+
+        const nextAssignments = { ...current.assignments }
+        if (slotAssignments.length === 0) {
+          delete nextAssignments[proposal.slot]
+        } else {
+          nextAssignments[proposal.slot] = slotAssignments
+          const updatedAssignment = slotAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && assignment.studentIds.some((studentId) => studentId !== proposal.studentId))
+          if (updatedAssignment) {
+            const updatedSignature = assignmentSignature(updatedAssignment)
+            nextChanged[proposal.slot] = [...new Set([...(nextChanged[proposal.slot] ?? []), updatedSignature])]
+            if (!nextDetails[proposal.slot]) nextDetails[proposal.slot] = {}
+            nextDetails[proposal.slot][updatedSignature] = `過割当調整: ${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacher.name} / ${studentName} / ${proposal.subject}\n理由: 過割当解消案を実行`
+          }
+        }
+
+        const nextCurrent = {
+          ...current,
+          assignments: nextAssignments,
+          autoAssignHighlights: {
+            ...currentHighlights,
+            added: nextAdded,
+            changed: nextChanged,
+            changeDetails: nextDetails,
           },
         }
         nextStatusReport = buildCurrentStatusReport(nextCurrent.assignments)
@@ -5000,6 +5297,8 @@ const AdminPage = () => {
       }
       if (proposal.type === 'force-assign') {
         alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
+      } else if (proposal.type === 'remove-student-assignment') {
+        alert(`過割当解消を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
       } else {
         alert(`移動提案を実行しました。\n${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} / ${teacherName} / ${studentName}`)
       }
