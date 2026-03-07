@@ -178,6 +178,51 @@ const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   return labels.map((label) => toStatusProposal(label))
 }
 
+const buildTeacherMoveLabels = (
+  data: SessionData,
+  allSlotKeys: string[],
+  assignmentState: Record<string, Assignment[]>,
+  slot: string,
+  assignment: Assignment,
+  teacherId: string,
+  isMendan: boolean,
+  mendanStart?: number,
+): string[] => {
+  const [sourceDate] = slot.split('_')
+  const studentIds = assignment.studentIds.filter(Boolean)
+  const candidates: string[] = []
+
+  for (const targetSlot of [...allSlotKeys].sort()) {
+    if (targetSlot === slot) continue
+    const [targetDate] = targetSlot.split('_')
+    if (targetDate < sourceDate) continue
+    if (!hasAvailability(data.availability, 'teacher', teacherId, targetSlot)) continue
+
+    const slotAssignments = assignmentState[targetSlot] ?? []
+    if (slotAssignments.some((item) => item.studentIds.some((studentId) => studentIds.includes(studentId)))) continue
+
+    const existingTeacherPair = slotAssignments.find((item) => item.teacherId === teacherId && !item.isGroupLesson)
+    if (existingTeacherPair) {
+      if (existingTeacherPair.studentIds.length + studentIds.length > 2) continue
+      if (studentIds.some((studentId) => existingTeacherPair.studentIds.some((existingId) => constraintFor(data.constraints, existingId, studentId) === 'incompatible'))) continue
+    } else {
+      const deskCount = data.settings.deskCount ?? 0
+      if (deskCount > 0 && slotAssignments.length >= deskCount) continue
+    }
+
+    const studentsAvailable = studentIds.every((studentId) => {
+      const student = data.students.find((entry) => entry.id === studentId)
+      return student ? isStudentAvailable(student, targetSlot) : false
+    })
+    if (!studentsAvailable) continue
+
+    candidates.push(slotLabel(targetSlot, isMendan, mendanStart))
+    if (candidates.length >= 5) break
+  }
+
+  return candidates
+}
+
 const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?: Set<string>): SessionData | null => {
   if (current.settings.sessionType === 'mendan') return null
 
@@ -185,7 +230,7 @@ const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?:
   const nextAssignments: Record<string, Assignment[]> = {}
   for (const [slot, slotAssignments] of Object.entries(current.assignments)) {
     nextAssignments[slot] = slotAssignments.map((assignment) => {
-      if (assignment.isRegular || assignment.isGroupLesson || !assignment.teacherId) return assignment
+      if (!assignment.teacherId) return assignment
       if (teacherIds && !teacherIds.has(assignment.teacherId)) return assignment
 
       const teacher = current.teachers.find((item) => item.id === assignment.teacherId)
@@ -196,6 +241,7 @@ const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?:
         ...assignment,
         teacherId: '',
         teacherUnassignedReason: `${teacher.name} が出席不可のため講師未割当`,
+        teacherUnavailableOriginalId: teacher.id,
       }
     })
   }
@@ -2929,11 +2975,14 @@ const AdminPage = () => {
           if (!student) return false
           return isStudentAvailableForRegularLesson(student, slot)
         })
+        const teacherAvailable = hasInstructorAvailability('teacher', lesson.teacherId, slot)
+        const regularTeacher = data.teachers.find((entry) => entry.id === lesson.teacherId)
         return {
-          teacherId: lesson.teacherId,
+          teacherId: teacherAvailable ? lesson.teacherId : '',
           studentIds: availableStudentIds,
           subject: lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject,
           studentSubjects: lesson.studentSubjects,
+          ...(teacherAvailable ? {} : { teacherUnassignedReason: `${regularTeacher?.name ?? lesson.teacherId} が出席不可のため講師未割当`, teacherUnavailableOriginalId: lesson.teacherId }),
           isRegular: true,
         }
       }).filter((a) => a.studentIds.length > 0) // Skip teacher-only assignments when all students are unavailable
@@ -2978,10 +3027,13 @@ const AdminPage = () => {
         const alreadyPresent = existing.some((a) => a.isGroupLesson && a.teacherId === gl.teacherId && a.studentIds.length === gl.studentIds.length && gl.studentIds.every((sid) => a.studentIds.includes(sid)))
         if (alreadyPresent) continue
 
+        const teacherAvailable = hasInstructorAvailability('teacher', gl.teacherId, slot)
+        const groupTeacher = data.teachers.find((entry) => entry.id === gl.teacherId)
         existing.push({
-          teacherId: gl.teacherId,
+          teacherId: teacherAvailable ? gl.teacherId : '',
           studentIds: [...gl.studentIds],
           subject: gl.subject,
+          ...(teacherAvailable ? {} : { teacherUnassignedReason: `${groupTeacher?.name ?? gl.teacherId} が出席不可のため講師未割当`, teacherUnavailableOriginalId: gl.teacherId }),
           isRegular: true,
           isGroupLesson: true,
         })
@@ -2990,30 +3042,8 @@ const AdminPage = () => {
       nextAssignments[slot] = existing
     }
 
-    // Auto-register regular lesson and group lesson slots as teacher availability
-    const nextAvailability = { ...data.availability }
-    let availChanged = false
-    const allAutoLessons = [...data.regularLessons, ...(data.groupLessons ?? []).map((gl) => ({ ...gl, studentSubjects: undefined }))]
-    for (const lesson of allAutoLessons) {
-      const teacherKey = personKey('teacher', lesson.teacherId)
-      const currentSlots = new Set(nextAvailability[teacherKey] ?? [])
-      for (const sk of slotKeys) {
-        const dayOfWeek = getSlotDayOfWeek(sk)
-        const slotNumber = getSlotNumber(sk)
-        if (lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber) {
-          if (!currentSlots.has(sk)) {
-            currentSlots.add(sk)
-            availChanged = true
-          }
-        }
-      }
-      if (availChanged || currentSlots.size !== (data.availability[teacherKey] ?? []).length) {
-        nextAvailability[teacherKey] = [...currentSlots]
-      }
-    }
-
-    if (changed || availChanged) {
-      void persist({ ...data, assignments: nextAssignments, availability: nextAvailability })
+    if (changed) {
+      void persist({ ...data, assignments: nextAssignments })
     }
   }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3872,9 +3902,15 @@ const AdminPage = () => {
       return leftRank[2].localeCompare(rightRank[2], 'ja')
     })
 
+    const originalTeacherId = item.assignment.teacherUnavailableOriginalId
+    const originalTeacher = originalTeacherId ? data.teachers.find((teacher) => teacher.id === originalTeacherId) : undefined
+    const originalTeacherMoveLabels = originalTeacherId
+      ? buildTeacherMoveLabels(data, slotKeys, assignmentState, item.slot, item.assignment, originalTeacherId, isMendan, mendanStart)
+      : []
+
     const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
     if (availableCandidates.length > 0) {
-      return [toStatusProposal(
+      const proposals: StatusProposal[] = [toStatusProposal(
         '通常代行候補',
         undefined,
         availableCandidates.map((teacher) => ({
@@ -3891,6 +3927,11 @@ const AdminPage = () => {
           },
         })),
       )]
+      if (originalTeacherMoveLabels.length > 0) {
+        const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
+        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`))
+      }
+      return proposals
     }
 
     if (orderedCompatibleTeachers.length > 0) {
@@ -3904,10 +3945,25 @@ const AdminPage = () => {
           ? `${teacher.name}(${slotSummary})`
           : teacher.name
       })
-      return [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
+      const proposals = [toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`)]
+      if (originalTeacherMoveLabels.length > 0) {
+        const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
+        proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`))
+      }
+      return proposals
     }
 
-    return [toStatusProposal('担当可能な講師候補なし: 講師科目設定または出席可能コマを確認してください')]
+    if (originalTeacherId) {
+      if (originalTeacherMoveLabels.length > 0) {
+        const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
+        return [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}案: ${originalTeacherMoveLabels.join('、')}`)]
+      }
+      if (originalTeacher) {
+        return [toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
+      }
+    }
+
+    return [toStatusProposal('担当候補なし: 科目設定か空きコマを見直してください')]
   }
 
   const buildUnplacedMakeupEntries = (
@@ -4150,6 +4206,7 @@ const AdminPage = () => {
           subject: proposal.subject,
           ...(proposal.assignmentStudentSubjects ? { studentSubjects: { ...proposal.assignmentStudentSubjects } } : {}),
           teacherUnassignedReason: undefined,
+          teacherUnavailableOriginalId: undefined,
         }
       } else {
         if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) {
@@ -4551,6 +4608,7 @@ const AdminPage = () => {
         slotAssignments[idx] = {
           ...prev,
           teacherId: '',
+          teacherUnavailableOriginalId: undefined,
         }
         delete slotAssignments[idx].teacherUnassignedReason
         return {
@@ -4584,6 +4642,8 @@ const AdminPage = () => {
         teacherId,
         studentIds: nextStudentIds,
         subject: nextSubject,
+        teacherUnassignedReason: undefined,
+        teacherUnavailableOriginalId: undefined,
         ...(nextStudentIds.length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
         ...(prev.regularMakeupInfo ? { regularMakeupInfo: { ...prev.regularMakeupInfo } } : {}),
         ...(prev.regularSubstituteInfo ? { regularSubstituteInfo: { ...prev.regularSubstituteInfo } } : {}),
@@ -6514,15 +6574,14 @@ const TeacherInputPage = ({
 
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey(personKeyPrefix, teacher.id)
-    const saved = new Set(data.availability[key] ?? [])
-    // Include regular lesson slots as forced available
-    for (const rk of regularSlotKeys) saved.add(rk)
-    return saved
+    return new Set(data.availability[key] ?? [])
   })
   const toggleSlot = (date: string, slotNum: number) => {
     const slotKey = `${date}_${slotNum}`
-    // Cannot toggle regular lesson slots
-    if (regularSlotKeys.has(slotKey)) return
+    if (regularSlotKeys.has(slotKey) && localAvailability.has(slotKey)) {
+      const confirmed = window.confirm('この時限には通常授業がありますが、出席不可にしますか？')
+      if (!confirmed) return
+    }
     setLocalAvailability((prev) => {
       const next = new Set(prev)
       if (next.has(slotKey)) {
@@ -6536,24 +6595,20 @@ const TeacherInputPage = ({
 
   const toggleDateAllSlots = (date: string) => {
     const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
-    const nonRegularKeys = allSlotKeys.filter((sk) => !regularSlotKeys.has(sk))
-    if (nonRegularKeys.length === 0) return
-    const allOn = nonRegularKeys.every((sk) => localAvailability.has(sk))
+    const allOn = allSlotKeys.every((sk) => localAvailability.has(sk))
     setLocalAvailability((prev) => {
       const next = new Set(prev)
       if (allOn) {
-        for (const sk of nonRegularKeys) next.delete(sk)
+        for (const sk of allSlotKeys) next.delete(sk)
       } else {
-        for (const sk of nonRegularKeys) next.add(sk)
+        for (const sk of allSlotKeys) next.add(sk)
       }
       return next
     })
   }
 
   const toggleColumnAllSlots = (slotNum: number) => {
-    const targetKeys = dates
-      .map((date) => `${date}_${slotNum}`)
-      .filter((slotKey) => !regularSlotKeys.has(slotKey))
+    const targetKeys = dates.map((date) => `${date}_${slotNum}`)
     if (targetKeys.length === 0) return
     const allOn = targetKeys.every((slotKey) => localAvailability.has(slotKey))
     setLocalAvailability((prev) => {
@@ -6569,10 +6624,7 @@ const TeacherInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey(personKeyPrefix, teacher.id)
-    // Ensure regular lesson slots are always included
-    const merged = new Set(localAvailability)
-    for (const rk of regularSlotKeys) merged.add(rk)
-    const availabilityArray = Array.from(merged)
+    const availabilityArray = Array.from(localAvailability)
 
     // Determine if this is initial or update submission
     const isUpdate = !!(data.teacherSubmittedAt?.[teacher.id])
@@ -6669,7 +6721,6 @@ const TeacherInputPage = ({
   const applyDefaultToAll = () => {
     setLocalAvailability(() => {
       const next = new Set<string>()
-      for (const rk of regularSlotKeys) next.add(rk)
       const slotStart = defaultStart - mStartHour + 1
       const slotEnd = defaultEnd - mStartHour + 1
       for (const date of dates) {
@@ -6866,7 +6917,7 @@ const TeacherInputPage = ({
         <p>
           対象: <strong>{teacher.name}</strong>
         </p>
-        <p className="muted">出席可能なコマをタップして選択してください。「通」は通常授業（変更不可）です。</p>
+        <p className="muted">出席可能なコマをタップして選択してください。「通」は通常授業コマです。通常授業も出席不可に変更できます。</p>
       </div>
 
       <div className="teacher-table-wrapper">
@@ -6888,8 +6939,8 @@ const TeacherInputPage = ({
           </thead>
           <tbody>
             {dates.map((date) => {
-              const nonRegularKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`).filter((sk) => !regularSlotKeys.has(sk))
-              const allOn = nonRegularKeys.length > 0 && nonRegularKeys.every((sk) => localAvailability.has(sk))
+              const allSlotKeys = Array.from({ length: data.settings.slotsPerDay }, (_, i) => `${date}_${i + 1}`)
+              const allOn = allSlotKeys.length > 0 && allSlotKeys.every((sk) => localAvailability.has(sk))
               return (
               <tr key={date}>
                 <td
@@ -6910,12 +6961,12 @@ const TeacherInputPage = ({
                   return (
                     <td key={slotNum}>
                       <button
-                        className={`teacher-slot-btn ${isRegular ? 'regular' : isOn ? 'active' : ''}`}
+                        className={`teacher-slot-btn ${isOn ? 'active' : ''} ${isRegular ? 'regular' : ''}`}
                         onClick={() => toggleSlot(date, slotNum)}
                         type="button"
-                        disabled={isRegular}
+                        style={isRegular ? { fontSize: '11px', lineHeight: '1.1', padding: '2px 1px' } : undefined}
                       >
-                        {isRegular ? '通' : isOn ? '○' : ''}
+                        {isRegular ? <>{isOn ? '通' : '休'}<br />通常</> : isOn ? '○' : ''}
                       </button>
                     </td>
                   )
@@ -6934,12 +6985,12 @@ const TeacherInputPage = ({
             type="button"
             style={{ marginBottom: '8px', fontSize: '0.85em' }}
             onClick={() => {
-              // Randomly toggle ~60% of non-regular slots as available
-              const next = new Set(regularSlotKeys)
+              // Randomly toggle ~60% of slots as available
+              const next = new Set<string>()
               for (const date of dates) {
                 for (let s = 1; s <= data.settings.slotsPerDay; s++) {
                   const sk = `${date}_${s}`
-                  if (!regularSlotKeys.has(sk) && Math.random() < 0.6) next.add(sk)
+                  if (Math.random() < 0.6) next.add(sk)
                 }
               }
               setLocalAvailability(next)
