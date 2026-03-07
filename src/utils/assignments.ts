@@ -244,7 +244,7 @@ export const collectTeacherShortages = (
   const shortages: TeacherShortageEntry[] = []
   for (const [slot, slotAssignments] of Object.entries(assignments)) {
     for (const assignment of slotAssignments) {
-      if (assignment.isRegular) continue
+      if (assignment.isGroupLesson) continue
 
       if (!assignment.teacherId) {
         shortages.push({ slot, detail: assignment.teacherUnassignedReason ?? '講師未割当' })

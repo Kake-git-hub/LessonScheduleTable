@@ -3828,7 +3828,7 @@ const AdminPage = () => {
     const shortages: TeacherShortageItem[] = []
     for (const [slot, slotAssignments] of Object.entries(assignmentState)) {
       for (const assignment of slotAssignments) {
-        if (assignment.isRegular || assignment.isGroupLesson || assignment.studentIds.length === 0) continue
+        if (assignment.isGroupLesson || assignment.studentIds.length === 0) continue
 
         if (!assignment.teacherId) {
           shortages.push({ slot, assignment, detail: assignment.teacherUnassignedReason ?? '講師未割当' })

@@ -286,9 +286,17 @@ describe('collectTeacherShortages', () => {
     expect(result[0].detail).toContain('担当外科目')
   })
 
-  it('skips regular assignments', () => {
+  it('detects regular assignments with missing teachers', () => {
     const data = makeSessionData()
-    const assignments = { '2026-07-21_1': [{ teacherId: 't99', studentIds: ['s1'], subject: '数', isRegular: true }] }
+    const assignments = { '2026-07-21_1': [{ teacherId: '', studentIds: ['s1'], subject: '数', isRegular: true, teacherUnassignedReason: '田中 一郎 が出席不可のため講師未割当' }] }
+    const result = collectTeacherShortages(data, assignments)
+    expect(result).toHaveLength(1)
+    expect(result[0].detail).toContain('講師未割当')
+  })
+
+  it('skips group lessons', () => {
+    const data = makeSessionData()
+    const assignments = { '2026-07-21_1': [{ teacherId: '', studentIds: ['s1'], subject: '数', isRegular: true, isGroupLesson: true }] }
     const result = collectTeacherShortages(data, assignments)
     expect(result).toHaveLength(0)
   })
