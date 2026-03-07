@@ -193,6 +193,120 @@ const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   return labels.map((label) => toStatusProposal(label))
 }
 
+type MakeupReasonKind = 'student' | 'teacher' | 'both' | 'unknown'
+
+const hasTeacherAvailabilityForSession = (sessionData: SessionData, teacherId: string, slot: string, dayOfWeek?: number, slotNumber?: number): boolean => {
+  if (hasAvailability(sessionData.availability, 'teacher', teacherId, slot)) return true
+  if ((sessionData.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
+  const [date] = slot.split('_')
+  const targetDayOfWeek = dayOfWeek ?? getIsoDayOfWeek(date)
+  const targetSlotNumber = slotNumber ?? getSlotNumber(slot)
+  return sessionData.regularLessons.some((lesson) => lesson.teacherId === teacherId && lesson.dayOfWeek === targetDayOfWeek && lesson.slotNumber === targetSlotNumber)
+}
+
+const getMakeupReasonKind = (
+  sessionData: SessionData,
+  studentId: string,
+  teacherId: string,
+  makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string },
+  absentDate?: string,
+): MakeupReasonKind => {
+  const student = sessionData.students.find((entry) => entry.id === studentId)
+  const originDate = makeupInfo.date ?? absentDate
+  if (!student || !originDate) return absentDate ? 'student' : 'unknown'
+
+  const originSlot = `${originDate}_${makeupInfo.slotNumber}`
+  const studentAvailable = isStudentAvailableForRegularLesson(student, originSlot)
+  const teacherAvailable = hasTeacherAvailabilityForSession(sessionData, teacherId, originSlot, makeupInfo.dayOfWeek, makeupInfo.slotNumber)
+
+  if (!studentAvailable && !teacherAvailable) return 'both'
+  if (!studentAvailable) return 'student'
+  if (!teacherAvailable) return 'teacher'
+  return absentDate ? 'student' : 'unknown'
+}
+
+const formatMakeupReasonLabel = (reasonKind: MakeupReasonKind): string => {
+  switch (reasonKind) {
+    case 'student':
+      return '生徒理由'
+    case 'teacher':
+      return '講師理由'
+    case 'both':
+      return '生徒・講師理由'
+    default:
+      return '理由未確定'
+  }
+}
+
+const getProspectiveConstraintWarnings = (
+  sessionData: SessionData,
+  assignmentState: Record<string, Assignment[]>,
+  slot: string,
+  assignmentIdx: number,
+  teacherId: string,
+): string[] => {
+  const slotAssignments = assignmentState[slot] ?? []
+  const assignment = slotAssignments[assignmentIdx]
+  if (!assignment || assignment.studentIds.length === 0) return []
+
+  const warnings: string[] = []
+  for (const studentId of assignment.studentIds) {
+    const student = sessionData.students.find((item) => item.id === studentId)
+    if (!student) continue
+
+    const reducedSlotAssignments = slotAssignments.flatMap((item, index) => {
+      if (index !== assignmentIdx) return [item]
+
+      const remainingIds = item.studentIds.filter((id) => id !== studentId)
+      if (remainingIds.length === 0) return []
+
+      const nextStudentSubjects = Object.entries(item.studentSubjects ?? {}).reduce<Record<string, string>>((acc, [id, subject]) => {
+        if (id !== studentId) acc[id] = subject
+        return acc
+      }, {})
+      const nextMakeupInfo = Object.entries(item.regularMakeupInfo ?? {}).reduce<Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>>((acc, [id, info]) => {
+        if (id !== studentId) acc[id] = info
+        return acc
+      }, {})
+      const nextSubstituteInfo = Object.entries(item.regularSubstituteInfo ?? {}).reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, [id, info]) => {
+        if (id !== studentId) acc[id] = info
+        return acc
+      }, {})
+
+      return [{
+        ...item,
+        teacherId,
+        studentIds: remainingIds,
+        ...(Object.keys(nextStudentSubjects).length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
+        ...(Object.keys(nextMakeupInfo).length > 0 ? { regularMakeupInfo: nextMakeupInfo } : {}),
+        ...(Object.keys(nextSubstituteInfo).length > 0 ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
+      }]
+    })
+
+    const evalResult = evaluateConstraintCards(
+      student,
+      slot,
+      { ...assignmentState, [slot]: reducedSlotAssignments },
+      sessionData.settings.slotsPerDay,
+      sessionData.regularLessons,
+      sessionData.groupLessons,
+      teacherId,
+    )
+
+    if (evalResult.blocked) {
+      warnings.push(`${student.name}: ${evalResult.blockReason ?? '制約カード違反'}`)
+    }
+  }
+
+  return warnings
+}
+
+const formatConstraintWarningSuffix = (warnings: string[]): string => {
+  if (warnings.length === 0) return ''
+  const summary = warnings.slice(0, 2).join(' / ')
+  return ` (注意: ${summary}${warnings.length > 2 ? ' ほか' : ''})`
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -231,9 +345,67 @@ const buildTeacherMoveChoices = (
     })
     if (!studentsAvailable) continue
 
+    const sourceAssignments = [...(assignmentState[slot] ?? [])]
+    const sourceIndex = sourceAssignments.findIndex((item) => !item.isGroupLesson && sameStudentSet(item.studentIds, assignment.studentIds) && item.teacherUnavailableOriginalId === teacherId)
+    if (sourceIndex < 0) continue
+
+    const targetAssignments = [...slotAssignments]
+    let targetIndex = -1
+    if (existingTeacherPair) {
+      targetIndex = targetAssignments.findIndex((item) => item === existingTeacherPair)
+      const mergedStudentIds = [...existingTeacherPair.studentIds, ...studentIds]
+      const mergedStudentSubjects = {
+        ...(existingTeacherPair.studentSubjects ?? {}),
+        ...(assignment.studentSubjects ?? Object.fromEntries(studentIds.map((studentId) => [studentId, assignment.subject]))),
+      }
+      const mergedMakeupInfo = { ...(existingTeacherPair.regularMakeupInfo ?? {}), ...(assignment.regularMakeupInfo ?? {}) }
+      const mergedSubstituteInfo = assignment.regularSubstituteInfo
+        ? { ...(existingTeacherPair.regularSubstituteInfo ?? {}), ...assignment.regularSubstituteInfo }
+        : existingTeacherPair.regularSubstituteInfo
+      targetAssignments[targetIndex] = {
+        ...existingTeacherPair,
+        studentIds: mergedStudentIds,
+        studentSubjects: mergedStudentSubjects,
+        subject: mergedStudentSubjects[mergedStudentIds[0]] ?? existingTeacherPair.subject ?? assignment.subject,
+        ...(Object.keys(mergedMakeupInfo).length > 0 ? { regularMakeupInfo: mergedMakeupInfo } : {}),
+        ...(mergedSubstituteInfo ? { regularSubstituteInfo: mergedSubstituteInfo } : {}),
+      }
+    } else {
+      const movedAssignment: Assignment = {
+        ...assignment,
+        teacherId,
+        teacherUnassignedReason: undefined,
+        teacherUnavailableOriginalId: undefined,
+      }
+      if (movedAssignment.isRegular) {
+        const regularMakeupInfo = { ...(movedAssignment.regularMakeupInfo ?? {}) }
+        const srcDate = slot.split('_')[0]
+        const srcDayOfWeek = getSlotDayOfWeek(slot)
+        const srcSlotNumber = getSlotNumber(slot)
+        for (const studentId of studentIds) {
+          if (!regularMakeupInfo[studentId]) {
+            regularMakeupInfo[studentId] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNumber, date: srcDate }
+          }
+        }
+        movedAssignment.isRegular = false
+        movedAssignment.regularMakeupInfo = regularMakeupInfo
+      }
+      targetAssignments.push(movedAssignment)
+      targetIndex = targetAssignments.length - 1
+    }
+
+    sourceAssignments.splice(sourceIndex, 1)
+    const prospectiveAssignments = { ...assignmentState, [targetSlot]: targetAssignments }
+    if (sourceAssignments.length > 0) {
+      prospectiveAssignments[slot] = sourceAssignments
+    } else {
+      delete prospectiveAssignments[slot]
+    }
+    const constraintWarnings = getProspectiveConstraintWarnings(data, prospectiveAssignments, targetSlot, targetIndex, teacherId)
+
     candidates.push({
       value: targetSlot,
-      label: slotLabel(targetSlot, isMendan, mendanStart),
+      label: `${slotLabel(targetSlot, isMendan, mendanStart)}${formatConstraintWarningSuffix(constraintWarnings)}`,
       action: {
         type: 'move-teacher-shortage',
         sourceSlot: slot,
@@ -3557,9 +3729,12 @@ const AdminPage = () => {
     for (const item of makeupEntries) {
       const existing = details.get(item.studentId)
       const conciseCause = summarizeMakeupCauses(item.causes.length > 0 ? item.causes : [item.reason])
+      const matchingDemand = pendingMakeupDemands.find((demand) => demand.studentId === item.studentId && demand.teacherId === item.teacherId && demand.subject === item.subject)
+      const makeupReasonKind = matchingDemand ? getMakeupReasonKind(data, matchingDemand.studentId, matchingDemand.teacherId, matchingDemand.makeupInfo, matchingDemand.absentDate) : 'unknown'
+      const makeupReasonLabel = formatMakeupReasonLabel(makeupReasonKind)
       const causeLabel = conciseCause
-        ? `${item.subject}: 振替未配置 (${conciseCause})`
-        : `${item.subject}: 振替未配置`
+        ? `${item.subject}: ${makeupReasonLabel}の振替未配置 (${conciseCause})`
+        : `${item.subject}: ${makeupReasonLabel}の振替未配置`
       const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
       const mergedProposals = dedupeStatusProposals([
         ...(existing?.proposals ?? []),
@@ -3951,22 +4126,38 @@ const AdminPage = () => {
 
     const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
     if (availableCandidates.length > 0) {
+      const itemIndex = slotAssignments.findIndex((assignment) => assignment === item.assignment)
       const proposals: StatusProposal[] = [toStatusProposal(
         '通常代行候補',
         undefined,
-        availableCandidates.map((teacher) => ({
-          value: teacher.id,
-          label: teacher.name,
-          action: {
-            type: 'force-assign',
-            slot: item.slot,
-            teacherId: teacher.id,
-            studentId: item.assignment.studentIds[0] ?? '',
-            subject: item.assignment.subject,
-            assignmentStudentIds: [...item.assignment.studentIds],
-            ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
-          },
-        })),
+        availableCandidates.map((teacher) => {
+          const nextSlotAssignments = [...slotAssignments]
+          if (itemIndex >= 0) {
+            nextSlotAssignments[itemIndex] = {
+              ...item.assignment,
+              teacherId: teacher.id,
+              teacherUnassignedReason: undefined,
+              teacherUnavailableOriginalId: undefined,
+            }
+          }
+          const prospectiveAssignments = { ...assignmentState, [item.slot]: nextSlotAssignments }
+          const constraintWarnings = itemIndex >= 0
+            ? getProspectiveConstraintWarnings(data, prospectiveAssignments, item.slot, itemIndex, teacher.id)
+            : []
+          return {
+            value: teacher.id,
+            label: `${teacher.name}${formatConstraintWarningSuffix(constraintWarnings)}`,
+            action: {
+              type: 'force-assign',
+              slot: item.slot,
+              teacherId: teacher.id,
+              studentId: item.assignment.studentIds[0] ?? '',
+              subject: item.assignment.subject,
+              assignmentStudentIds: [...item.assignment.studentIds],
+              ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
+            },
+          }
+        }),
       )]
       if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
@@ -4097,6 +4288,8 @@ const AdminPage = () => {
         && (!um.absentDate || demand.absentDate === um.absentDate),
       )
       const pendingDemand = matchedPendingDemands.find((demand) => demand.absentDate === um.absentDate) ?? matchedPendingDemands[0]
+      const makeupReasonKind = pendingDemand ? getMakeupReasonKind(data, pendingDemand.studentId, pendingDemand.teacherId, pendingDemand.makeupInfo, pendingDemand.absentDate) : 'unknown'
+      const makeupReasonLabel = formatMakeupReasonLabel(makeupReasonKind)
       const analysis = teacher && pendingDemand
         ? analyzePlacementOptions(
             assignmentState,
@@ -4118,13 +4311,13 @@ const AdminPage = () => {
         ...analysis.student,
         ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
       ])
-      const causes = [reason, ...analysis.blockers]
+      const causes = [`${makeupReasonLabel}: ${reason}`, ...analysis.blockers]
       if (proposals.length > 0) {
-        reason = `${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
+        reason = `${makeupReasonLabel}: ${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
       } else if (analysis.blockers.length > 0) {
-        reason = `${reason} / 候補なし: ${analysis.blockers.join(', ')}`
+        reason = `${makeupReasonLabel}: ${reason} / 候補なし: ${analysis.blockers.join(', ')}`
       } else {
-        reason = `${reason} / 候補なし: 机数上限・相性不可・出席可能日を確認してください`
+        reason = `${makeupReasonLabel}: ${reason} / 候補なし: 机数上限・相性不可・出席可能日を確認してください`
       }
       unplacedMakeupEntries.push({ studentId: student.id, teacherId: um.teacherId, studentName: student.name, subject: um.subject, causes, proposals, reason, count: 1 })
     }
@@ -6578,7 +6771,9 @@ service cloud.firestore {
                                       const [curDate] = slot.split('_')
                                       const curSlotNum = getSlotNumber(slot)
                                       const destLabel = `${fmtMkDate(curDate)} ${curSlotNum}限`
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`振替（${origLabel} → ${destLabel}）`}>★</span>
+                                      const regularTeacherId = data.regularLessons.find((lesson) => lesson.studentIds.includes(currentStudentId) && lesson.dayOfWeek === mkInfo.dayOfWeek && lesson.slotNumber === mkInfo.slotNumber)?.teacherId ?? assignment.teacherId
+                                      const reasonLabel = formatMakeupReasonLabel(getMakeupReasonKind(data, currentStudentId, regularTeacherId, mkInfo))
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`${reasonLabel}の振替（${origLabel} → ${destLabel}）`}>★</span>
                                     }
                                     return null
                                   })()
