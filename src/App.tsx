@@ -2510,6 +2510,7 @@ const AdminPage = () => {
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
+  const pendingProposalStatusRefreshRef = useRef(false)
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
@@ -4263,6 +4264,16 @@ const AdminPage = () => {
     }
   }
 
+  useEffect(() => {
+    if (!data || !pendingProposalStatusRefreshRef.current) return
+    pendingProposalStatusRefreshRef.current = false
+    const refreshedReport = buildCurrentStatusReport(data.assignments)
+    if (refreshedReport) {
+      setStatusModal(refreshedReport)
+      setLatestStatusReport(refreshedReport)
+    }
+  }, [data])
+
   const applyProposalAction = async (proposal: ProposalAction): Promise<void> => {
     if (!data) return
     let success = false
@@ -4571,6 +4582,7 @@ const AdminPage = () => {
       return
     }
     if (success) {
+      pendingProposalStatusRefreshRef.current = true
       if (nextStatusReport) {
         setStatusModal(nextStatusReport)
         setLatestStatusReport(nextStatusReport)
