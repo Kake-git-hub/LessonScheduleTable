@@ -507,6 +507,17 @@ const filterStudentSubjectsForIds = (
   return Object.keys(filtered).length > 0 ? filtered : undefined
 }
 
+const collectOverlappingStudentIds = (
+  slotAssignments: Assignment[],
+  targetStudentIds: string[],
+  ignoredIndexes: number[] = [],
+): string[] => {
+  const ignored = new Set(ignoredIndexes)
+  return [...new Set(targetStudentIds.filter((studentId) =>
+    slotAssignments.some((assignment, index) => !ignored.has(index) && assignment.studentIds.includes(studentId)),
+  ))]
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -5193,6 +5204,76 @@ const AdminPage = () => {
       .join(' / ')
   }, [currentAutoAssignBlockerCount, currentAutoAssignBlockingSections])
 
+  const summarizeDuplicateConflicts = (assignmentState: Record<string, Assignment[]>) => {
+    const currentData = data
+    if (!currentData) return []
+
+    return Object.entries(assignmentState).flatMap(([slot, slotAssignments]) => {
+      const seen = new Set<string>()
+      const duplicates: string[] = []
+      for (const assignment of slotAssignments) {
+        for (const studentId of assignment.studentIds) {
+          if (seen.has(studentId) && !duplicates.includes(studentId)) duplicates.push(studentId)
+          seen.add(studentId)
+        }
+      }
+
+      return duplicates.map((studentId) => ({
+        slot,
+        label: slotLabel(slot, isMendan, mendanStart),
+        studentId,
+        studentName: currentData.students.find((student) => student.id === studentId)?.name ?? studentId,
+        assignments: slotAssignments
+          .filter((assignment) => assignment.studentIds.includes(studentId))
+          .map((assignment) => ({
+            teacherId: assignment.teacherId,
+            teacherName: currentData.teachers.find((teacher) => teacher.id === assignment.teacherId)?.name ?? assignment.teacherId,
+            studentIds: [...assignment.studentIds],
+            studentNames: assignment.studentIds.map((id) => currentData.students.find((student) => student.id === id)?.name ?? id),
+            subject: assignment.subject,
+            isRegular: !!assignment.isRegular,
+            ...(assignment.teacherUnassignedReason ? { teacherUnassignedReason: assignment.teacherUnassignedReason } : {}),
+          })),
+      }))
+    })
+  }
+
+  const copyChatDebugData = async (): Promise<void> => {
+    if (!data) return
+
+    const normalizedAssignments = materializeUnavailableRegularShortages(data.assignments)
+    const debugPayload = {
+      type: 'LessonScheduleTableDebug',
+      appVersion: APP_VERSION,
+      copiedAt: new Date().toISOString(),
+      locationHash: window.location.hash,
+      classroomId,
+      sessionId,
+      statusModalMode,
+      unresolvedCount,
+      currentAutoAssignBlockerLabel,
+      manuallyModifiedSlots: [...manuallyModifiedSlots].sort(),
+      duplicateConflicts: summarizeDuplicateConflicts(data.assignments),
+      normalizedDuplicateConflicts: summarizeDuplicateConflicts(normalizedAssignments),
+      statusModal,
+      activeStatusReport,
+      session: {
+        ...data,
+        settings: {
+          ...data.settings,
+          adminPassword: '[redacted]',
+        },
+      },
+    }
+    const text = JSON.stringify(debugPayload, null, 2)
+    try {
+      await navigator.clipboard.writeText(text)
+      alert('デバッグ情報をコピーしました')
+    } catch {
+      window.prompt('デバッグ情報をコピーしてください:', text)
+    }
+  }
+
   const shouldShowAutoAssignButton = useMemo(() => {
     if (!data) return false
     if (isMendan) return true
@@ -5337,6 +5418,14 @@ const AdminPage = () => {
           }
           if (slotAssignments.some((assignment, index) => index !== targetIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)) {
             errorMessage = `${teacher.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} で別ペアに割当済みです。`
+            return current
+          }
+          const conflictingStudentIds = collectOverlappingStudentIds(slotAssignments, targetStudentIds, [targetIndex])
+          if (conflictingStudentIds.length > 0) {
+            const conflictingNames = conflictingStudentIds
+              .map((studentId) => current.students.find((student) => student.id === studentId)?.name ?? studentId)
+              .join(' / ')
+            errorMessage = `${conflictingNames} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} の別ペアに割当済みです。`
             return current
           }
 
@@ -6835,6 +6924,9 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
               </button>
+              <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>
+                デバッグコピー
+              </button>
               <button
                 className="btn secondary"
                 type="button"
@@ -7659,7 +7751,10 @@ service cloud.firestore {
                     <h3>{statusModal.title}</h3>
                     <p>{statusModal.summary}</p>
                   </div>
-                  <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>デバッグコピー</button>
+                    <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
+                  </div>
                 </div>
                 <div className="status-modal-body">
                   {statusModal.sections.map((section) => (
