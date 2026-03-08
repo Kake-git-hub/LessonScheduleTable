@@ -24,7 +24,7 @@ import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel }
 import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
-import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress } from './utils/assignments'
+import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
@@ -3560,8 +3560,8 @@ const AdminPage = () => {
       }
       if (rest.isRegular) result.isRegular = true
       if (rest.isGroupLesson) result.isGroupLesson = true
-      return result
-    })
+      return normalizeAssignment(result)
+    }).filter((result) => result.teacherId || result.studentIds.length > 0)
     const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: cleaned }
     setRecordingSlot(null)
     setEditingResults([])
@@ -4376,8 +4376,9 @@ const AdminPage = () => {
       }
     }
 
+    const effectiveAssignments = buildEffectiveAssignments(assignmentState, actualResults)
     const pending = [...demands]
-    for (const slotAssignments of Object.values(assignmentState)) {
+    for (const slotAssignments of Object.values(effectiveAssignments)) {
       for (const assignment of slotAssignments) {
         const regularLikeInfos = [assignment.regularMakeupInfo ?? {}, assignment.regularSubstituteInfo ?? {}]
         for (const infoMap of regularLikeInfos) {
