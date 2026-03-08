@@ -61,6 +61,7 @@ export type SchedulePdfParams = {
   deskCount?: number
   holidays: string[]
   assignments: Record<string, Assignment[]>
+  baselineAssignments?: Record<string, Assignment[]>
   getTeacherName: (id: string) => string
   getStudentName: (id: string) => string
   getStudentGrade: (id: string) => string
@@ -70,12 +71,14 @@ export type SchedulePdfParams = {
 
 type StudentPdfCell = {
   text: string
+  compareKey: string
   fillColor?: [number, number, number]
   textColor?: [number, number, number]
 }
 
 type DeskPdfCell = {
   teacher: string
+  teacherCompareKey: string
   student1: StudentPdfCell
   student2: StudentPdfCell
 }
@@ -83,7 +86,7 @@ type DeskPdfCell = {
 export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void> {
   const {
     sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
-    assignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, getIsoDayOfWeek,
+    assignments, baselineAssignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, getIsoDayOfWeek,
   } = params
 
   if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
@@ -108,7 +111,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   }
 
   const buildStudentPdfCell = (assignment: Assignment | undefined, studentId: string | undefined): StudentPdfCell => {
-    if (!assignment || !studentId) return { text: '' }
+    if (!assignment || !studentId) return { text: '', compareKey: '' }
 
     const studentName = getStudentName(studentId)
     const studentGrade = getStudentGrade(studentId)
@@ -116,25 +119,54 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const text = `${studentName}\n${studentGrade}${studentSubject}`
 
     if (assignment.regularSubstituteInfo?.[studentId]) {
-      return { text, fillColor: colorSubstitute.fill, textColor: colorSubstitute.text }
+      const info = assignment.regularSubstituteInfo[studentId]
+      return {
+        text,
+        compareKey: `${studentId}|${studentSubject}|substitute|${info.regularTeacherId}|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
+        fillColor: colorSubstitute.fill,
+        textColor: colorSubstitute.text,
+      }
     }
     if (assignment.regularMakeupInfo?.[studentId]) {
-      return { text, fillColor: colorMakeup.fill, textColor: colorMakeup.text }
+      const info = assignment.regularMakeupInfo[studentId]
+      return {
+        text,
+        compareKey: `${studentId}|${studentSubject}|makeup|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
+        fillColor: colorMakeup.fill,
+        textColor: colorMakeup.text,
+      }
     }
     if (assignment.isRegular) {
-      return { text, fillColor: colorNormal.fill, textColor: colorNormal.text }
+      return {
+        text,
+        compareKey: `${studentId}|${studentSubject}|regular`,
+        fillColor: colorNormal.fill,
+        textColor: colorNormal.text,
+      }
     }
-    return { text }
+    return { text, compareKey: `${studentId}|${studentSubject}|normal` }
   }
 
-  const buildDeskPdfCell = (date: string, slotNumber: number, deskIndex: number, lectureDateSet: Set<string>): DeskPdfCell => {
+  const buildDeskPdfCell = (
+    date: string,
+    slotNumber: number,
+    deskIndex: number,
+    lectureDateSet: Set<string>,
+    sourceAssignments: Record<string, Assignment[]>,
+  ): DeskPdfCell => {
     if (!lectureDateSet.has(date) || holidaySet.has(date)) {
-      return { teacher: '', student1: { text: '' }, student2: { text: '' } }
+      return {
+        teacher: '',
+        teacherCompareKey: '',
+        student1: { text: '', compareKey: '' },
+        student2: { text: '', compareKey: '' },
+      }
     }
 
-    const assignment = assignments[`${date}_${slotNumber}`]?.[deskIndex]
+    const assignment = sourceAssignments[`${date}_${slotNumber}`]?.[deskIndex]
     return {
       teacher: assignment?.teacherId ? getTeacherName(assignment.teacherId) : '',
+      teacherCompareKey: assignment?.teacherId ?? '',
       student1: buildStudentPdfCell(assignment, assignment?.studentIds[0]),
       student2: buildStudentPdfCell(assignment, assignment?.studentIds[1]),
     }
@@ -220,7 +252,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         const row: string[] = [deskIdx === 0 ? formatSlotTimeLabel(slotNumber) : '']
         for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
           const date = fullWeek[dayIdx]
-          const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet)
+          const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet, assignments)
           row.push(String(deskIdx + 1), deskCell.teacher, deskCell.student1.text, deskCell.student2.text)
         }
         bodyRows.push(row)
@@ -260,6 +292,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         lineColor: [80, 80, 80],
         valign: 'middle',
         overflow: 'linebreak',
+        minCellHeight: 8.5,
       },
       headStyles: {
         fillColor: [255, 255, 255],
@@ -282,6 +315,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             const dayIdx = Math.floor((col - 1) / 4)
             const date = fullWeek[dayIdx]
             const isSunday = getIsoDayOfWeek(date) === 0
+            const isHolidayColumn = holidaySet.has(date) || !lectureDateSet.has(date)
+            if (isHolidayColumn) {
+              hookData.cell.styles.fillColor = [229, 231, 235]
+            }
             if (isSunday || holidaySet.has(date)) {
               hookData.cell.styles.textColor = [220, 38, 38]
             }
@@ -290,7 +327,15 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
         if (hookData.section === 'head' && hookData.row.index === 1) {
           hookData.cell.styles.fontSize = 5.3
-          hookData.cell.styles.fillColor = [245, 245, 245]
+          const col = hookData.column.index
+          if (col > 0) {
+            const dayIdx = Math.floor((col - 1) / 4)
+            const date = fullWeek[dayIdx]
+            const isHolidayColumn = holidaySet.has(date) || !lectureDateSet.has(date)
+            hookData.cell.styles.fillColor = isHolidayColumn ? [229, 231, 235] : [245, 245, 245]
+          } else {
+            hookData.cell.styles.fillColor = [255, 255, 255]
+          }
         }
 
         if (hookData.section === 'body') {
@@ -304,7 +349,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
               hookData.cell.styles.fontStyle = 'bold'
               hookData.cell.styles.halign = 'center'
               hookData.cell.styles.valign = 'middle'
-              hookData.cell.styles.fillColor = slotNumber % 2 === 0 ? [243, 244, 246] : [255, 255, 255]
+              hookData.cell.styles.fillColor = [255, 255, 255]
             }
             hookData.cell.styles.fontSize = 6
             return
@@ -313,7 +358,26 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const dayIdx = Math.floor((col - 1) / 4)
           const dayDate = fullWeek[dayIdx]
           const daySubCol = (col - 1) % 4
-          const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet)
+          const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, assignments)
+          const baselineDeskCell = baselineAssignments
+            ? buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, baselineAssignments)
+            : null
+          const isHolidayColumn = holidaySet.has(dayDate) || !lectureDateSet.has(dayDate)
+
+          if (isHolidayColumn) {
+            hookData.cell.styles.fillColor = [229, 231, 235]
+          }
+
+          const isChangedCell = baselineDeskCell != null && (
+            (daySubCol === 1 && deskCell.teacherCompareKey !== baselineDeskCell.teacherCompareKey)
+            || (daySubCol === 2 && deskCell.student1.compareKey !== baselineDeskCell.student1.compareKey)
+            || (daySubCol === 3 && deskCell.student2.compareKey !== baselineDeskCell.student2.compareKey)
+          )
+
+          if (isChangedCell) {
+            hookData.cell.styles.lineColor = [220, 38, 38]
+            hookData.cell.styles.lineWidth = 0.8
+          }
 
           if (daySubCol === 0) {
             hookData.cell.styles.halign = 'center'
@@ -325,6 +389,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
           if (daySubCol === 1) {
             hookData.cell.styles.fontSize = 5.1
+            hookData.cell.styles.halign = 'center'
+            hookData.cell.styles.valign = 'middle'
           }
 
           if (daySubCol === 2 || daySubCol === 3) {
@@ -336,10 +402,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
               hookData.cell.styles.textColor = studentCell.textColor ?? [0, 0, 0]
               hookData.cell.styles.fontStyle = 'bold'
             }
-          }
-
-          if (deskIdx === 0) {
-            hookData.cell.styles.lineWidth = 0.35
           }
         }
       },

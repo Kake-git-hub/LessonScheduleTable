@@ -3557,8 +3557,10 @@ const AdminPage = () => {
     actualResults: Record<string, ActualResult[]>
   }
 
+  const cloneAssignmentsForPdfComparison = (assignments: Record<string, Assignment[]>): Record<string, Assignment[]> => JSON.parse(JSON.stringify(assignments ?? {}))
+
   const cloneSchedulingSnapshot = (current: SessionData): SchedulingSnapshot => JSON.parse(JSON.stringify({
-    assignments: current.assignments,
+    assignments: cloneAssignmentsForPdfComparison(current.assignments),
     actualResults: current.actualResults ?? {},
   }))
 
@@ -6103,8 +6105,22 @@ const AdminPage = () => {
       assignments: {},
       actualResults: {},
       autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
+      pdfComparisonBaseline: undefined,
       settings: { ...current.settings, lastAutoAssignedAt: 0 },
     }))
+  }
+
+  const savePdfComparisonBaseline = async (): Promise<void> => {
+    const current = dataRef.current
+    if (!current) return
+    await update((session) => ({
+      ...session,
+      pdfComparisonBaseline: {
+        savedAt: Date.now(),
+        assignments: cloneAssignmentsForPdfComparison(session.assignments),
+      },
+    }))
+    alert('PDF比較基準を保存しました。以後のPDF出力では、この基準から変わったセルを赤枠で表示します。')
   }
 
   const getManualConstraintWarnings = (slot: string, assignment: Assignment, assignmentIdx: number): string[] => {
@@ -7041,6 +7057,9 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>
                 デバッグコピー
               </button>
+              <button className="btn secondary" type="button" onClick={() => void savePdfComparisonBaseline()}>
+                PDF比較基準を保存
+              </button>
               <button
                 className="btn secondary"
                 type="button"
@@ -7052,6 +7071,7 @@ service cloud.firestore {
                   deskCount: data.settings.deskCount,
                   holidays: data.settings.holidays,
                   assignments: data.assignments,
+                  baselineAssignments: data.pdfComparisonBaseline?.assignments,
                   getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
                   getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
                   getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',

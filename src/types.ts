@@ -155,6 +155,11 @@ export type SubmissionLogEntry = {
   availability?: string[]
 }
 
+export type PdfComparisonBaseline = {
+  savedAt: number
+  assignments: Record<string, Assignment[]>
+}
+
 export type SessionData = {
   settings: SessionSettings
   subjects: string[]
@@ -173,6 +178,7 @@ export type SessionData = {
   submissionLog?: SubmissionLogEntry[]
   /** Per-slot actual results (recorded after lesson is done). Key = slotKey. */
   actualResults?: Record<string, ActualResult[]>
+  pdfComparisonBaseline?: PdfComparisonBaseline
   /** Global hourly rates per tier (A/B/C/D) for salary calculation. */
   tierRates?: { A: number; B: number; C: number; D: number }
 }
