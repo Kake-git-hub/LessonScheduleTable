@@ -2,6 +2,15 @@ import type { ActualResult, Assignment, RegularLesson, SessionData } from '../ty
 import { hasAvailability } from './constraints'
 import { canTeachSubject } from './subjects'
 
+const hasTeacherAvailabilityWithRegularFallback = (data: SessionData, teacherId: string, slot: string): boolean => {
+  if (hasAvailability(data.availability, 'teacher', teacherId, slot)) return true
+  if ((data.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
+  const [date] = slot.split('_')
+  const dayOfWeek = getIsoDayOfWeek(date)
+  const slotNumber = getSlotNumber(slot)
+  return data.regularLessons.some((lesson) => lesson.teacherId === teacherId && lesson.dayOfWeek === dayOfWeek && lesson.slotNumber === slotNumber)
+}
+
 type AssignmentLike = Assignment | ActualResult
 
 export const getSlotNumber = (slotKey: string): number => {
@@ -257,7 +266,7 @@ export const collectTeacherShortages = (
         continue
       }
 
-      if (!hasAvailability(data.availability, 'teacher', teacher.id, slot)) {
+      if (!hasTeacherAvailabilityWithRegularFallback(data, teacher.id, slot)) {
         shortages.push({ slot, detail: `${teacher.name} が出席不可` })
         continue
       }

@@ -278,6 +278,17 @@ describe('collectTeacherShortages', () => {
     expect(result[0].detail).toContain('出席不可')
   })
 
+  it('does not flag regular fallback slots as unavailable before teacher submission', () => {
+    const data = makeSessionData({
+      availability: { 'teacher:t1': [] },
+      regularLessons: [{ id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 3 }],
+      teacherSubmittedAt: {},
+    })
+    const assignments = { '2026-07-21_3': [{ teacherId: 't1', studentIds: ['s1'], subject: '数' }] }
+    const result = collectTeacherShortages(data, assignments)
+    expect(result).toHaveLength(0)
+  })
+
   it('detects subject mismatch', () => {
     const data = makeSessionData()
     const assignments = { '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '理' }] }

@@ -69,6 +69,7 @@ type RemoveStudentAssignmentAction = {
   teacherId: string
   studentId: string
   subject: string
+  assignmentStudentIds?: string[]
 }
 
 type ProposalAction = ForceAssignAction | MoveTeacherShortageAction | UpdateStudentConstraintsAction | RemoveStudentAssignmentAction
@@ -132,7 +133,7 @@ const proposalActionKey = (action: ProposalAction): string => {
   if (action.type === 'update-student-constraints') {
     return `${action.type}|${action.studentId}|${action.slot}|${action.teacherId}|${action.subject}|${action.nextConstraintCards.join(',')}`
   }
-  return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}`
+  return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}`
 }
 
 const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] => {
@@ -447,6 +448,41 @@ const areSubjectSlotsEqual = (left: Record<string, number>, right: Record<string
   return keys.every((key) => (left[key] ?? 0) === (right[key] ?? 0))
 }
 
+const isRegularOccurrenceCoveredElsewhere = (
+  assignmentState: Record<string, Assignment[]>,
+  slot: string,
+  studentId: string,
+  teacherId: string,
+): boolean => {
+  const [date] = slot.split('_')
+  const dayOfWeek = getSlotDayOfWeek(slot)
+  const slotNumber = getSlotNumber(slot)
+
+  return Object.entries(assignmentState).some(([otherSlot, slotAssignments]) => {
+    if (otherSlot === slot) return false
+
+    return slotAssignments.some((assignment) => {
+      if (!assignment.studentIds.includes(studentId)) return false
+
+      const makeupInfo = assignment.regularMakeupInfo?.[studentId]
+      if (makeupInfo) {
+        const sameDate = !makeupInfo.date || makeupInfo.date === date
+        if (sameDate && makeupInfo.dayOfWeek === dayOfWeek && makeupInfo.slotNumber === slotNumber) {
+          return true
+        }
+      }
+
+      const substituteInfo = assignment.regularSubstituteInfo?.[studentId]
+      if (!substituteInfo) return false
+      const sameDate = !substituteInfo.date || substituteInfo.date === date
+      return sameDate
+        && substituteInfo.regularTeacherId === teacherId
+        && substituteInfo.dayOfWeek === dayOfWeek
+        && substituteInfo.slotNumber === slotNumber
+    })
+  })
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -756,7 +792,13 @@ const useSessionData = (classroomId: string, sessionId: string) => {
       classroomId,
       sessionId,
       (value) => {
-        setData(value)
+        setData((current) => {
+          if (!value) return value
+          if (!current) return value
+          const currentUpdatedAt = current.settings.updatedAt ?? current.settings.createdAt ?? 0
+          const nextUpdatedAt = value.settings.updatedAt ?? value.settings.createdAt ?? 0
+          return nextUpdatedAt >= currentUpdatedAt ? value : current
+        })
         setLoading(false)
       },
       (err) => {
@@ -2891,6 +2933,7 @@ const AdminPage = () => {
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const pendingProposalStatusRefreshRef = useRef(false)
+  const dataRef = useRef<SessionData | null>(null)
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
@@ -2899,6 +2942,10 @@ const AdminPage = () => {
   const masterSyncDoneRef = useRef(false)
 
   // Sync master data (regularLessons, constraints) into session on first load
+  useEffect(() => {
+    dataRef.current = data
+  }, [data])
+
   useEffect(() => {
     if (!data || masterSyncDoneRef.current) return
     masterSyncDoneRef.current = true
@@ -3089,19 +3136,6 @@ const AdminPage = () => {
   // Mendan (interview) mode: managers act as instructors instead of teachers
   const isMendan = data?.settings.sessionType === 'mendan'
   const mendanStart = data?.settings.mendanStartHour ?? 10
-  const shouldShowAutoAssignButton = useMemo(() => {
-    if (!data) return false
-    if (isMendan) return true
-
-    const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
-    if (!lastAutoAt) return true
-
-    if (data.students.some((student) => student.submittedAt > lastAutoAt)) return true
-    if (data.teachers.some((teacher) => ((data.teacherSubmittedAt ?? {})[teacher.id] ?? 0) > lastAutoAt)) return true
-
-    return false
-  }, [data, isMendan])
-
   // For mendan: compute which slot numbers actually have manager availability
   const mendanActiveSlots = useMemo(() => {
     if (!isMendan || !data) return new Set<number>()
@@ -3138,8 +3172,18 @@ const AdminPage = () => {
   const instructorLabel = isMendan ? 'マネージャー' : '講師'
 
   const persist = async (next: SessionData): Promise<void> => {
-    setData(next)
-    await saveSession(classroomId, sessionId, next)
+    const now = Date.now()
+    const stampedNext: SessionData = {
+      ...next,
+      settings: {
+        ...next.settings,
+        createdAt: next.settings.createdAt ?? now,
+        updatedAt: now,
+      },
+    }
+    dataRef.current = stampedNext
+    setData(stampedNext)
+    await saveSession(classroomId, sessionId, stampedNext)
   }
 
   const hasInstructorAvailability = (personType: PersonType, id: string, slot: string): boolean => {
@@ -3155,8 +3199,9 @@ const AdminPage = () => {
   }
 
   const update = async (updater: (current: SessionData) => SessionData): Promise<void> => {
-    if (!data) return
-    await persist(updater(data))
+    const current = dataRef.current
+    if (!current) return
+    await persist(updater(current))
   }
 
   // ── Bulk random fill (DEV) ──
@@ -3271,27 +3316,30 @@ const AdminPage = () => {
   }
 
   const updateAssignments = async (updater: (current: SessionData) => SessionData): Promise<void> => {
-    if (!data) return
-    pushUndo(data.assignments)
-    await persist(updater(data))
+    const current = dataRef.current
+    if (!current) return
+    pushUndo(current.assignments)
+    await persist(updater(current))
   }
 
   const handleUndo = async (): Promise<void> => {
-    if (undoStackRef.current.length === 0 || !data) return
+    const current = dataRef.current
+    if (undoStackRef.current.length === 0 || !current) return
     const prev = undoStackRef.current.pop()!
-    redoStackRef.current.push(JSON.parse(JSON.stringify(data.assignments)))
+    redoStackRef.current.push(JSON.parse(JSON.stringify(current.assignments)))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...data, assignments: prev })
+    await persist({ ...current, assignments: prev })
   }
 
   const handleRedo = async (): Promise<void> => {
-    if (redoStackRef.current.length === 0 || !data) return
+    const current = dataRef.current
+    if (redoStackRef.current.length === 0 || !current) return
     const next = redoStackRef.current.pop()!
-    undoStackRef.current.push(JSON.parse(JSON.stringify(data.assignments)))
+    undoStackRef.current.push(JSON.parse(JSON.stringify(current.assignments)))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...data, assignments: next })
+    await persist({ ...current, assignments: next })
   }
 
   const createSession = async (): Promise<void> => {
@@ -3394,6 +3442,7 @@ const AdminPage = () => {
         const availableStudentIds = lesson.studentIds.filter((sid) => {
           const student = data.students.find((s) => s.id === sid)
           if (!student) return false
+          if (isRegularOccurrenceCoveredElsewhere(nextAssignments, slot, sid, lesson.teacherId)) return false
           return isStudentAvailableForRegularLesson(student, slot)
         })
         const teacherAvailable = hasInstructorAvailability('teacher', lesson.teacherId, slot)
@@ -3729,6 +3778,8 @@ const AdminPage = () => {
             !assignment.isGroupLesson
             && !assignment.isRegular
             && assignment.studentIds.includes(student.studentId)
+            && !assignment.regularMakeupInfo?.[student.studentId]
+            && !assignment.regularSubstituteInfo?.[student.studentId]
             && getStudentSubject(assignment, student.studentId) === entry.subj,
           )
           .sort((left, right) => right.slot.localeCompare(left.slot, 'ja'))
@@ -3744,6 +3795,7 @@ const AdminPage = () => {
               teacherId: assignment.teacherId,
               studentId: student.studentId,
               subject: entry.subj,
+              assignmentStudentIds: [...assignment.studentIds],
             },
           }
         })
@@ -4454,7 +4506,7 @@ const AdminPage = () => {
           continue
         }
 
-        if (!hasAvailability(data.availability, 'teacher', teacher.id, slot)) {
+        if (!hasInstructorAvailability('teacher', teacher.id, slot)) {
           shortages.push({ slot, assignment, detail: `${teacher.name} が出席不可` })
           continue
         }
@@ -4821,6 +4873,7 @@ const AdminPage = () => {
       makeupEntries,
       { blockAssignmentsUntilShortagesResolved },
     )
+    const overAssignedDetailItems = buildOverAssignedDetailItems(assignmentState, overAssigned)
 
     const sections = sortStatusSections([
       {
@@ -4831,11 +4884,7 @@ const AdminPage = () => {
       {
         key: 'over' as const,
         title: '過割当',
-        items: overAssigned.map((student) => ({
-          label: student.name,
-          causes: student.remaining.filter((entry) => entry.rem < 0).map((entry) => `${entry.subj}${entry.rem}`),
-          proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
-        })),
+        items: overAssignedDetailItems,
       },
       {
         key: 'shortage' as const,
@@ -4881,6 +4930,26 @@ const AdminPage = () => {
       .map((section) => `${section.title} ${section.items.length}件`)
       .join(' / ')
   }, [currentAutoAssignBlockerCount, currentAutoAssignBlockingSections])
+
+  const shouldShowAutoAssignButton = useMemo(() => {
+    if (!data) return false
+    if (isMendan) return true
+
+    const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
+    if (!lastAutoAt) return true
+    if (currentStatusReport?.sections.some((section) => section.items.length > 0)) return true
+    if (manuallyModifiedSlots.size > 0) return true
+    if (data.students.some((student) => student.submittedAt > lastAutoAt)) return true
+    if (data.teachers.some((teacher) => ((data.teacherSubmittedAt ?? {})[teacher.id] ?? 0) > lastAutoAt)) return true
+
+    return false
+  }, [currentStatusReport, data, isMendan, manuallyModifiedSlots])
+
+  const canRunAutoAssignFromStatusModal = useMemo(() => {
+    if (!statusModal || !shouldShowAutoAssignButton || autoAssignLoading) return false
+    if (isMendan) return true
+    return currentAutoAssignBlockerCount === 0
+  }, [autoAssignLoading, currentAutoAssignBlockerCount, isMendan, shouldShowAutoAssignButton, statusModal])
 
   useEffect(() => {
     if (!data || !pendingProposalStatusRefreshRef.current) return
@@ -5087,6 +5156,7 @@ const AdminPage = () => {
         const targetIndex = slotAssignments.findIndex((assignment) =>
           !assignment.isGroupLesson
           && assignment.teacherId === proposal.teacherId
+          && (!proposal.assignmentStudentIds || sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds))
           && assignment.studentIds.includes(proposal.studentId)
           && getStudentSubject(assignment, proposal.studentId) === proposal.subject,
         )
@@ -5096,6 +5166,10 @@ const AdminPage = () => {
         }
 
         const targetAssignment = slotAssignments[targetIndex]
+        if (targetAssignment.regularMakeupInfo?.[proposal.studentId] || targetAssignment.regularSubstituteInfo?.[proposal.studentId]) {
+          errorMessage = '通常授業の補填に使っている割当は、過割当解消として外せません。'
+          return current
+        }
         const previousSignature = assignmentSignature(targetAssignment)
         if (targetAssignment.studentIds.length <= 1) {
           slotAssignments.splice(targetIndex, 1)
@@ -7305,7 +7379,19 @@ service cloud.firestore {
                     <h3>{statusModal.title}</h3>
                     <p>{statusModal.summary}</p>
                   </div>
-                  <button className="btn secondary" type="button" onClick={() => setStatusModal(null)}>閉じる</button>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {canRunAutoAssignFromStatusModal && (
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        onClick={() => void applyAutoAssign()}
+                        disabled={autoAssignLoading}
+                      >
+                        {isMendan ? 'このまま自動割当を実行' : 'このまま自動提案を実行'}
+                      </button>
+                    )}
+                    <button className="btn secondary" type="button" onClick={() => setStatusModal(null)}>閉じる</button>
+                  </div>
                 </div>
                 <div className="status-modal-body">
                   {statusModal.sections.map((section) => (
