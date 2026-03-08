@@ -2931,7 +2931,7 @@ const AdminPage = () => {
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
-  const [, setLatestStatusReport] = useState<StatusReport | null>(null)
+  const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
@@ -4900,73 +4900,6 @@ const AdminPage = () => {
     return mergeUnplacedMakeupEntries(unplacedMakeupEntries)
   }
 
-  const buildShortageOnlyReport = (
-    assignmentState: Record<string, Assignment[]>,
-    highlightSource?: Array<{ studentId: string; teacherId: string; subject: string; reason?: string; absentDate?: string }>,
-  ): StatusReport | null => {
-    if (!data) return null
-
-    const liveActual = data.actualResults ?? {}
-    const effectiveAssignments = buildEffectiveAssignments(assignmentState, liveActual)
-    const { studentsWithRemaining, currentPendingMakeupDemands, currentAvailableSlotKeys } = buildStudentsWithRemaining(
-      assignmentState,
-      effectiveAssignments,
-      liveActual,
-      highlightSource,
-    )
-
-    const missingTotal = (student: { missingBySubj: Record<string, number> }) => Object.values(student.missingBySubj).reduce((sum, count) => sum + count, 0)
-    const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
-    const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
-    const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
-    const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
-    const makeupEntries = buildUnplacedMakeupEntries(
-      assignmentState,
-      effectiveAssignments,
-      currentAvailableSlotKeys,
-      currentPendingMakeupDemands,
-      currentPendingMakeupDemands,
-    )
-    const remainingDetailItems = buildRemainingDetailItems(
-      assignmentState,
-      effectiveAssignments,
-      currentAvailableSlotKeys,
-      underAssigned,
-      currentPendingMakeupDemands,
-      makeupEntries,
-      { blockAssignmentsUntilShortagesResolved },
-    )
-    const overAssignedDetailItems = buildOverAssignedDetailItems(assignmentState, overAssigned)
-
-    const sections = sortStatusSections([
-      {
-        key: 'under' as const,
-        title: '残コマ詳細',
-        items: remainingDetailItems,
-      },
-      {
-        key: 'over' as const,
-        title: '過割当',
-        items: overAssignedDetailItems,
-      },
-      {
-        key: 'shortage' as const,
-        title: `${instructorLabel}不足`,
-        items: teacherShortages.map((item) => ({
-          label: slotLabel(item.slot, isMendan, mendanStart),
-          causes: [item.detail],
-          proposals: buildTeacherShortageProposals(effectiveAssignments, item),
-        })),
-      },
-    ].filter((section) => section.items.length > 0))
-
-    return {
-      title: '現在のコマ割り状況',
-      summary: sections.length > 0 ? '未解決項目' : '未解決項目なし',
-      sections,
-    }
-  }
-
   const buildCurrentStatusReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
     if (!data) return null
 
@@ -5061,9 +4994,15 @@ const AdminPage = () => {
     return buildCurrentStatusReport(data.assignments)
   }, [data])
 
+  useEffect(() => {
+    setLatestStatusReport(currentStatusReport)
+  }, [currentStatusReport])
+
+  const activeStatusReport = latestStatusReport ?? currentStatusReport
+
   const currentAutoAssignBlockingSections = useMemo(
-    () => getAutoAssignBlockingSections(currentStatusReport),
-    [currentStatusReport],
+    () => getAutoAssignBlockingSections(activeStatusReport),
+    [activeStatusReport],
   )
 
   const currentAutoAssignBlockerCount = useMemo(
@@ -5090,6 +5029,29 @@ const AdminPage = () => {
 
     return false
   }, [data, isMendan, manuallyModifiedSlots])
+
+  const unresolvedCount = useMemo(
+    () => activeStatusReport?.sections.reduce((sum, section) => sum + section.items.length, 0) ?? 0,
+    [activeStatusReport],
+  )
+
+  const unresolvedTooltip = useMemo(
+    () => activeStatusReport?.sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ') ?? '',
+    [activeStatusReport],
+  )
+
+  const hasTeacherShortages = useMemo(
+    () => activeStatusReport?.sections.some((section) => section.key === 'shortage' && section.items.length > 0) ?? false,
+    [activeStatusReport],
+  )
+
+  const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
+
+  const unifiedResolveButtonLabel = unresolvedCount > 0
+    ? `未解決: ${unresolvedCount}件`
+    : isMendan
+      ? '自動割当（先着順）'
+      : '自動提案'
 
   useEffect(() => {
     if (!data || !pendingProposalStatusRefreshRef.current) return
@@ -5597,7 +5559,6 @@ const AdminPage = () => {
     }
     setAutoAssignLoading(true)
     setAutoAssignProgress(0)
-    setManuallyModifiedSlots(new Set()) // Clear manual modifications on auto-assign
     // Yield to let React render the spinner
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
@@ -5651,6 +5612,7 @@ const AdminPage = () => {
         autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }))
+      setManuallyModifiedSlots(new Set())
 
       const msg = unassignedParents.length > 0
         ? `自動割当完了: ${assignedCount}/${submittedCount}名を割当しました。\n\n未割当の保護者:\n${unassignedParents.join('\n')}`
@@ -5692,21 +5654,6 @@ const AdminPage = () => {
       data.actualResults,
     )
 
-    const overAssignedStudents = data.students
-      .map((student) => {
-        const over = Object.entries(student.subjectSlots)
-          .map(([subject, desired]) => {
-            const assigned = countStudentSubjectLoad(effectiveForCounting, student.id, subject)
-            return { subject, over: assigned - desired }
-          })
-          .filter((item) => item.over > 0)
-        if (over.length === 0) return null
-        return { studentName: student.name, over }
-      })
-      .filter(Boolean) as { studentName: string; over: { subject: string; over: number }[] }[]
-
-    const shortageEntries = collectTeacherShortageItems(nextAssignments)
-
     const pendingMakeupDemands = collectPendingMakeupDemands(nextAssignments)
     const mergedUnplacedMakeupEntries = buildUnplacedMakeupEntries(
       nextAssignments,
@@ -5719,7 +5666,9 @@ const AdminPage = () => {
     // Final cleanup: remove teacher-only assignments (no valid students) that may have leaked through
     const validStudentIdSet2 = new Set(data.students.map((s) => s.id))
     for (const slot of Object.keys(nextAssignments)) {
-      nextAssignments[slot] = nextAssignments[slot].filter((a) => a.studentIds.some(sid => sid && validStudentIdSet2.has(sid)) || a.isGroupLesson)
+      nextAssignments[slot] = nextAssignments[slot]
+        .filter((a) => a.studentIds.some(sid => sid && validStudentIdSet2.has(sid)) || a.isGroupLesson)
+        .map((assignment) => normalizeAssignment(assignment))
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
@@ -5727,7 +5676,7 @@ const AdminPage = () => {
     for (const slot of recordedSlots) {
       mergedAssignments[slot] = data.assignments[slot] ?? []
     }
-    const autoAssignShortageReport = buildShortageOnlyReport(mergedAssignments, unplacedMakeup)
+    const baseAutoAssignReport = buildCurrentStatusReport(mergedAssignments)
 
     await updateAssignments((current) => {
       // Merge: auto-assign results for non-recorded slots + preserve current assignments for recorded slots
@@ -5742,38 +5691,8 @@ const AdminPage = () => {
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
+    setManuallyModifiedSlots(new Set())
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
-    const underSection = autoAssignShortageReport?.sections.find((section) => section.key === 'under') ?? { key: 'under', title: '残コマ詳細', items: [] }
-    const overSection: StatusSection = {
-      key: 'over',
-      title: '過割当',
-      items: overAssignedStudents.flatMap((item) =>
-        item.over.map((r) => {
-          const student = data.students.find((s) => s.name === item.studentName)
-          const matchedSlots = student
-            ? Object.entries(effectiveForCounting)
-                .filter(([, slotAssignments]) => slotAssignments.some((a) => a.studentIds.includes(student.id) && getStudentSubject(a, student.id) === r.subject && !a.isRegular && !a.regularMakeupInfo?.[student.id] && !a.regularSubstituteInfo?.[student.id]))
-                .map(([slot]) => slotLabel(slot, isMendan, mendanStart))
-            : []
-          return {
-            label: `${item.studentName}: ${r.subject} +${r.over}コマ`,
-            causes: [`希望コマ数より ${r.over}コマ多く割り当て済み`],
-            proposals: matchedSlots.length > 0
-              ? [toStatusProposal(`後ろのコマから調整候補: ${matchedSlots.slice(-r.over).join(', ')}`)]
-              : [toStatusProposal('自動提案を再実行するか、該当科目の割当を手動で減らしてください')],
-          }
-        }),
-      ),
-    }
-    const shortageSection: StatusSection = {
-      key: 'shortage',
-      title: `${instructorLabel}不足`,
-      items: shortageEntries.map((item) => ({
-        label: slotLabel(item.slot, isMendan, mendanStart),
-        causes: [item.detail],
-        proposals: buildTeacherShortageProposals(nextAssignments, item),
-      })),
-    }
     const overRemovedSection: StatusSection = {
       key: 'overRemoved',
       title: '過割当解除',
@@ -5786,7 +5705,7 @@ const AdminPage = () => {
     const report: StatusReport = {
       title: '自動提案結果',
       summary: changeLog.length > 0 ? `${changeLog.length}件変更` : '変更なし',
-      sections: sortStatusSections([underSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0)),
+      sections: sortStatusSections([...(baseAutoAssignReport?.sections ?? []), overRemovedSection].filter((section) => section.items.length > 0)),
     }
     setLatestStatusReport(report)
     const autoAssignBlockingSections = getAutoAssignBlockingSections(report)
@@ -6679,10 +6598,6 @@ service cloud.firestore {
                   )
                 }
 
-                const unresolvedCount = currentStatusReport?.sections.reduce((sum, section) => sum + section.items.length, 0) ?? 0
-                const unresolvedTooltip = currentStatusReport?.sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ') ?? ''
-                const hasTeacherShortages = currentStatusReport?.sections.some((section) => section.key === 'shortage' && section.items.length > 0) ?? false
-
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
                 const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
 
@@ -6690,29 +6605,25 @@ service cloud.firestore {
                   <>
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
-                    ) : unresolvedCount > 0 ? (
-                      <span
-                        className="badge warn"
-                        title={unresolvedTooltip}
-                        style={{ cursor: 'pointer', background: hasTeacherShortages ? '#fff1f2' : '#fef3c7', color: hasTeacherShortages ? '#be123c' : '#92400e', border: hasTeacherShortages ? '1px solid #fda4af' : '1px solid #fcd34d' }}
-                        onClick={() => currentStatusReport && openStatusModal(currentStatusReport, 'full')}
-                      >
-                        未解決: {unresolvedCount}件
-                      </span>
                     ) : (
                       <span className="badge ok">全員割当完了</span>
                     )}
                   </>
                 )
               })()}
-              {(shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)) && (
+              {shouldShowUnifiedResolveButton && (
                 <button
                   className="btn secondary"
                   type="button"
                   onClick={() => {
-                    if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
-                      setLatestStatusReport(currentStatusReport)
-                      openStatusModal(currentStatusReport, 'blocking')
+                    if (!isMendan && currentAutoAssignBlockerCount > 0 && activeStatusReport) {
+                      setLatestStatusReport(activeStatusReport)
+                      openStatusModal(activeStatusReport, 'blocking')
+                      return
+                    }
+                    if (unresolvedCount > 0 && !shouldShowAutoAssignButton && activeStatusReport) {
+                      setLatestStatusReport(activeStatusReport)
+                      openStatusModal(activeStatusReport, 'full')
                       return
                     }
                     void applyAutoAssign()
@@ -6720,9 +6631,14 @@ service cloud.firestore {
                   disabled={autoAssignLoading}
                   title={!isMendan && currentAutoAssignBlockerCount > 0
                     ? `先に解消: ${currentAutoAssignBlockerLabel}`
+                    : unresolvedCount > 0
+                      ? unresolvedTooltip
+                      : undefined}
+                  style={unresolvedCount > 0
+                    ? { background: hasTeacherShortages ? '#fff1f2' : '#fef3c7', color: hasTeacherShortages ? '#be123c' : '#92400e', borderColor: hasTeacherShortages ? '#fda4af' : '#fcd34d' }
                     : undefined}
                 >
-                  {isMendan ? '自動割当（先着順）' : !isMendan && currentAutoAssignBlockerCount > 0 ? '未解決を先に解消' : '自動提案'}
+                  {unifiedResolveButtonLabel}
                 </button>
               )}
               <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
