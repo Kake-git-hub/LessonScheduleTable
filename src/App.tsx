@@ -112,6 +112,13 @@ type PendingMakeupDemand = {
   makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }
 }
 
+type RegularOccurrenceRef = {
+  studentId: string
+  teacherId: string
+  subject: string
+  makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }
+}
+
 type PlacementAnalysis = {
   force: StatusProposal[]
   substitute: StatusProposal[]
@@ -158,6 +165,10 @@ const sameStudentSet = (left: string[], right: string[]): boolean => {
 }
 
 const mergeStringList = (values: string[]): string[] => [...new Set(values.filter(Boolean))]
+
+const getRegularOccurrenceKey = (ref: Pick<RegularOccurrenceRef, 'studentId' | 'subject' | 'makeupInfo'>): string => (
+  `${ref.studentId}|${ref.subject}|${ref.makeupInfo.dayOfWeek}|${ref.makeupInfo.slotNumber}|${ref.makeupInfo.date ?? ''}`
+)
 
 const sortConstraintCards = (cards: ConstraintCardType[]): ConstraintCardType[] => {
   const order = new Map(ALL_CONSTRAINT_CARDS.map((card, index) => [card, index]))
@@ -2369,8 +2380,8 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
           .map((lesson) => lesson.subject),
       )
 
-      type AbsenceEntry = { subject: string }
-      const absences: AbsenceEntry[] = []
+      type AbsenceEntry = { key: string; subject: string }
+      const absences = new Map<string, AbsenceEntry>()
       for (const slot of slotKeys) {
         if (!(slot in actualResults)) continue
         const planned = data.assignments[slot] ?? []
@@ -2403,7 +2414,38 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
           absentSubj = lesson.studentSubjects?.[student.id] ?? lesson.subject
         }
         if (groupSubjectSet.has(absentSubj)) continue
-        absences.push({ subject: absentSubj })
+
+        const occurrenceRef: RegularOccurrenceRef = (() => {
+          const makeupInfo = origAssignment?.regularMakeupInfo?.[student.id]
+          if (makeupInfo) {
+            return {
+              studentId: student.id,
+              teacherId: origAssignment.teacherId,
+              subject: absentSubj,
+              makeupInfo,
+            }
+          }
+          const substituteInfo = origAssignment?.regularSubstituteInfo?.[student.id]
+          if (substituteInfo) {
+            return {
+              studentId: student.id,
+              teacherId: substituteInfo.regularTeacherId,
+              subject: absentSubj,
+              makeupInfo: { dayOfWeek: substituteInfo.dayOfWeek, slotNumber: substituteInfo.slotNumber, date: substituteInfo.date },
+            }
+          }
+          const lesson = data.regularLessons.find((entry) =>
+            entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
+          )
+          return {
+            studentId: student.id,
+            teacherId: lesson?.teacherId ?? origAssignment?.teacherId ?? '',
+            subject: absentSubj,
+            makeupInfo: { dayOfWeek: slotDow, slotNumber: slotNum, date: slotDate },
+          }
+        })()
+        const absenceKey = getRegularOccurrenceKey(occurrenceRef)
+        if (!absences.has(absenceKey)) absences.set(absenceKey, { key: absenceKey, subject: absentSubj })
       }
 
       const makeupPlacedBySubj: Record<string, number> = {}
@@ -2421,7 +2463,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
 
       const coveredRemaining = { ...makeupPlacedBySubj }
       const missingBySubj: Record<string, number> = {}
-      for (const absence of absences) {
+      for (const absence of absences.values()) {
         if ((coveredRemaining[absence.subject] ?? 0) > 0) {
           coveredRemaining[absence.subject]--
           continue
@@ -3904,8 +3946,8 @@ const AdminPage = () => {
           })
           .filter((entry) => entry.rem !== 0)
 
-        type AbsenceEntry = { subject: string; reasons: NoMakeupReason[] }
-        const absences: AbsenceEntry[] = []
+          type AbsenceEntry = { key: string; subject: string; reasons: NoMakeupReason[] }
+          const absences = new Map<string, AbsenceEntry>()
 
         for (const slot of slotKeys) {
           if (!(slot in liveActual)) continue
@@ -3959,7 +4001,39 @@ const AdminPage = () => {
           if (teacherAvailSlots.length === 0) reasons.push('no_teacher')
           if (studentAvailSlots.length === 0) reasons.push('no_student')
           if (teacherAvailSlots.length > 0 && studentAvailSlots.length > 0 && matchedSlots.length === 0) reasons.push('no_match')
-          absences.push({ subject: absentSubj, reasons })
+          const occurrenceRef: RegularOccurrenceRef = (() => {
+            const makeupInfo = origAssignment?.regularMakeupInfo?.[student.id]
+            if (makeupInfo) {
+              return {
+                studentId: student.id,
+                teacherId: origAssignment.teacherId,
+                subject: absentSubj,
+                makeupInfo,
+              }
+            }
+            const substituteInfo = origAssignment?.regularSubstituteInfo?.[student.id]
+            if (substituteInfo) {
+              return {
+                studentId: student.id,
+                teacherId: substituteInfo.regularTeacherId,
+                subject: absentSubj,
+                makeupInfo: { dayOfWeek: substituteInfo.dayOfWeek, slotNumber: substituteInfo.slotNumber, date: substituteInfo.date },
+              }
+            }
+            return {
+              studentId: student.id,
+              teacherId: origTeacherId,
+              subject: absentSubj,
+              makeupInfo: { dayOfWeek: slotDow, slotNumber: slotNum, date: slotDate },
+            }
+          })()
+          const absenceKey = getRegularOccurrenceKey(occurrenceRef)
+          const existingAbsence = absences.get(absenceKey)
+          if (existingAbsence) {
+            existingAbsence.reasons = mergeStringList([...existingAbsence.reasons, ...reasons]) as NoMakeupReason[]
+          } else {
+            absences.set(absenceKey, { key: absenceKey, subject: absentSubj, reasons })
+          }
         }
 
         const makeupPlacedBySubj: Record<string, number> = {}
@@ -3977,7 +4051,7 @@ const AdminPage = () => {
 
         const coveredRemaining: Record<string, number> = { ...makeupPlacedBySubj }
         const uncoveredAbsences: AbsenceEntry[] = []
-        for (const absence of absences) {
+        for (const absence of absences.values()) {
           if ((coveredRemaining[absence.subject] ?? 0) > 0) {
             coveredRemaining[absence.subject]--
             continue
@@ -4155,14 +4229,7 @@ const AdminPage = () => {
         : []
       const regularMissingDemands = currentStudent
         ? getRegularMissingDemands(currentStudent, effectiveAssignments).filter((demand) =>
-            !studentMakeups.some((existing) =>
-              existing.studentId === demand.studentId
-              && existing.teacherId === demand.teacherId
-              && existing.subject === demand.subject
-              && existing.makeupInfo.dayOfWeek === demand.makeupInfo.dayOfWeek
-              && existing.makeupInfo.slotNumber === demand.makeupInfo.slotNumber
-              && (existing.absentDate ?? existing.makeupInfo.date ?? '') === (demand.absentDate ?? demand.makeupInfo.date ?? ''),
-            ),
+            !studentMakeups.some((existing) => getRegularOccurrenceKey(existing) === getRegularOccurrenceKey(demand)),
           )
         : []
       const pendingMakeupCountBySubject = studentMakeups.reduce<Record<string, number>>((acc, demand) => {
@@ -4376,8 +4443,23 @@ const AdminPage = () => {
       }
     }
 
+    const dedupedDemands = [...demands.reduce<Map<string, PendingMakeupDemand>>((acc, demand) => {
+      const key = getRegularOccurrenceKey(demand)
+      const existing = acc.get(key)
+      if (!existing) {
+        acc.set(key, { ...demand, makeupInfo: { ...demand.makeupInfo } })
+        return acc
+      }
+      const nextAbsentDate = [existing.absentDate ?? '', demand.absentDate ?? ''].sort().at(-1) || undefined
+      acc.set(key, {
+        ...existing,
+        absentDate: nextAbsentDate,
+      })
+      return acc
+    }, new Map()).values()]
+
     const effectiveAssignments = buildEffectiveAssignments(assignmentState, actualResults)
-    const pending = [...demands]
+    const pending = [...dedupedDemands]
     for (const slotAssignments of Object.values(effectiveAssignments)) {
       for (const assignment of slotAssignments) {
         const regularLikeInfos = [assignment.regularMakeupInfo ?? {}, assignment.regularSubstituteInfo ?? {}]
@@ -8720,6 +8802,10 @@ const ConfirmedCalendarView = ({
   const mendanStart = data.settings.mendanStartHour ?? 10
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
   const slotsPerDay = data.settings.slotsPerDay
+  const effectiveAssignments = useMemo(
+    () => buildEffectiveAssignments(data.assignments, data.actualResults),
+    [data.assignments, data.actualResults],
+  )
 
   // Find the person name
   const personName = useMemo(() => {
@@ -8737,7 +8823,7 @@ const ConfirmedCalendarView = ({
       const startSlot = isMendan ? 1 : 0  // Include slot 0 (午前) for non-mendan
       for (let s = startSlot; s <= slotsPerDay; s++) {
         const slotKey = `${date}_${s}`
-        const slotAssignments = data.assignments[slotKey] ?? []
+        const slotAssignments = effectiveAssignments[slotKey] ?? []
         const cells: CalendarCell[] = []
 
         if (personType === 'teacher' || personType === 'manager') {
@@ -8799,7 +8885,7 @@ const ConfirmedCalendarView = ({
       }
     }
     return result
-  }, [data, dates, slotsPerDay, personType, personId, isMendan])
+  }, [data, dates, slotsPerDay, personType, personId, isMendan, effectiveAssignments])
 
   // For mendan mode: only show slots that have any assignment across all dates
   const activeSlotNums = useMemo(() => {
@@ -8808,7 +8894,7 @@ const ConfirmedCalendarView = ({
     for (const date of dates) {
       for (let s = 1; s <= slotsPerDay; s++) {
         const slotKey = `${date}_${s}`
-        if ((data.assignments[slotKey] ?? []).length > 0) nums.add(s)
+        if ((effectiveAssignments[slotKey] ?? []).length > 0) nums.add(s)
       }
     }
     // Also include manager availability slots for mendan
@@ -8820,7 +8906,7 @@ const ConfirmedCalendarView = ({
       }
     }
     return Array.from(nums).sort((a, b) => a - b)
-  }, [data, dates, slotsPerDay, isMendan, personType, personId])
+  }, [data, dates, slotsPerDay, isMendan, personType, personId, effectiveAssignments])
 
   const slotHeader = (slotNum: number): string => {
     if (isMendan) return mendanTimeLabel(slotNum, mendanStart)
