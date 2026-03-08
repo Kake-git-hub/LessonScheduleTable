@@ -4828,6 +4828,16 @@ const AdminPage = () => {
               studentId: item.assignment.studentIds[0] ?? '',
               subject: item.assignment.subject,
               assignmentStudentIds: [...item.assignment.studentIds],
+              ...(originalTeacherId
+                ? {
+                    substituteInfo: {
+                      regularTeacherId: originalTeacherId,
+                      dayOfWeek: getIsoDayOfWeek(item.slot.split('_')[0]),
+                      slotNumber: getSlotNumber(item.slot),
+                      date: item.slot.split('_')[0],
+                    },
+                  }
+                : {}),
               ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
             },
           }
@@ -5262,11 +5272,18 @@ const AdminPage = () => {
           }
 
           const targetAssignment = slotAssignments[targetIndex]
+          const nextSubstituteInfo = proposal.substituteInfo
+            ? targetStudentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, sid) => {
+                acc[sid] = proposal.substituteInfo!
+                return acc
+              }, { ...(targetAssignment.regularSubstituteInfo ?? {}) })
+            : targetAssignment.regularSubstituteInfo
           slotAssignments[targetIndex] = {
             ...targetAssignment,
             teacherId: proposal.teacherId,
             subject: proposal.subject,
             ...(proposal.assignmentStudentSubjects ? { studentSubjects: { ...proposal.assignmentStudentSubjects } } : {}),
+            ...(nextSubstituteInfo ? { regularSubstituteInfo: nextSubstituteInfo } : {}),
             teacherUnassignedReason: undefined,
             teacherUnavailableOriginalId: undefined,
           }
