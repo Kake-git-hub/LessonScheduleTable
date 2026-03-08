@@ -4475,11 +4475,6 @@ const AdminPage = () => {
     return shortages
   }
 
-  const currentTeacherShortageCount = useMemo(() => {
-    if (!data || isMendan) return 0
-    return collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults)).length
-  }, [data, isMendan])
-
   const rankTeacherForShortage = (assignmentState: Record<string, Assignment[]>, teacherId: string, slot: string): [number, number, string] => {
     const [date] = slot.split('_')
     const targetSlotNum = getSlotNumber(slot)
@@ -4859,6 +4854,33 @@ const AdminPage = () => {
       sections,
     }
   }
+
+  const getAutoAssignBlockingSections = (report: StatusReport | null): StatusSection[] =>
+    report?.sections.filter((section) => section.key === 'shortage' || section.key === 'over') ?? []
+
+  const countStatusItems = (sections: StatusSection[]): number => sections.reduce((sum, section) => sum + section.items.length, 0)
+
+  const currentStatusReport = useMemo(() => {
+    if (!data) return null
+    return buildCurrentStatusReport(data.assignments)
+  }, [data])
+
+  const currentAutoAssignBlockingSections = useMemo(
+    () => getAutoAssignBlockingSections(currentStatusReport),
+    [currentStatusReport],
+  )
+
+  const currentAutoAssignBlockerCount = useMemo(
+    () => countStatusItems(currentAutoAssignBlockingSections),
+    [currentAutoAssignBlockingSections],
+  )
+
+  const currentAutoAssignBlockerLabel = useMemo(() => {
+    if (currentAutoAssignBlockerCount === 0) return ''
+    return currentAutoAssignBlockingSections
+      .map((section) => `${section.title} ${section.items.length}件`)
+      .join(' / ')
+  }, [currentAutoAssignBlockerCount, currentAutoAssignBlockingSections])
 
   useEffect(() => {
     if (!data || !pendingProposalStatusRefreshRef.current) return
@@ -5319,6 +5341,12 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
+    if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
+      setLatestStatusReport(currentStatusReport)
+      setStatusModal(currentStatusReport)
+      alert(`先に破綻を解消してください。\n${currentAutoAssignBlockerLabel}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
+      return
+    }
     if (!isMendan) {
       const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults))
       if (currentShortages.length > 0) {
@@ -5521,6 +5549,12 @@ const AdminPage = () => {
     }
     setLatestStatusReport(report)
     setStatusModal(report)
+    const autoAssignBlockingSections = getAutoAssignBlockingSections(report)
+    const autoAssignBlockerCount = countStatusItems(autoAssignBlockingSections)
+    if (autoAssignBlockerCount > 0) {
+      const blockerSummary = autoAssignBlockingSections.map((section) => `${section.title} ${section.items.length}件`).join(' / ')
+      alert(`自動提案を更新しました。\n${blockerSummary}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
+    }
 
     } catch (err) {
       console.error('[AutoAssign] Error:', err)
@@ -6402,206 +6436,9 @@ service cloud.firestore {
                   )
                 }
 
-                // Use live editing results for the recording slot (so badge updates in real-time during editing)
-                const liveActualResults = recordingSlot
-                  ? { ...(data.actualResults ?? {}), [recordingSlot]: editingResults.map(({ _uid: _, ...rest }) => rest) }
-                  : data.actualResults
-                const effAssignments = buildEffectiveAssignments(data.assignments, liveActualResults)
-                const liveActual = liveActualResults ?? {}
-                const recordedSlotSet = new Set(Object.keys(liveActual))
-                const studentsWithRemaining = data.students
-                  .map((student) => {
-                    const remaining = Object.entries(student.subjectSlots)
-                      .map(([subj, desired]) => {
-                        const assigned = countStudentSubjectLoad(effAssignments, student.id, subj)
-                        return { subj, rem: desired - assigned }
-                      })
-                      .filter((r) => r.rem !== 0)
-                    // Count slots where student was planned but missing from actual result (regular and makeup assignments)
-                    // Track per-subject for display, and reasons for no available makeup slot
-                    type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
-                    type AbsenceEntry = { subject: string; reasons: NoMakeupReason[] }
-                    const absences: AbsenceEntry[] = []
-                    for (const sk of slotKeys) {
-                      if (!(sk in liveActual)) continue
-                      const planned = data.assignments[sk] ?? []
-                      const wasPlanned = planned.some((a) => a.studentIds.includes(student.id))
-                      // Also check regularLessons as fallback (data.assignments may have been corrupted by previous auto-assign)
-                      const [skDate] = sk.split('_')
-                      const skDow = getIsoDayOfWeek(skDate)
-                      const skSlotNum = getSlotNumber(sk)
-                      const wasRegularLesson = data.regularLessons.some((rl) =>
-                        rl.studentIds.includes(student.id) && rl.dayOfWeek === skDow && rl.slotNumber === skSlotNum
-                      )
-                      if (!wasPlanned && !wasRegularLesson) continue
-                      const isInActual = liveActual[sk].some((r: ActualResult) => r.studentIds.includes(student.id))
-                      if (!isInActual) {
-                        // Determine assignment info (from planned or regularLessons)
-                        const origAssignment = planned.find((a) => a.studentIds.includes(student.id))
-                        const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
-                        const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
-                        const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
-                        if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
-                        // Get subject from assignment or regularLesson
-                        let absentSubj: string
-                        let origTeacherId: string
-                        if (origAssignment) {
-                          absentSubj = getStudentSubject(origAssignment, student.id)
-                          origTeacherId = origAssignment.teacherId
-                        } else {
-                          const rl = data.regularLessons.find((r) =>
-                            r.studentIds.includes(student.id) && r.dayOfWeek === skDow && r.slotNumber === skSlotNum
-                          )!
-                          absentSubj = rl.studentSubjects?.[student.id] ?? rl.subject
-                          origTeacherId = rl.teacherId
-                        }
-                        const [absentDate] = sk.split('_')
-                        // Check future slots after the absence date for makeup availability
-                        const futureCandidates = slotKeys.filter((fs) => {
-                          if (recordedSlotSet.has(fs)) return false
-                          const [fd] = fs.split('_')
-                          if (fd <= absentDate) return false
-                          if (getSlotNumber(fs) === 0) return false
-                          return true
-                        })
-                        const studentAvailSlots = futureCandidates.filter((fs) => isStudentAvailable(student, fs))
-                        const teacherAvailSlots = futureCandidates.filter((fs) => hasAvailability(data.availability, instructorPersonType, origTeacherId, fs))
-                        const bothAvailSlots = futureCandidates.filter((fs) =>
-                          isStudentAvailable(student, fs) && hasAvailability(data.availability, instructorPersonType, origTeacherId, fs)
-                        )
-                        const reasons: NoMakeupReason[] = []
-                        if (bothAvailSlots.length === 0) {
-                          if (studentAvailSlots.length === 0 && teacherAvailSlots.length === 0) {
-                            reasons.push('no_match')
-                          } else if (studentAvailSlots.length === 0) {
-                            reasons.push('no_student')
-                          } else if (teacherAvailSlots.length === 0) {
-                            reasons.push('no_teacher')
-                          } else {
-                            reasons.push('no_match')
-                          }
-                        }
-                        absences.push({ subject: absentSubj, reasons })
-                      }
-                    }
-                    // Count successful makeup placements in non-recorded slots
-                    const makeupPlacedBySubj: Record<string, number> = {}
-                    for (const sk of slotKeys) {
-                      if (recordedSlotSet.has(sk)) continue
-                      const slotAssigns = effAssignments[sk] ?? []
-                      for (const a of slotAssigns) {
-                        if (a.regularMakeupInfo?.[student.id] || a.regularSubstituteInfo?.[student.id]) {
-                          const subj = getStudentSubject(a, student.id)
-                          makeupPlacedBySubj[subj] = (makeupPlacedBySubj[subj] ?? 0) + 1
-                        }
-                      }
-                    }
-                    // Deduct placed makeups from absences (covered absences are removed)
-                    const coveredRemaining: Record<string, number> = { ...makeupPlacedBySubj }
-                    const uncoveredAbsences: AbsenceEntry[] = []
-                    for (const abs of absences) {
-                      if ((coveredRemaining[abs.subject] ?? 0) > 0) {
-                        coveredRemaining[abs.subject]--
-                        continue // This absence is covered by a makeup placement
-                      }
-                      uncoveredAbsences.push(abs)
-                    }
-                    const missingBySubj: Record<string, number> = {}
-                    const noMakeupReasons: NoMakeupReason[] = []
-                    for (const abs of uncoveredAbsences) {
-                      missingBySubj[abs.subject] = (missingBySubj[abs.subject] ?? 0) + 1
-                      noMakeupReasons.push(...abs.reasons)
-                    }
-                    const regularMissingBySubj = getRegularMissingBySubject(student, effAssignments)
-                    for (const [subj, count] of Object.entries(regularMissingBySubj)) {
-                      missingBySubj[subj] = Math.max(missingBySubj[subj] ?? 0, count)
-                    }
-                    const missingTotal = Object.values(missingBySubj).reduce((a, b) => a + b, 0)
-                    if (remaining.length === 0 && missingTotal === 0) return null
-                    return { studentId: student.id, name: student.name, remaining, missingBySubj, noMakeupReasons }
-                  })
-                  .filter(Boolean) as { studentId: string; name: string; remaining: { subj: string; rem: number }[]; missingBySubj: Record<string, number>; noMakeupReasons: ('no_student' | 'no_teacher' | 'no_match')[] }[]
-
-                const currentPendingMakeupDemands = collectPendingMakeupDemands(data.assignments, liveActual)
-                const currentAvailableSlotKeys = slotKeys.filter((s) => !recordedSlotSet.has(s))
-
-                // Merge unplacedMakeup from autoAssignHighlights into studentsWithRemaining
-                const unresolvedPendingKeys = new Set(currentPendingMakeupDemands.map((demand) => `${demand.studentId}|${demand.teacherId}|${demand.subject}|${demand.absentDate ?? ''}`))
-                const unplacedMakeupHighlights = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((item) =>
-                  unresolvedPendingKeys.has(`${item.studentId}|${item.teacherId}|${item.subject}|`)
-                  || [...unresolvedPendingKeys].some((key) => key.startsWith(`${item.studentId}|${item.teacherId}|${item.subject}|`)),
-                )
-                for (const um of unplacedMakeupHighlights) {
-                  const studentName = data.students.find((s) => s.id === um.studentId)?.name
-                  if (!studentName) continue
-                  const sameSubjectCount = unplacedMakeupHighlights.filter((entry) => entry.studentId === um.studentId && entry.subject === um.subject).length
-                  const existing = studentsWithRemaining.find((s) => s.name === studentName)
-                  if (existing) {
-                    existing.missingBySubj[um.subject] = Math.max(existing.missingBySubj[um.subject] ?? 0, sameSubjectCount)
-                  } else {
-                    studentsWithRemaining.push({ studentId: um.studentId, name: studentName, remaining: [], missingBySubj: { [um.subject]: sameSubjectCount }, noMakeupReasons: [] })
-                  }
-                }
-
-                const missingTotal = (s: { missingBySubj: Record<string, number> }) => Object.values(s.missingBySubj).reduce((a, b) => a + b, 0)
-                const underAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem > 0) || missingTotal(s) > 0)
-                const overAssigned = studentsWithRemaining.filter((s) => s.remaining.some((r) => r.rem < 0))
-                const teacherShortages = collectTeacherShortageItems(effAssignments)
-                const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
-                const makeupEntries = buildUnplacedMakeupEntries(
-                  data.assignments,
-                  effAssignments,
-                  currentAvailableSlotKeys,
-                  currentPendingMakeupDemands,
-                  currentPendingMakeupDemands,
-                )
-                const remainingDetailItems = buildRemainingDetailItems(
-                  data.assignments,
-                  effAssignments,
-                  currentAvailableSlotKeys,
-                  underAssigned,
-                  currentPendingMakeupDemands,
-                  makeupEntries,
-                  { blockAssignmentsUntilShortagesResolved },
-                )
-
-                const currentSections = sortStatusSections([
-                  {
-                    key: 'under' as const,
-                    title: '残コマ詳細',
-                    items: remainingDetailItems,
-                  },
-                  {
-                    key: 'over' as const,
-                    title: '過割当',
-                    items: overAssigned.map((s) => ({
-                      label: s.name,
-                      causes: s.remaining.filter((r) => r.rem < 0).map((r) => `${r.subj}${r.rem}`),
-                      proposals: [toStatusProposal(STATUS_ADJUST_OVER)],
-                    })),
-                  },
-                  {
-                    key: 'shortage' as const,
-                    title: `${instructorLabel}不足`,
-                    items: teacherShortages.map((item) => ({
-                      label: slotLabel(item.slot, isMendan, mendanStart),
-                      causes: [item.detail],
-                      proposals: buildTeacherShortageProposals(effAssignments, item),
-                    })),
-                  },
-                ].filter((section) => section.items.length > 0))
-                const currentStatusReport: StatusReport = {
-                  title: '現在のコマ割り状況',
-                  summary: '未解決項目',
-                  sections: currentSections,
-                }
-
-                const unresolvedCount = teacherShortages.length + underAssigned.length + overAssigned.length
-                const unresolvedTooltip = [
-                  teacherShortages.length > 0 ? `${instructorLabel}不足 ${teacherShortages.length}件` : '',
-                  underAssigned.length > 0 ? `残コマ ${underAssigned.length}名` : '',
-                  overAssigned.length > 0 ? `過割当 ${overAssigned.length}名` : '',
-                ].filter(Boolean).join(' / ')
+                const unresolvedCount = currentStatusReport?.sections.reduce((sum, section) => sum + section.items.length, 0) ?? 0
+                const unresolvedTooltip = currentStatusReport?.sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ') ?? ''
+                const hasTeacherShortages = currentStatusReport?.sections.some((section) => section.key === 'shortage' && section.items.length > 0) ?? false
 
                 const hasAnyAssignment = Object.keys(data.assignments).length > 0
                 const hasAnyDesired = data.students.some((s) => Object.values(s.subjectSlots).some((v) => v > 0))
@@ -6614,8 +6451,8 @@ service cloud.firestore {
                       <span
                         className="badge warn"
                         title={unresolvedTooltip}
-                        style={{ cursor: 'pointer', background: teacherShortages.length > 0 ? '#fff1f2' : '#fef3c7', color: teacherShortages.length > 0 ? '#be123c' : '#92400e', border: teacherShortages.length > 0 ? '1px solid #fda4af' : '1px solid #fcd34d' }}
-                        onClick={() => setStatusModal(currentStatusReport)}
+                        style={{ cursor: 'pointer', background: hasTeacherShortages ? '#fff1f2' : '#fef3c7', color: hasTeacherShortages ? '#be123c' : '#92400e', border: hasTeacherShortages ? '1px solid #fda4af' : '1px solid #fcd34d' }}
+                        onClick={() => currentStatusReport && setStatusModal(currentStatusReport)}
                       >
                         未解決: {unresolvedCount}件
                       </span>
@@ -6625,9 +6462,24 @@ service cloud.firestore {
                   </>
                 )
               })()}
-              {shouldShowAutoAssignButton && (
-                <button className="btn secondary" type="button" onClick={() => void applyAutoAssign()} disabled={autoAssignLoading || (!isMendan && currentTeacherShortageCount > 0)} title={!isMendan && currentTeacherShortageCount > 0 ? `先に${instructorLabel}不足 ${currentTeacherShortageCount}件を解消してください` : undefined}>
-                  {isMendan ? '自動割当（先着順）' : '自動提案'}
+              {(shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)) && (
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={() => {
+                    if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
+                      setLatestStatusReport(currentStatusReport)
+                      setStatusModal(currentStatusReport)
+                      return
+                    }
+                    void applyAutoAssign()
+                  }}
+                  disabled={autoAssignLoading}
+                  title={!isMendan && currentAutoAssignBlockerCount > 0
+                    ? `先に解消: ${currentAutoAssignBlockerLabel}`
+                    : undefined}
+                >
+                  {isMendan ? '自動割当（先着順）' : !isMendan && currentAutoAssignBlockerCount > 0 ? '未解決を先に解消' : '自動提案'}
                 </button>
               )}
               {latestStatusReport && !autoAssignLoading && (

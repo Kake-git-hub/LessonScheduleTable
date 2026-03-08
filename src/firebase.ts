@@ -42,6 +42,21 @@ const classroomSessionsCol = (classroomId: string) => collection(db, 'classrooms
 const classroomSessionRef = (classroomId: string, sessionId: string) => doc(db, 'classrooms', classroomId, 'sessions', sessionId)
 const classroomMasterRef = (classroomId: string) => doc(db, 'classrooms', classroomId, 'master', 'default')
 
+const stripUndefinedDeep = <T,>(value: T): T => {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => item !== undefined)
+      .map((item) => stripUndefinedDeep(item)) as T
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => [key, stripUndefinedDeep(entryValue)])
+    return Object.fromEntries(entries) as T
+  }
+  return value
+}
+
 // ---------- Anonymous Auth ----------
 
 let authReady: Promise<User | null> | null = null
@@ -243,10 +258,10 @@ export const listSessionItems = async (classroomId: string): Promise<SessionList
 export const saveSession = async (classroomId: string, sessionId: string, data: SessionData): Promise<void> => {
   const now = Date.now()
   const createdAt = data.settings.createdAt ?? now
-  const next: SessionData = {
+  const next: SessionData = stripUndefinedDeep({
     ...data,
     settings: { ...data.settings, createdAt, updatedAt: now },
-  }
+  })
   await setDoc(classroomSessionRef(classroomId, sessionId), next)
 }
 
@@ -284,7 +299,7 @@ export const loadMasterData = async (classroomId: string): Promise<MasterData | 
 }
 
 export const saveMasterData = async (classroomId: string, data: MasterData): Promise<void> => {
-  await setDoc(classroomMasterRef(classroomId), data)
+  await setDoc(classroomMasterRef(classroomId), stripUndefinedDeep(data))
 }
 
 /** Load all session IDs for a classroom (one-shot). */

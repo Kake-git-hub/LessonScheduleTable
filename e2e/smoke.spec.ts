@@ -31,6 +31,5 @@ test('version badge is displayed', async ({ page }) => {
     return !document.body.textContent?.includes('接続中...')
   }, { timeout: 15000 }).catch(() => {})
 
-  // App version should be shown somewhere
-  await expect(page.locator('body')).toContainText('1.0.0', { timeout: 10000 })
+  await expect(page.locator('body')).toContainText(/1\.3\./, { timeout: 10000 })
 })
