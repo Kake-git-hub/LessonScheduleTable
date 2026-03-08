@@ -2930,6 +2930,7 @@ const AdminPage = () => {
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
+  const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const pendingProposalStatusRefreshRef = useRef(false)
@@ -4041,6 +4042,74 @@ const AdminPage = () => {
     }, {})
   }
 
+  const getRegularMissingDemands = (
+    student: Student,
+    effectiveAssignments: Record<string, Assignment[]>,
+  ): PendingMakeupDemand[] => {
+    if (!data) return []
+
+    const groupSubjectSet = getGroupSubjectSetForStudent(student.id)
+    const occurrences: Array<{ date: string; slot: string; dayOfWeek: number; slotNumber: number; subject: string; teacherId: string }> = []
+
+    for (const date of getDatesInRange(data.settings)) {
+      const dayOfWeek = getIsoDayOfWeek(date)
+      for (const lesson of data.regularLessons) {
+        if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(student.id)) continue
+        const subject = lesson.studentSubjects?.[student.id] ?? lesson.subject
+        if (groupSubjectSet.has(subject)) continue
+        occurrences.push({
+          date,
+          slot: `${date}_${lesson.slotNumber}`,
+          dayOfWeek,
+          slotNumber: lesson.slotNumber,
+          subject,
+          teacherId: lesson.teacherId,
+        })
+      }
+    }
+
+    const regularLikeAssignments = Object.entries(effectiveAssignments).flatMap(([slot, slotAssignments]) =>
+      slotAssignments
+        .filter((assignment) => assignment.studentIds.includes(student.id) && !assignment.isGroupLesson && !!assignment.teacherId)
+        .map((assignment) => ({ slot, assignment, subject: getStudentSubject(assignment, student.id), used: false })),
+    )
+
+    const demands: PendingMakeupDemand[] = []
+    for (const occurrence of occurrences) {
+      const matchIndex = regularLikeAssignments.findIndex((entry) => {
+        if (entry.used || entry.subject !== occurrence.subject) return false
+        if (entry.assignment.isRegular && entry.slot === occurrence.slot) return true
+
+        const makeupInfo = entry.assignment.regularMakeupInfo?.[student.id]
+        if (makeupInfo && makeupInfo.dayOfWeek === occurrence.dayOfWeek && makeupInfo.slotNumber === occurrence.slotNumber) {
+          return !makeupInfo.date || makeupInfo.date === occurrence.date
+        }
+
+        const substituteInfo = entry.assignment.regularSubstituteInfo?.[student.id]
+        if (substituteInfo && substituteInfo.dayOfWeek === occurrence.dayOfWeek && substituteInfo.slotNumber === occurrence.slotNumber) {
+          return !substituteInfo.date || substituteInfo.date === occurrence.date
+        }
+
+        return false
+      })
+
+      if (matchIndex >= 0) {
+        regularLikeAssignments[matchIndex].used = true
+        continue
+      }
+
+      demands.push({
+        studentId: student.id,
+        teacherId: occurrence.teacherId,
+        subject: occurrence.subject,
+        absentDate: occurrence.date,
+        makeupInfo: { dayOfWeek: occurrence.dayOfWeek, slotNumber: occurrence.slotNumber, date: occurrence.date },
+      })
+    }
+
+    return demands
+  }
+
   const summarizeMakeupCauses = (causes: string[]): string => {
     const tags: string[] = []
     const add = (tag: string) => {
@@ -4084,6 +4153,18 @@ const AdminPage = () => {
       const studentMakeups = currentStudent
         ? pendingMakeupDemands.filter((demand) => demand.studentId === currentStudent.id)
         : []
+      const regularMissingDemands = currentStudent
+        ? getRegularMissingDemands(currentStudent, effectiveAssignments).filter((demand) =>
+            !studentMakeups.some((existing) =>
+              existing.studentId === demand.studentId
+              && existing.teacherId === demand.teacherId
+              && existing.subject === demand.subject
+              && existing.makeupInfo.dayOfWeek === demand.makeupInfo.dayOfWeek
+              && existing.makeupInfo.slotNumber === demand.makeupInfo.slotNumber
+              && (existing.absentDate ?? existing.makeupInfo.date ?? '') === (demand.absentDate ?? demand.makeupInfo.date ?? ''),
+            ),
+          )
+        : []
       const pendingMakeupCountBySubject = studentMakeups.reduce<Record<string, number>>((acc, demand) => {
         acc[demand.subject] = (acc[demand.subject] ?? 0) + 1
         return acc
@@ -4101,15 +4182,46 @@ const AdminPage = () => {
       if (blockAssignmentsUntilShortagesResolved) {
         proposalPool.push(toStatusProposal(STATUS_RESOLVE_SHORTAGE_FIRST))
       } else if (currentStudent) {
-        for (const [subject] of missingEntries) {
+        for (const [subject, count] of missingEntries) {
+          const subjectDemands = regularMissingDemands.filter((demand) => demand.subject === subject)
+          let handled = 0
+
+          for (const demand of subjectDemands.slice(0, count)) {
+            const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
+            if (!teacher) continue
+            handled += 1
+            const analysis = analyzePlacementOptions(
+              assignmentState,
+              effectiveAssignments,
+              availableSlotKeys,
+              currentStudent,
+              subject,
+              [teacher],
+              {
+                slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
+                makeupDemand: demand,
+              },
+            )
+            proposalPool.push(
+              ...analysis.force,
+              ...analysis.substitute,
+              ...analysis.teacher,
+              ...analysis.student,
+              ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+                ? buildSpecificBlockerProposals(analysis.blockers)
+                : []),
+            )
+          }
+
+          if (handled >= count) continue
+
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, subject)
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
             ...analysis.teacher,
             ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
@@ -4119,10 +4231,9 @@ const AdminPage = () => {
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
             ...analysis.teacher,
             ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
@@ -4145,10 +4256,9 @@ const AdminPage = () => {
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
             ...analysis.teacher,
             ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.cards.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
@@ -4758,7 +4868,6 @@ const AdminPage = () => {
         ...analysis.substitute,
         ...analysis.teacher,
         ...analysis.student,
-        ...(analysis.force.length === 0 && analysis.substitute.length === 0 ? analysis.cards : []),
       ])
       const causes = [`${makeupReasonLabel}: ${reason}`, ...analysis.blockers]
       if (proposals.length > 0) {
@@ -4909,6 +5018,27 @@ const AdminPage = () => {
 
   const countStatusItems = (sections: StatusSection[]): number => sections.reduce((sum, section) => sum + section.items.length, 0)
 
+  const buildBlockingStatusReport = (report: StatusReport | null): StatusReport | null => {
+    const sections = getAutoAssignBlockingSections(report)
+    if (sections.length === 0) return null
+    return {
+      title: '破綻修正',
+      summary: sections.map((section) => `${section.title} ${section.items.length}件`).join(' / '),
+      sections,
+    }
+  }
+
+  const openStatusModal = (report: StatusReport | null, mode: 'full' | 'blocking' = 'full'): void => {
+    const nextReport = mode === 'blocking' ? buildBlockingStatusReport(report) : report
+    setStatusModal(nextReport)
+    setStatusModalMode(nextReport ? mode : null)
+  }
+
+  const closeStatusModal = (): void => {
+    setStatusModal(null)
+    setStatusModalMode(null)
+  }
+
   const currentStatusReport = useMemo(() => {
     if (!data) return null
     return buildCurrentStatusReport(data.assignments)
@@ -4945,21 +5075,24 @@ const AdminPage = () => {
     return false
   }, [currentStatusReport, data, isMendan, manuallyModifiedSlots])
 
-  const canRunAutoAssignFromStatusModal = useMemo(() => {
-    if (!statusModal || !shouldShowAutoAssignButton || autoAssignLoading) return false
-    if (isMendan) return true
-    return currentAutoAssignBlockerCount === 0
-  }, [autoAssignLoading, currentAutoAssignBlockerCount, isMendan, shouldShowAutoAssignButton, statusModal])
-
   useEffect(() => {
     if (!data || !pendingProposalStatusRefreshRef.current) return
     pendingProposalStatusRefreshRef.current = false
     const refreshedReport = buildCurrentStatusReport(data.assignments)
     if (refreshedReport) {
-      setStatusModal(refreshedReport)
       setLatestStatusReport(refreshedReport)
+      if (statusModalMode === 'blocking') {
+        const blockingReport = buildBlockingStatusReport(refreshedReport)
+        if (blockingReport) {
+          openStatusModal(refreshedReport, 'blocking')
+        } else {
+          closeStatusModal()
+        }
+      } else {
+        openStatusModal(refreshedReport, 'full')
+      }
     }
-  }, [data])
+  }, [data, statusModalMode])
 
   const applyProposalAction = async (proposal: ProposalAction): Promise<void> => {
     if (!data) return
@@ -5002,8 +5135,17 @@ const AdminPage = () => {
       }
       if (success) {
         if (nextStatusReport) {
-          setStatusModal(nextStatusReport)
           setLatestStatusReport(nextStatusReport)
+          if (statusModalMode === 'blocking') {
+            const blockingReport = buildBlockingStatusReport(nextStatusReport)
+            if (blockingReport) {
+              openStatusModal(nextStatusReport, 'blocking')
+            } else {
+              closeStatusModal()
+            }
+          } else {
+            openStatusModal(nextStatusReport, 'full')
+          }
         }
         alert(`制約カード変更を実行しました。\n${studentName} / ${proposal.changeLabel}`)
       }
@@ -5400,8 +5542,17 @@ const AdminPage = () => {
     }
     if (success) {
       if (nextStatusReport) {
-        setStatusModal(nextStatusReport)
         setLatestStatusReport(nextStatusReport)
+        if (statusModalMode === 'blocking') {
+          const blockingReport = buildBlockingStatusReport(nextStatusReport)
+          if (blockingReport) {
+            openStatusModal(nextStatusReport, 'blocking')
+          } else {
+            closeStatusModal()
+          }
+        } else {
+          openStatusModal(nextStatusReport, 'full')
+        }
       }
       if (proposal.type === 'force-assign') {
         alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
@@ -5417,7 +5568,7 @@ const AdminPage = () => {
     if (!data) return
     if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
       setLatestStatusReport(currentStatusReport)
-      setStatusModal(currentStatusReport)
+      openStatusModal(currentStatusReport, 'blocking')
       alert(`先に破綻を解消してください。\n${currentAutoAssignBlockerLabel}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
       return
     }
@@ -5622,12 +5773,14 @@ const AdminPage = () => {
       sections: sortStatusSections([underSection, overSection, shortageSection, overRemovedSection].filter((section) => section.items.length > 0)),
     }
     setLatestStatusReport(report)
-    setStatusModal(report)
     const autoAssignBlockingSections = getAutoAssignBlockingSections(report)
     const autoAssignBlockerCount = countStatusItems(autoAssignBlockingSections)
     if (autoAssignBlockerCount > 0) {
+      openStatusModal(report, 'blocking')
       const blockerSummary = autoAssignBlockingSections.map((section) => `${section.title} ${section.items.length}件`).join(' / ')
       alert(`自動提案を更新しました。\n${blockerSummary}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
+    } else {
+      closeStatusModal()
     }
 
     } catch (err) {
@@ -6526,7 +6679,7 @@ service cloud.firestore {
                         className="badge warn"
                         title={unresolvedTooltip}
                         style={{ cursor: 'pointer', background: hasTeacherShortages ? '#fff1f2' : '#fef3c7', color: hasTeacherShortages ? '#be123c' : '#92400e', border: hasTeacherShortages ? '1px solid #fda4af' : '1px solid #fcd34d' }}
-                        onClick={() => currentStatusReport && setStatusModal(currentStatusReport)}
+                        onClick={() => currentStatusReport && openStatusModal(currentStatusReport, 'full')}
                       >
                         未解決: {unresolvedCount}件
                       </span>
@@ -6543,7 +6696,7 @@ service cloud.firestore {
                   onClick={() => {
                     if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
                       setLatestStatusReport(currentStatusReport)
-                      setStatusModal(currentStatusReport)
+                      openStatusModal(currentStatusReport, 'blocking')
                       return
                     }
                     void applyAutoAssign()
@@ -6557,7 +6710,7 @@ service cloud.firestore {
                 </button>
               )}
               {latestStatusReport && !autoAssignLoading && (
-                <button className="btn secondary" type="button" onClick={() => setStatusModal(latestStatusReport)}>
+                <button className="btn secondary" type="button" onClick={() => openStatusModal(latestStatusReport, 'full')}>
                   結果詳細
                 </button>
               )}
@@ -6570,28 +6723,29 @@ service cloud.firestore {
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
               </button>
-              <button className="btn" type="button" onClick={() => {
-                if (!data) return
-                void exportSchedulePdf({
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => void exportSchedulePdf({
                   sessionName: data.settings.name,
                   startDate: data.settings.startDate,
                   endDate: data.settings.endDate,
                   slotsPerDay: data.settings.slotsPerDay,
                   holidays: data.settings.holidays,
                   assignments: data.assignments,
-                  getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? '',
-                  getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? '',
+                  getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
+                  getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
                   getStudentSubject,
                   getIsoDayOfWeek,
-                })
-              }}>
+                })}
+              >
                 PDF出力
               </button>
-              <button className={`btn${showAnalytics ? '' : ' secondary'}`} type="button" onClick={() => setShowAnalytics((v) => !v)}>
-                📊 データ分析
+              <button className="btn secondary" type="button" onClick={() => setShowAnalytics((prev) => !prev)}>
+                {showAnalytics ? '分析を閉じる' : '分析を表示'}
               </button>
-              <button className={`btn${showRules ? '' : ' secondary'}`} type="button" onClick={() => setShowRules((v) => !v)}>
-                📖 ルール説明
+              <button className="btn secondary" type="button" onClick={() => setShowRules((prev) => !prev)}>
+                {showRules ? '📕 ルール説明を閉じる' : '📖 ルール説明'}
               </button>
               <button
                 className={`btn${data.settings.confirmed ? '' : ' secondary'}`}
@@ -7372,26 +7526,14 @@ service cloud.firestore {
             </div>{/* close loading overlay wrapper */}
           </div>
           {statusModal && (
-            <div className="status-modal-backdrop" onClick={() => setStatusModal(null)}>
+            <div className="status-modal-backdrop" onClick={() => closeStatusModal()}>
               <div className="status-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="status-modal-header">
                   <div>
                     <h3>{statusModal.title}</h3>
                     <p>{statusModal.summary}</p>
                   </div>
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    {canRunAutoAssignFromStatusModal && (
-                      <button
-                        className="btn secondary"
-                        type="button"
-                        onClick={() => void applyAutoAssign()}
-                        disabled={autoAssignLoading}
-                      >
-                        {isMendan ? 'このまま自動割当を実行' : 'このまま自動提案を実行'}
-                      </button>
-                    )}
-                    <button className="btn secondary" type="button" onClick={() => setStatusModal(null)}>閉じる</button>
-                  </div>
+                  <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
                 </div>
                 <div className="status-modal-body">
                   {statusModal.sections.map((section) => (

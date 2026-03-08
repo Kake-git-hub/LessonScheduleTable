@@ -60,6 +60,12 @@ test.describe('Live guided resolution flow', () => {
         expect(actionResult.acted).toBeTruthy()
         await page.waitForTimeout(1200)
 
+        const modalVisible = await page.locator('.status-modal-backdrop').isVisible().catch(() => false)
+        if (!modalVisible) {
+          log(`blockerStepClosed:${step}`)
+          continue
+        }
+
         const refreshedSections = await readStatusSections(page)
         log(`blockerStepRefreshed:${step}`, refreshedSections)
         const shortageCount = getSectionItemCount(refreshedSections, '講師不足')
@@ -133,7 +139,11 @@ async function openAdminPage(page: Page, classroomId: string, sessionId: string)
   }
 
   await expect(page.locator('body')).not.toContainText('空の特別講習を作成', { timeout: 10000 })
-  await expect(page.getByRole('button', { name: '自動提案' })).toBeVisible({ timeout: 30000 })
+  await expect.poll(async () => {
+    if (await page.getByRole('button', { name: '自動提案' }).isVisible().catch(() => false)) return 'auto'
+    if (await page.getByRole('button', { name: '未解決を先に解消' }).isVisible().catch(() => false)) return 'resolve'
+    return ''
+  }, { timeout: 30000 }).not.toBe('')
 }
 
 async function ensureStatusModalOpen(page: Page): Promise<void> {
