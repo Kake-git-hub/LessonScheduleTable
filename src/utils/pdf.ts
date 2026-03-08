@@ -58,26 +58,88 @@ export type SchedulePdfParams = {
   startDate: string
   endDate: string
   slotsPerDay: number
+  deskCount?: number
   holidays: string[]
   assignments: Record<string, Assignment[]>
   getTeacherName: (id: string) => string
   getStudentName: (id: string) => string
+  getStudentGrade: (id: string) => string
   getStudentSubject: (a: Assignment, studentId: string) => string
   getIsoDayOfWeek: (date: string) => number
 }
 
+type StudentPdfCell = {
+  text: string
+  fillColor?: [number, number, number]
+  textColor?: [number, number, number]
+}
+
+type DeskPdfCell = {
+  teacher: string
+  student1: StudentPdfCell
+  student2: StudentPdfCell
+}
+
 export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void> {
   const {
-    sessionName, startDate, endDate, slotsPerDay, holidays,
-    assignments, getTeacherName, getStudentName, getStudentSubject, getIsoDayOfWeek
+    sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
+    assignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, getIsoDayOfWeek,
   } = params
 
   if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
 
   const holidaySet = new Set(holidays)
   const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+  const effectiveDeskCount = deskCount && deskCount > 0
+    ? deskCount
+    : Math.max(1, ...Object.values(assignments).map((slotAssignments) => Math.max(1, slotAssignments.length)))
+  const startHour = 13
+  const startMinute = 0
+  const slotIntervalMinutes = 100
+  const colorNormal = { fill: [59, 130, 246] as [number, number, number], text: [255, 255, 255] as [number, number, number] }
+  const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: [66, 32, 6] as [number, number, number] }
+  const colorSubstitute = { fill: [220, 38, 38] as [number, number, number], text: [255, 255, 255] as [number, number, number] }
 
-  // Build all dates
+  const formatSlotTimeLabel = (slotNumber: number): string => {
+    const totalMinutes = startHour * 60 + startMinute + (slotNumber - 1) * slotIntervalMinutes
+    const hour = Math.floor(totalMinutes / 60)
+    const minute = totalMinutes % 60
+    return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+  }
+
+  const buildStudentPdfCell = (assignment: Assignment | undefined, studentId: string | undefined): StudentPdfCell => {
+    if (!assignment || !studentId) return { text: '' }
+
+    const studentName = getStudentName(studentId)
+    const studentGrade = getStudentGrade(studentId)
+    const studentSubject = getStudentSubject(assignment, studentId)
+    const text = `${studentName}\n${studentGrade}${studentSubject}`
+
+    if (assignment.regularSubstituteInfo?.[studentId]) {
+      return { text, fillColor: colorSubstitute.fill, textColor: colorSubstitute.text }
+    }
+    if (assignment.regularMakeupInfo?.[studentId]) {
+      return { text, fillColor: colorMakeup.fill, textColor: colorMakeup.text }
+    }
+    if (assignment.isRegular) {
+      return { text, fillColor: colorNormal.fill, textColor: colorNormal.text }
+    }
+    return { text }
+  }
+
+  const buildDeskPdfCell = (date: string, slotNumber: number, deskIndex: number, lectureDateSet: Set<string>): DeskPdfCell => {
+    if (!lectureDateSet.has(date) || holidaySet.has(date)) {
+      return { teacher: '', student1: { text: '' }, student2: { text: '' } }
+    }
+
+    const assignment = assignments[`${date}_${slotNumber}`]?.[deskIndex]
+    return {
+      teacher: assignment?.teacherId ? getTeacherName(assignment.teacherId) : '',
+      student1: buildStudentPdfCell(assignment, assignment?.studentIds[0]),
+      student2: buildStudentPdfCell(assignment, assignment?.studentIds[1]),
+    }
+  }
+
   const allDates: string[] = []
   const start = new Date(`${startDate}T00:00:00`)
   const end = new Date(`${endDate}T00:00:00`)
@@ -89,7 +151,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   }
   if (allDates.length === 0) { alert('期間に日付がありません。'); return }
 
-  // Group dates into weeks (Mon–Sun)
   const weeks: string[][] = []
   let currentWeek: string[] = []
   for (const date of allDates) {
@@ -102,7 +163,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   }
   if (currentWeek.length > 0) weeks.push(currentWeek)
 
-  // Create PDF - A3 portrait
   let doc: jsPDF
   try {
     doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' })
@@ -112,15 +172,13 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     return
   }
 
-  const dowOrder = [1, 2, 3, 4, 5, 6, 0] // Mon-Sun
+  const dowOrder = [1, 2, 3, 4, 5, 6, 0]
 
   for (let wi = 0; wi < weeks.length; wi++) {
     if (wi > 0) doc.addPage('a3', 'portrait')
 
     const weekDates = weeks[wi]
     const firstDate = weekDates[0]
-
-    // Pad to full Mon–Sun week with actual calendar dates
     const fullWeek: string[] = []
     const firstDow = getIsoDayOfWeek(firstDate)
     const startPad = firstDow === 0 ? 6 : firstDow - 1
@@ -129,7 +187,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       const d = new Date(firstMs - p * 86400000)
       fullWeek.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
     }
-    for (const d of weekDates) fullWeek.push(d)
+    for (const date of weekDates) fullWeek.push(date)
     const lastDateMs = new Date(`${weekDates[weekDates.length - 1]}T00:00:00`).getTime()
     let tailIdx = 1
     while (fullWeek.length < 7) {
@@ -137,92 +195,57 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       fullWeek.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)
       tailIdx++
     }
-    // Track which dates are within the lecture period
     const lectureDateSet = new Set(weekDates)
 
-    // Build cell data for each slot
-    const getCellParts = (slotKey: string): { teacher: string; student1: string; student2: string }[] => {
-      const slotAssignments = assignments[slotKey] ?? []
-      if (slotAssignments.length === 0) return []
-      return slotAssignments.map((a) => {
-        const teacher = getTeacherName(a.teacherId)
-        const students = a.studentIds.map((sid) => {
-          const name = getStudentName(sid)
-          const subj = getStudentSubject(a, sid)
-          return `${name}(${subj})`
-        })
-        return { teacher, student1: students[0] ?? '', student2: students[1] ?? '' }
-      })
-    }
-
-    // Title
     const [, fm, fd] = firstDate.split('-')
     const lastDate = weekDates[weekDates.length - 1]
     const [, lm, ld] = lastDate.split('-')
     doc.setFontSize(14)
     doc.text(`${sessionName}  ${Number(fm)}/${Number(fd)} - ${Number(lm)}/${Number(ld)}`, 10, 12)
 
-    // Build header: 2 rows
-    // Row 1: empty | date spans (each spanning 3 cols: 講師, 生徒, 生徒)
-    // Row 2: empty | 講師, 生徒, 生徒 × 7
     const headerRow1: string[] = ['']
     const headerRow2: string[] = ['']
     for (let i = 0; i < 7; i++) {
       const date = fullWeek[i]
       const [, mm, dd] = date.split('-')
-      headerRow1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`, '', '')
-      headerRow2.push('講師', '生徒', '生徒')
+      headerRow1.push(`${Number(mm)}/${Number(dd)}(${dayNames[dowOrder[i]]})`, '', '', '')
+      headerRow2.push('机番', '担当講師', '生徒', '生徒')
     }
 
-    // Build data rows - track which slot each row belongs to for alternating colors
     const bodyRows: string[][] = []
-    const rowSlotNum: number[] = [] // track slot number per row for coloring
-    for (let s = 1; s <= slotsPerDay; s++) {
-      // Find max number of assignment pairs across all days for this slot
-      let maxPairs = 1
-      for (let i = 0; i < 7; i++) {
-        const date = fullWeek[i]
-        if (date && !holidaySet.has(date) && lectureDateSet.has(date)) {
-          const parts = getCellParts(`${date}_${s}`)
-          if (parts.length > maxPairs) maxPairs = parts.length
-        }
-      }
-
-      for (let pairIdx = 0; pairIdx < maxPairs; pairIdx++) {
-        const row: string[] = [pairIdx === 0 ? `${s}限` : '']
-        for (let i = 0; i < 7; i++) {
-          const date = fullWeek[i]
-          if (!lectureDateSet.has(date)) {
-            // Outside lecture period — show empty
-            row.push('', '', '')
-          } else if (holidaySet.has(date)) {
-            row.push(pairIdx === 0 ? '休' : '', '', '')
-          } else {
-            const parts = getCellParts(`${date}_${s}`)
-            const pair = parts[pairIdx]
-            if (pair) {
-              row.push(pair.teacher, pair.student1, pair.student2)
-            } else {
-              row.push('', '', '')
-            }
-          }
+    const rowSlotNum: number[] = []
+    const rowDeskIdx: number[] = []
+    for (let slotNumber = 1; slotNumber <= slotsPerDay; slotNumber++) {
+      for (let deskIdx = 0; deskIdx < effectiveDeskCount; deskIdx++) {
+        const row: string[] = [deskIdx === 0 ? formatSlotTimeLabel(slotNumber) : '']
+        for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+          const date = fullWeek[dayIdx]
+          const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet)
+          row.push(String(deskIdx + 1), deskCell.teacher, deskCell.student1.text, deskCell.student2.text)
         }
         bodyRows.push(row)
-        rowSlotNum.push(s)
+        rowSlotNum.push(slotNumber)
+        rowDeskIdx.push(deskIdx)
       }
     }
 
-    // Use autoTable for rendering
     const pageWidth = doc.internal.pageSize.getWidth()
     const margin = 6
     const availWidth = pageWidth - margin * 2
-    const slotColWidth = 10
-    const dayColWidth = (availWidth - slotColWidth) / 21 // 7 days × 3 cols
-
-    // Column styles
-    const columnStyles: Record<number, { cellWidth: number; halign?: 'center' | 'left' }> = { 0: { cellWidth: slotColWidth, halign: 'center' } }
-    for (let c = 1; c <= 21; c++) {
-      columnStyles[c] = { cellWidth: dayColWidth }
+    const timeColWidth = 10
+    const dayBlockWidth = (availWidth - timeColWidth) / 7
+    const deskColWidth = 4.5
+    const teacherColWidth = 10
+    const studentColWidth = (dayBlockWidth - deskColWidth - teacherColWidth) / 2
+    const columnStyles: Record<number, { cellWidth: number; halign?: 'center' | 'left' }> = {
+      0: { cellWidth: timeColWidth, halign: 'center' },
+    }
+    for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+      const baseCol = 1 + dayIdx * 4
+      columnStyles[baseCol] = { cellWidth: deskColWidth, halign: 'center' }
+      columnStyles[baseCol + 1] = { cellWidth: teacherColWidth, halign: 'left' }
+      columnStyles[baseCol + 2] = { cellWidth: studentColWidth, halign: 'center' }
+      columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
     autoTable(doc, {
@@ -231,8 +254,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       theme: 'grid',
       styles: {
         font: 'NotoSansJP',
-        fontSize: 7,
-        cellPadding: 1,
+        fontSize: 5.4,
+        cellPadding: 0.5,
         lineWidth: 0.2,
         lineColor: [80, 80, 80],
         valign: 'middle',
@@ -250,28 +273,73 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       body: bodyRows,
       columnStyles,
       didParseCell: (hookData) => {
-        // Merge date header cells (row 0: span 3 cols per day)
         if (hookData.section === 'head' && hookData.row.index === 0) {
           const col = hookData.column.index
-          if (col === 0) {
-            // empty cell
-          } else if ((col - 1) % 3 === 0) {
-            // First of the 3 day-columns → span
-            hookData.cell.colSpan = 3
+          if (col > 0 && (col - 1) % 4 === 0) {
+            hookData.cell.colSpan = 4
             hookData.cell.styles.halign = 'center'
             hookData.cell.styles.fontStyle = 'bold'
+            const dayIdx = Math.floor((col - 1) / 4)
+            const date = fullWeek[dayIdx]
+            const isSunday = getIsoDayOfWeek(date) === 0
+            if (isSunday || holidaySet.has(date)) {
+              hookData.cell.styles.textColor = [220, 38, 38]
+            }
           }
         }
-        // Slot label column bold
-        if (hookData.section === 'body' && hookData.column.index === 0 && hookData.cell.text.join('')) {
-          hookData.cell.styles.fontStyle = 'bold'
-          hookData.cell.styles.halign = 'center'
+
+        if (hookData.section === 'head' && hookData.row.index === 1) {
+          hookData.cell.styles.fontSize = 5.3
+          hookData.cell.styles.fillColor = [245, 245, 245]
         }
-        // Alternating slot group colors for readability
+
         if (hookData.section === 'body') {
-          const slotNum = rowSlotNum[hookData.row.index] ?? 1
-          if (slotNum % 2 === 0) {
-            hookData.cell.styles.fillColor = [245, 247, 250]
+          const slotNumber = rowSlotNum[hookData.row.index] ?? 1
+          const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
+          const col = hookData.column.index
+
+          if (col === 0) {
+            if (deskIdx === 0) {
+              hookData.cell.rowSpan = effectiveDeskCount
+              hookData.cell.styles.fontStyle = 'bold'
+              hookData.cell.styles.halign = 'center'
+              hookData.cell.styles.valign = 'middle'
+              hookData.cell.styles.fillColor = slotNumber % 2 === 0 ? [243, 244, 246] : [255, 255, 255]
+            }
+            hookData.cell.styles.fontSize = 6
+            return
+          }
+
+          const dayIdx = Math.floor((col - 1) / 4)
+          const dayDate = fullWeek[dayIdx]
+          const daySubCol = (col - 1) % 4
+          const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet)
+
+          if (daySubCol === 0) {
+            hookData.cell.styles.halign = 'center'
+            hookData.cell.styles.fontStyle = 'bold'
+            if (!lectureDateSet.has(dayDate) || holidaySet.has(dayDate)) {
+              hookData.cell.styles.textColor = [148, 163, 184]
+            }
+          }
+
+          if (daySubCol === 1) {
+            hookData.cell.styles.fontSize = 5.1
+          }
+
+          if (daySubCol === 2 || daySubCol === 3) {
+            const studentCell = daySubCol === 2 ? deskCell.student1 : deskCell.student2
+            hookData.cell.styles.fontSize = 5
+            hookData.cell.styles.halign = 'center'
+            if (studentCell.fillColor) {
+              hookData.cell.styles.fillColor = studentCell.fillColor
+              hookData.cell.styles.textColor = studentCell.textColor ?? [0, 0, 0]
+              hookData.cell.styles.fontStyle = 'bold'
+            }
+          }
+
+          if (deskIdx === 0) {
+            hookData.cell.styles.lineWidth = 0.35
           }
         }
       },

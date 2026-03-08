@@ -7049,10 +7049,12 @@ service cloud.firestore {
                   startDate: data.settings.startDate,
                   endDate: data.settings.endDate,
                   slotsPerDay: data.settings.slotsPerDay,
+                  deskCount: data.settings.deskCount,
                   holidays: data.settings.holidays,
                   assignments: data.assignments,
                   getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
                   getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
+                  getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
                   getStudentSubject,
                   getIsoDayOfWeek,
                 })}
