@@ -4547,12 +4547,16 @@ const AdminPage = () => {
         for (const infoMap of regularLikeInfos) {
           for (const [sid, info] of Object.entries(infoMap)) {
             const subject = getStudentSubject(assignment, sid)
-            const matchedIndex = pending.findIndex((demand) =>
-              demand.studentId === sid
-              && demand.subject === subject
-              && demand.makeupInfo.dayOfWeek === info.dayOfWeek
-              && demand.makeupInfo.slotNumber === info.slotNumber,
-            )
+            const occurrenceKey = getRegularOccurrenceKey({
+              studentId: sid,
+              subject,
+              makeupInfo: {
+                dayOfWeek: info.dayOfWeek,
+                slotNumber: info.slotNumber,
+                ...(info.date ? { date: info.date } : {}),
+              },
+            })
+            const matchedIndex = pending.findIndex((demand) => getRegularOccurrenceKey(demand) === occurrenceKey)
             if (matchedIndex >= 0) pending.splice(matchedIndex, 1)
           }
         }
