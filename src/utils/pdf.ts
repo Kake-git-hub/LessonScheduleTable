@@ -99,9 +99,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const startHour = 13
   const startMinute = 0
   const slotIntervalMinutes = 100
-  const colorNormal = { fill: [22, 163, 74] as [number, number, number], text: [255, 255, 255] as [number, number, number] }
-  const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: [66, 32, 6] as [number, number, number] }
-  const colorSubstitute = { fill: [251, 207, 232] as [number, number, number], text: [157, 23, 77] as [number, number, number] }
+  const pdfTextBlack = [0, 0, 0] as [number, number, number]
+  const colorNormal = { fill: [22, 163, 74] as [number, number, number], text: pdfTextBlack }
+  const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: pdfTextBlack }
+  const colorSubstitute = { fill: [251, 207, 232] as [number, number, number], text: pdfTextBlack }
 
   const formatSlotTimeLabel = (slotNumber: number): string => {
     const totalMinutes = startHour * 60 + startMinute + (slotNumber - 1) * slotIntervalMinutes
