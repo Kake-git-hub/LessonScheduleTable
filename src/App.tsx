@@ -225,7 +225,8 @@ const hasAssignedRegularOccurrence = (
 
   for (const [slot, slotAssignments] of Object.entries(assignmentState)) {
     for (const assignment of slotAssignments) {
-      if (!assignment.teacherId && !assignment.isRegular) continue
+      // A shortage placeholder with no teacher is not an assigned occurrence.
+      if (!assignment.teacherId) continue
       const existingRef = getRegularOccurrenceRefForStudentInAssignment(slot, assignment, occurrenceRef.studentId)
       if (!existingRef) continue
       if (getRegularOccurrenceKey(existingRef) !== targetKey) continue
