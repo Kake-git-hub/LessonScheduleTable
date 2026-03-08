@@ -3694,8 +3694,11 @@ const AdminPage = () => {
       // Don't overwrite manual (non-regular) assignments or manually modified slots
       if (manuallyModifiedSlots.has(slot)) continue
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
-      // Don't overwrite slots where a student was manually transferred out (regularMakeupInfo present)
+      // Don't overwrite slots where a regular lesson was manually adjusted.
+      // regularMakeupInfo means a regular student was moved out.
+      // regularSubstituteInfo means a regular teacher shortage was manually resolved.
       if (existing && existing.some((a) => a.regularMakeupInfo && Object.keys(a.regularMakeupInfo).length > 0)) continue
+      if (existing && existing.some((a) => a.regularSubstituteInfo && Object.keys(a.regularSubstituteInfo).length > 0)) continue
 
       const expectedRegulars = slotRegularLessons.map((lesson) => {
         // Exclude students who are unavailable for this slot (absent)
@@ -6176,6 +6179,8 @@ const AdminPage = () => {
       const prev = slotAssignments[idx]
       if (!prev) return current
 
+      setManuallyModifiedSlots((prevSlots) => new Set(prevSlots).add(slot))
+
       if (!teacherId) {
         slotAssignments[idx] = {
           ...prev,
@@ -6209,6 +6214,21 @@ const AdminPage = () => {
         : (prev.subject && instructorSubjects.includes(prev.subject)
             ? prev.subject
             : (instructorSubjects[0] ?? ''))
+      const [slotDate] = slot.split('_')
+      const nextRegularSubstituteInfo = (() => {
+        if (!prev.isRegular || !prev.teacherUnavailableOriginalId || nextStudentIds.length === 0) {
+          return prev.regularSubstituteInfo
+        }
+        return nextStudentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, sid) => {
+          acc[sid] = prev.regularSubstituteInfo?.[sid] ?? {
+            regularTeacherId: prev.teacherUnavailableOriginalId!,
+            dayOfWeek: getSlotDayOfWeek(slot),
+            slotNumber: getSlotNumber(slot),
+            date: slotDate,
+          }
+          return acc
+        }, {})
+      })()
 
       slotAssignments[idx] = {
         teacherId,
@@ -6218,7 +6238,7 @@ const AdminPage = () => {
         teacherUnavailableOriginalId: undefined,
         ...(nextStudentIds.length > 0 ? { studentSubjects: nextStudentSubjects } : {}),
         ...(prev.regularMakeupInfo ? { regularMakeupInfo: { ...prev.regularMakeupInfo } } : {}),
-        ...(prev.regularSubstituteInfo ? { regularSubstituteInfo: { ...prev.regularSubstituteInfo } } : {}),
+        ...(nextRegularSubstituteInfo ? { regularSubstituteInfo: { ...nextRegularSubstituteInfo } } : {}),
       }
 
       return {
