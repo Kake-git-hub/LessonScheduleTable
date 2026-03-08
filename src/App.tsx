@@ -7199,9 +7199,21 @@ service cloud.firestore {
                         }) || (!isMendan && assignment.studentIds.length === 2 && constraintFor(data.constraints, assignment.studentIds[0], assignment.studentIds[1]) === 'incompatible')
                         const sig = assignmentSignature(assignment)
                         const hl = data.autoAssignHighlights ?? {}
-                        const isAutoAdded = (hl.added?.[slot] ?? []).includes(sig)
-                        const isAutoChanged = (hl.changed?.[slot] ?? []).includes(sig)
-                        const isAutoMakeupHighlight = (hl.makeup?.[slot] ?? []).includes(sig)
+                        const originalHighlightedAssignment = isRecorded
+                          ? slotAssignments.find((plannedAssignment) => {
+                              if (plannedAssignment.teacherId && assignment.teacherId && plannedAssignment.teacherId !== assignment.teacherId) return false
+                              if (!plannedAssignment.teacherId && !assignment.teacherId && sameStudentSet(plannedAssignment.studentIds, assignment.studentIds)) return true
+                              if (assignment.studentIds.length === 0) return plannedAssignment.teacherId === assignment.teacherId
+                              return assignment.studentIds.some((studentId) => plannedAssignment.studentIds.includes(studentId))
+                            })
+                          : null
+                        const highlightSignatures = [...new Set([
+                          sig,
+                          ...(originalHighlightedAssignment ? [assignmentSignature(originalHighlightedAssignment)] : []),
+                        ])]
+                        const isAutoAdded = highlightSignatures.some((candidateSig) => (hl.added?.[slot] ?? []).includes(candidateSig))
+                        const isAutoChanged = highlightSignatures.some((candidateSig) => (hl.changed?.[slot] ?? []).includes(candidateSig))
+                        const isAutoMakeupHighlight = highlightSignatures.some((candidateSig) => (hl.makeup?.[slot] ?? []).includes(candidateSig))
                         // 振替 badge is permanent: show if regularMakeupInfo exists OR if auto-assign just detected it
                         const hasMakeupInfo = !!(assignment.regularMakeupInfo && Object.keys(assignment.regularMakeupInfo).length > 0)
                         const isAutoMakeup = hasMakeupInfo || isAutoMakeupHighlight
@@ -7211,7 +7223,9 @@ service cloud.firestore {
                         const hasTeacherUnassignedWarning = teacherUnassignedWarning.length > 0
                         // Red border only for transient auto-assign highlights (not for permanent 振替)
                         const isAutoDiff = isAutoAdded || isAutoChanged || isAutoMakeupHighlight
-                        const changeDetail = hl.changeDetails?.[slot]?.[sig] ?? ''
+                        const changeDetail = highlightSignatures
+                          .map((candidateSig) => hl.changeDetails?.[slot]?.[candidateSig] ?? '')
+                          .find(Boolean) ?? ''
 
                         // Compute student-drag drop validity for this specific assignment block
                         const isStudentDropCandidate = isDragActive && isStudentDrag && !assignment.isGroupLesson && assignment.studentIds.length < 2
