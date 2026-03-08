@@ -49,7 +49,7 @@ test.describe('Live guided resolution flow', () => {
       await openAdminPage(page, clonedClassroomId, SOURCE_SESSION_ID)
 
       for (let step = 0; step < 10; step += 1) {
-        const resolveVisible = await page.getByRole('button', { name: /未解決: \d+件/ }).isVisible().catch(() => false)
+        const resolveVisible = await page.getByRole('button', { name: /コマ割り未完了: \d+件/ }).isVisible().catch(() => false)
         log('blockerResolveVisible', { step, resolveVisible })
         if (!resolveVisible) break
         const modalOpened = await ensureStatusModalOpen(page)
@@ -149,7 +149,7 @@ async function openAdminPage(page: Page, classroomId: string, sessionId: string)
   await expect(page.locator('body')).not.toContainText('空の特別講習を作成', { timeout: 10000 })
   await expect.poll(async () => {
     if (await page.getByRole('button', { name: '自動提案' }).isVisible().catch(() => false)) return 'auto'
-    if (await page.getByRole('button', { name: /未解決: \d+件/ }).isVisible().catch(() => false)) return 'resolve'
+    if (await page.getByRole('button', { name: /コマ割り未完了: \d+件/ }).isVisible().catch(() => false)) return 'resolve'
     return ''
   }, { timeout: 30000 }).not.toBe('')
 }
@@ -164,7 +164,7 @@ async function ensureStatusModalOpen(page: Page): Promise<boolean> {
   const modal = page.locator('.status-modal-backdrop')
   if (await modal.isVisible().catch(() => false)) return true
 
-  const resolveButton = page.getByRole('button', { name: /未解決: \d+件/ })
+  const resolveButton = page.getByRole('button', { name: /コマ割り未完了: \d+件/ })
   const autoButton = page.getByRole('button', { name: '自動提案' })
 
   await expect.poll(async () => {

@@ -43,8 +43,8 @@ test.describe.skip('Guided auto-assign flow', () => {
 		await submitInput(page)
 
 		await openAdminPage(page)
-		await expect(page.getByRole('button', { name: /未解決: \d+件/ })).toBeVisible({ timeout: 15000 })
-		await page.getByRole('button', { name: /未解決: \d+件/ }).click()
+		await expect(page.getByRole('button', { name: /コマ割り未完了: \d+件/ })).toBeVisible({ timeout: 15000 })
+		await page.getByRole('button', { name: /コマ割り未完了: \d+件/ }).click()
 		await expect(page.locator('text=講師不足')).toBeVisible({ timeout: 15000 })
 	})
 })
@@ -93,7 +93,7 @@ async function openAdminPage(page: Page): Promise<void> {
 	const sessionRow = page.locator('tr', { has: page.locator('td', { hasText: 'summer' }) }).first()
 	await sessionRow.getByRole('button', { name: '管理' }).click()
 	await waitForAuth(page)
-	await expect(page.getByRole('button', { name: /自動提案|自動割当（先着順）|未解決: \d+件/ })).toBeVisible({ timeout: 15000 })
+	await expect(page.getByRole('button', { name: /自動提案|自動割当（先着順）|コマ割り未完了: \d+件/ })).toBeVisible({ timeout: 15000 })
 }
 
 async function openDirectInput(page: Page, personName: string): Promise<void> {

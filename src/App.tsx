@@ -4958,7 +4958,7 @@ const AdminPage = () => {
 
     return {
       title: '現在のコマ割り状況',
-      summary: sections.length > 0 ? '未解決項目' : '未解決項目なし',
+      summary: sections.length > 0 ? 'コマ割り未完了' : 'コマ割り完了',
       sections,
     }
   }
@@ -5048,7 +5048,7 @@ const AdminPage = () => {
   const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
 
   const unifiedResolveButtonLabel = unresolvedCount > 0
-    ? `未解決: ${unresolvedCount}件`
+    ? `コマ割り未完了: ${unresolvedCount}件`
     : isMendan
       ? '自動割当（先着順）'
       : '自動提案'
@@ -5553,7 +5553,7 @@ const AdminPage = () => {
     if (!isMendan) {
       const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults))
       if (currentShortages.length > 0) {
-        alert(`先に${instructorLabel}不足を解消してください。\n未解決 ${currentShortages.length} 件が残っている間は、自動提案で残コマを埋められません。`)
+        alert(`先に${instructorLabel}不足を解消してください。\nコマ割り未完了 ${currentShortages.length} 件が残っている間は、自動提案で残コマを埋められません。`)
         return
       }
     }
@@ -6605,7 +6605,7 @@ service cloud.firestore {
                   <>
                     {!hasAnyAssignment || !hasAnyDesired ? (
                       <span className="badge" style={{ background: '#e5e7eb', color: '#374151' }}>未割当</span>
-                    ) : (
+                    ) : unresolvedCount > 0 ? null : (
                       <span className="badge ok">全員割当完了</span>
                     )}
                   </>
