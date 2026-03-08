@@ -7683,13 +7683,13 @@ service cloud.firestore {
                                     const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
                                     const subInfo = assignment.regularSubstituteInfo?.[currentStudentId]
-                                    if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
                                     if (subInfo) {
                                       const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
                                       const origLabel = subInfo.date ? `${fmtMkDate(subInfo.date)} ${subInfo.slotNumber}限` : `${DAY_NAMES_STAR[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限`
                                       const regularTeacherName = data.teachers.find((t) => t.id === subInfo.regularTeacherId)?.name ?? subInfo.regularTeacherId
                                       return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#dc2626' }} title={`通常講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
                                     }
+                                    if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
                                     if (mkInfo) {
                                       const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
                                       const origLabel = mkInfo.date ? `${fmtMkDate(mkInfo.date)} ${mkInfo.slotNumber}限` : `${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限`
