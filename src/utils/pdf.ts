@@ -219,6 +219,38 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     return
   }
 
+  const mmPerPt = 25.4 / 72
+  const pdfLineHeightFactor = 1.15
+  const fitFontSizeToWidth = (
+    lines: string[],
+    usableWidthMm: number,
+    maxFontSize: number,
+    minFontSize: number,
+    fontStyle: 'normal' | 'bold' = 'normal',
+  ): number => {
+    const filteredLines = lines.filter((line) => line.trim().length > 0)
+    if (filteredLines.length === 0 || usableWidthMm <= 0) return minFontSize
+
+    let low = minFontSize
+    let high = maxFontSize
+    let best = minFontSize
+
+    while (high - low > 0.05) {
+      const mid = (low + high) / 2
+      doc.setFont('NotoSansJP', fontStyle)
+      doc.setFontSize(mid)
+      const widestLine = filteredLines.reduce((max, line) => Math.max(max, doc.getTextWidth(line)), 0)
+      if (widestLine <= usableWidthMm) {
+        best = mid
+        low = mid
+      } else {
+        high = mid
+      }
+    }
+
+    return clamp(best, minFontSize, maxFontSize)
+  }
+
   const dowOrder = [1, 2, 3, 4, 5, 6, 0]
 
   for (let wi = 0; wi < weeks.length; wi++) {
@@ -262,12 +294,17 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const bodyRows: string[][] = []
     const rowSlotNum: number[] = []
     const rowDeskIdx: number[] = []
+    const teacherLinesForFit: string[] = []
+    const studentLinesForFit: string[] = []
     for (let slotNumber = 1; slotNumber <= slotsPerDay; slotNumber++) {
       for (let deskIdx = 0; deskIdx < effectiveDeskCount; deskIdx++) {
         const row: string[] = [deskIdx === 0 ? formatSlotTimeLabel(slotNumber) : '']
         for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
           const date = fullWeek[dayIdx]
           const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet, assignments)
+          if (deskCell.teacher) teacherLinesForFit.push(deskCell.teacher)
+          studentLinesForFit.push(...deskCell.student1.text.split('\n').filter(Boolean))
+          studentLinesForFit.push(...deskCell.student2.text.split('\n').filter(Boolean))
           row.push(String(deskIdx + 1), deskCell.teacher, deskCell.student1.text, deskCell.student2.text)
         }
         bodyRows.push(row)
@@ -300,16 +337,34 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
     const totalBodyRows = Math.max(1, slotsPerDay * effectiveDeskCount)
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
-    const targetBodyRowHeight = clamp((availableTableHeight - 14) / totalBodyRows, 4.2, 8.5)
-    const headRow1Height = clamp(targetBodyRowHeight * 0.92, 4.4, 6.4)
-    const headRow2Height = clamp(targetBodyRowHeight * 0.88, 4.0, 5.8)
-    const baseFontSize = clamp(targetBodyRowHeight * 0.7, 3.6, 5.4)
-    const headFontSize = clamp(baseFontSize + 0.2, 3.8, 5.4)
-    const subHeadFontSize = clamp(baseFontSize, 3.5, 5.3)
-    const timeFontSize = clamp(targetBodyRowHeight * 0.74, 3.8, 6)
-    const teacherFontSize = clamp(targetBodyRowHeight * 0.62, 3.3, 5.1)
-    const studentFontSize = clamp(targetBodyRowHeight * 0.6, 3.2, 5)
-    const cellPadding = clamp(targetBodyRowHeight * 0.08, 0.12, 0.5)
+    const targetBodyRowHeight = clamp((availableTableHeight - 8.8) / totalBodyRows, 3.7, 8.5)
+    const headRow1Height = clamp(Math.min(5.2, targetBodyRowHeight * 0.9), 3.7, 5.2)
+    const headRow2Height = clamp(Math.min(4.8, targetBodyRowHeight * 0.84), 3.5, 4.8)
+    const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
+    const headerCellPadding = clamp(cellPadding * 0.9, 0.08, 0.22)
+    const bodyUsableHeight = Math.max(1.5, targetBodyRowHeight - cellPadding * 2)
+    const teacherMaxByHeight = (bodyUsableHeight / (1 * pdfLineHeightFactor)) / mmPerPt
+    const studentMaxByHeight = (bodyUsableHeight / (2 * pdfLineHeightFactor)) / mmPerPt
+    const teacherUsableWidth = Math.max(2, teacherColWidth - cellPadding * 2)
+    const studentUsableWidth = Math.max(2, studentColWidth - cellPadding * 2)
+    const teacherFontSize = fitFontSizeToWidth(
+      teacherLinesForFit,
+      teacherUsableWidth,
+      clamp(teacherMaxByHeight, 3, 8),
+      2.4,
+      'normal',
+    )
+    const studentFontSize = fitFontSizeToWidth(
+      studentLinesForFit,
+      studentUsableWidth,
+      clamp(studentMaxByHeight, 2.8, 7),
+      2.1,
+      'bold',
+    )
+    const timeFontSize = clamp((bodyUsableHeight / pdfLineHeightFactor) / mmPerPt, 2.8, 6)
+    const baseFontSize = Math.min(teacherFontSize, studentFontSize)
+    const headFontSize = clamp(Math.max(baseFontSize, 3.1), 3.1, 4.8)
+    const subHeadFontSize = clamp(Math.max(baseFontSize - 0.05, 2.9), 2.9, 4.4)
     const diffBorderInset = clamp(targetBodyRowHeight * 0.06, 0.22, 0.45)
     const diffBorderWidth = clamp(targetBodyRowHeight * 0.055, 0.24, 0.45)
 
@@ -335,6 +390,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         lineWidth: 0.3,
         lineColor: [40, 40, 40],
         minCellHeight: headRow1Height,
+        cellPadding: headerCellPadding,
       },
       head: [headerRow1, headerRow2],
       body: bodyRows,
