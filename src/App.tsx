@@ -3344,15 +3344,25 @@ const AdminPage = () => {
     }
   }
 
-  // --- Undo / Redo for assignments ---
-  const undoStackRef = useRef<Record<string, Assignment[]>[]>([])
-  const redoStackRef = useRef<Record<string, Assignment[]>[]>([])
+  // --- Undo / Redo for scheduling state ---
+  type SchedulingSnapshot = {
+    assignments: Record<string, Assignment[]>
+    actualResults: Record<string, ActualResult[]>
+  }
+
+  const cloneSchedulingSnapshot = (current: SessionData): SchedulingSnapshot => JSON.parse(JSON.stringify({
+    assignments: current.assignments,
+    actualResults: current.actualResults ?? {},
+  }))
+
+  const undoStackRef = useRef<SchedulingSnapshot[]>([])
+  const redoStackRef = useRef<SchedulingSnapshot[]>([])
   const [undoCount, setUndoCount] = useState(0)
   const [redoCount, setRedoCount] = useState(0)
   const MAX_UNDO = 50
 
-  const pushUndo = (assignments: Record<string, Assignment[]>): void => {
-    undoStackRef.current = [...undoStackRef.current.slice(-(MAX_UNDO - 1)), JSON.parse(JSON.stringify(assignments))]
+  const pushUndo = (current: SessionData): void => {
+    undoStackRef.current = [...undoStackRef.current.slice(-(MAX_UNDO - 1)), cloneSchedulingSnapshot(current)]
     redoStackRef.current = []
     setUndoCount(undoStackRef.current.length)
     setRedoCount(0)
@@ -3361,7 +3371,7 @@ const AdminPage = () => {
   const updateAssignments = async (updater: (current: SessionData) => SessionData): Promise<void> => {
     const current = dataRef.current
     if (!current) return
-    pushUndo(current.assignments)
+    pushUndo(current)
     await persist(updater(current))
   }
 
@@ -3369,20 +3379,20 @@ const AdminPage = () => {
     const current = dataRef.current
     if (undoStackRef.current.length === 0 || !current) return
     const prev = undoStackRef.current.pop()!
-    redoStackRef.current.push(JSON.parse(JSON.stringify(current.assignments)))
+    redoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: prev })
+    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults })
   }
 
   const handleRedo = async (): Promise<void> => {
     const current = dataRef.current
     if (redoStackRef.current.length === 0 || !current) return
     const next = redoStackRef.current.pop()!
-    undoStackRef.current.push(JSON.parse(JSON.stringify(current.assignments)))
+    undoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: next })
+    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults })
   }
 
   const createSession = async (): Promise<void> => {
@@ -3588,6 +3598,8 @@ const AdminPage = () => {
 
   const saveActualResults = async (): Promise<void> => {
     if (!data || !recordingSlot) return
+    const current = dataRef.current
+    if (!current) return
     // Strip _uid and undefined fields before persisting (Firestore rejects undefined)
     const cleaned: ActualResult[] = editingResults.map(({ _uid: _, ...rest }) => {
       const result: ActualResult = { teacherId: rest.teacherId, studentIds: rest.studentIds, subject: rest.subject }
@@ -3605,6 +3617,7 @@ const AdminPage = () => {
       return normalizeAssignment(result)
     }).filter((result) => result.teacherId || result.studentIds.length > 0)
     const nextResults = { ...(data.actualResults ?? {}), [recordingSlot]: cleaned }
+    pushUndo(current)
     setRecordingSlot(null)
     setEditingResults([])
     await persist({ ...data, actualResults: nextResults })
@@ -3618,8 +3631,11 @@ const AdminPage = () => {
   const clearActualResults = async (slot: string): Promise<void> => {
     if (!data) return
     if (!window.confirm('この実績記録を解除しますか？\n割当は元の計画に戻ります。')) return
+    const current = dataRef.current
+    if (!current) return
     const nextResults = { ...(data.actualResults ?? {}) }
     delete nextResults[slot]
+    pushUndo(current)
     // Use empty object instead of undefined (Firestore rejects undefined values)
     await persist({ ...data, actualResults: Object.keys(nextResults).length > 0 ? nextResults : {} })
   }
@@ -5809,11 +5825,12 @@ const AdminPage = () => {
   }
 
   const resetAssignments = async (): Promise<void> => {
-    if (!window.confirm('コマ割りをリセットしますか？\n（手動割当と自動提案結果を全てクリアします）')) return
+    if (!window.confirm('コマ割りをリセットしますか？\n（手動割当・自動提案結果・実績記録を全てクリアします）')) return
     setManuallyModifiedSlots(new Set())
     await updateAssignments((current) => ({
       ...current,
       assignments: {},
+      actualResults: {},
       autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
       settings: { ...current.settings, lastAutoAssignedAt: 0 },
     }))
@@ -7031,7 +7048,7 @@ service cloud.firestore {
                           <button
                             className="btn secondary"
                             type="button"
-                            style={{ fontSize: '0.7em', padding: '2px 6px' }}
+                            style={{ fontSize: '0.75em', padding: '3px 8px', whiteSpace: 'nowrap', lineHeight: 1.2 }}
                             onClick={() => startRecording(slot)}
                           >
                             📝 実績記録
@@ -7041,7 +7058,7 @@ service cloud.firestore {
                           <button
                             className="btn secondary"
                             type="button"
-                            style={{ fontSize: '0.7em', padding: '2px 6px' }}
+                            style={{ fontSize: '0.75em', padding: '3px 8px', whiteSpace: 'nowrap', lineHeight: 1.2 }}
                             onClick={() => startRecording(slot)}
                           >
                             📝 実績修正
@@ -7051,7 +7068,7 @@ service cloud.firestore {
                           <button
                             className="btn secondary"
                             type="button"
-                            style={{ fontSize: '0.7em', padding: '2px 6px', background: '#fee2e2', borderColor: '#fca5a5', color: '#dc2626' }}
+                            style={{ fontSize: '0.75em', padding: '3px 8px', whiteSpace: 'nowrap', lineHeight: 1.2, background: '#fee2e2', borderColor: '#fca5a5', color: '#dc2626' }}
                             onClick={() => void clearActualResults(slot)}
                           >
                             🔓 実績解除
