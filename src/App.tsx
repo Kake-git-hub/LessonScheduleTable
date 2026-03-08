@@ -518,6 +518,103 @@ const collectOverlappingStudentIds = (
   ))]
 }
 
+const canExecuteProposalAction = (
+  sessionData: SessionData,
+  assignmentState: Record<string, Assignment[]>,
+  proposal: ProposalAction,
+): boolean => {
+  if (proposal.type === 'update-student-constraints') {
+    return sessionData.students.some((student) => student.id === proposal.studentId)
+  }
+
+  if (proposal.type === 'remove-student-assignment') {
+    const slotAssignments = assignmentState[proposal.slot] ?? []
+    return slotAssignments.some((assignment) =>
+      !assignment.isGroupLesson
+      && assignment.teacherId === proposal.teacherId
+      && assignment.studentIds.includes(proposal.studentId)
+      && getStudentSubject(assignment, proposal.studentId) === proposal.subject
+      && (!proposal.assignmentStudentIds || sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds))
+      && !assignment.regularMakeupInfo?.[proposal.studentId]
+      && !assignment.regularSubstituteInfo?.[proposal.studentId],
+    )
+  }
+
+  const actionStudentIds = proposal.type === 'move-teacher-shortage'
+    ? proposal.assignmentStudentIds
+    : proposal.assignmentStudentIds ?? [proposal.studentId]
+  const students = actionStudentIds
+    .map((studentId) => sessionData.students.find((student) => student.id === studentId))
+    .filter(Boolean) as Student[]
+  const teacher = sessionData.teachers.find((item) => item.id === proposal.teacherId)
+  if (!teacher || students.length !== actionStudentIds.length) return false
+
+  if (proposal.type === 'force-assign') {
+    if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.slot)) return false
+    if (students.some((student) => !isStudentAvailable(student, proposal.slot))) return false
+
+    const slotAssignments = assignmentState[proposal.slot] ?? []
+    if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
+      const targetIndex = slotAssignments.findIndex((assignment) =>
+        !assignment.teacherId
+        && !assignment.isGroupLesson
+        && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds ?? []),
+      )
+      if (targetIndex < 0) return false
+      if (slotAssignments.some((assignment, index) => index !== targetIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)) return false
+      return collectOverlappingStudentIds(slotAssignments, proposal.assignmentStudentIds, [targetIndex]).length === 0
+    }
+
+    if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) return false
+
+    const targetAssignment = slotAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
+    if (targetAssignment) {
+      if (targetAssignment.studentIds.length >= 2) return false
+      if (targetAssignment.studentIds.some((studentId) => constraintFor(sessionData.constraints, studentId, proposal.studentId) === 'incompatible')) return false
+      return true
+    }
+
+    const deskCount = sessionData.settings.deskCount ?? 0
+    return deskCount <= 0 || slotAssignments.length < deskCount
+  }
+
+  const sourceAssignments = assignmentState[proposal.sourceSlot] ?? []
+  const sourceIndex = sourceAssignments.findIndex((assignment) =>
+    !assignment.isGroupLesson
+    && !assignment.teacherId
+    && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
+    && assignment.teacherUnavailableOriginalId === proposal.teacherId,
+  )
+  if (sourceIndex < 0) return false
+  if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.targetSlot)) return false
+  if (students.some((student) => !isStudentAvailable(student, proposal.targetSlot))) return false
+
+  const targetAssignments = assignmentState[proposal.targetSlot] ?? []
+  if (targetAssignments.some((assignment) => assignment.studentIds.some((studentId) => proposal.assignmentStudentIds.includes(studentId)))) return false
+
+  const existingTeacherPair = targetAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
+  if (existingTeacherPair) {
+    if (existingTeacherPair.studentIds.length + proposal.assignmentStudentIds.length > 2) return false
+    if (proposal.assignmentStudentIds.some((studentId) => existingTeacherPair.studentIds.some((existingId) => constraintFor(sessionData.constraints, existingId, studentId) === 'incompatible'))) return false
+    return true
+  }
+
+  const deskCount = sessionData.settings.deskCount ?? 0
+  return deskCount <= 0 || targetAssignments.length < deskCount
+}
+
+const filterExecutableStatusProposals = (
+  sessionData: SessionData,
+  assignmentState: Record<string, Assignment[]>,
+  proposals: StatusProposal[],
+): StatusProposal[] => proposals.flatMap((proposal) => {
+  const nextChoices = proposal.choices?.filter((choice) => canExecuteProposalAction(sessionData, assignmentState, choice.action))
+  if (proposal.action && !canExecuteProposalAction(sessionData, assignmentState, proposal.action)) return []
+  if (!proposal.choices) return [{ ...proposal }]
+  if (!nextChoices || nextChoices.length === 0) return proposal.action ? [{ ...proposal }] : []
+  return [{ ...proposal, choices: nextChoices }]
+})
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -4377,7 +4474,7 @@ const AdminPage = () => {
       details.set(student.studentId, {
         label: student.name,
         causes,
-        proposals: dedupeStatusProposals(proposalPool),
+        proposals: filterExecutableStatusProposals(data, assignmentState, dedupeStatusProposals(proposalPool)),
       })
       order.push(student.studentId)
     }
@@ -4392,15 +4489,17 @@ const AdminPage = () => {
         ? `${item.subject}: ${makeupReasonLabel}の振替未配置 (${conciseCause})`
         : `${item.subject}: ${makeupReasonLabel}の振替未配置`
       const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
-      const mergedProposals = dedupeStatusProposals([
+      const mergedProposals = filterExecutableStatusProposals(data, assignmentState, dedupeStatusProposals([
         ...(existing?.proposals ?? []),
-        ...(item.proposals.length > 0
-          ? item.proposals
+        ...(blockAssignmentsUntilShortagesResolved
+          ? [toStatusProposal(STATUS_RESOLVE_SHORTAGE_FIRST)]
+          : item.proposals.length > 0
+            ? item.proposals
           : [
               ...buildSpecificBlockerProposals(item.causes),
               ...buildNoCandidateProposals(item.causes.length > 0 ? item.causes : [item.reason]),
             ]),
-      ])
+      ]))
       details.set(item.studentId, {
         label: existing?.label ?? item.studentName,
         causes: mergedCauses,
@@ -4797,6 +4896,7 @@ const AdminPage = () => {
           const student = data.students.find((item) => item.id === studentId)
           if (!student) return false
           if (!isStudentAvailableForRegularLesson(student, slot)) return false
+          if (slotAssignments.some((assignment) => assignment.studentIds.includes(studentId))) return false
           if (isRegularOccurrenceCoveredElsewhere(nextAssignments, slot, studentId, lesson.teacherId)) return false
           return true
         })
@@ -4925,7 +5025,7 @@ const AdminPage = () => {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
         proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
-      return proposals
+      return filterExecutableStatusProposals(data, assignmentState, proposals)
     }
 
     if (orderedCompatibleTeachers.length > 0) {
@@ -4945,13 +5045,13 @@ const AdminPage = () => {
         proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
       proposals.push(toStatusProposal(`出席調整で代行可能: ${adjustmentLabels.join('、')}`))
-      return proposals
+      return filterExecutableStatusProposals(data, assignmentState, proposals)
     }
 
     if (originalTeacherId) {
       if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
-        return [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices)]
+        return filterExecutableStatusProposals(data, assignmentState, [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices)])
       }
       if (originalTeacher) {
         return [toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
@@ -5066,12 +5166,12 @@ const AdminPage = () => {
             },
           )
         : { force: [], substitute: [], teacher: [], cards: [], student: [], blockers: [] }
-      const proposals = dedupeStatusProposals([
+      const proposals = filterExecutableStatusProposals(data, assignmentState, dedupeStatusProposals([
         ...analysis.force,
         ...analysis.substitute,
         ...analysis.teacher,
         ...analysis.student,
-      ])
+      ]))
       const causes = [`${makeupReasonLabel}: ${reason}`, ...analysis.blockers]
       if (proposals.length > 0) {
         reason = `${makeupReasonLabel}: ${reason} / ${proposals.map((proposal) => proposal.label).join(' / ')}`
