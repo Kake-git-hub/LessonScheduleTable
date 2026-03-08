@@ -93,7 +93,7 @@ type StatusDetail = {
 }
 
 type StatusSection = {
-  key: 'under' | 'makeup' | 'over' | 'shortage' | 'overRemoved'
+  key: 'under' | 'makeup' | 'over' | 'shortage' | 'duplicate' | 'overRemoved'
   title: string
   items: StatusDetail[]
 }
@@ -170,6 +170,124 @@ const getRegularOccurrenceKey = (ref: Pick<RegularOccurrenceRef, 'studentId' | '
   `${ref.studentId}|${ref.subject}|${ref.makeupInfo.dayOfWeek}|${ref.makeupInfo.slotNumber}|${ref.makeupInfo.date ?? ''}`
 )
 
+const getRegularOccurrenceRefForStudentInAssignment = (
+  slot: string,
+  assignment: Assignment,
+  studentId: string,
+): RegularOccurrenceRef | null => {
+  if (!assignment.studentIds.includes(studentId) || assignment.isGroupLesson) return null
+
+  const subject = getStudentSubject(assignment, studentId)
+  const makeupInfo = assignment.regularMakeupInfo?.[studentId]
+  if (makeupInfo) {
+    return {
+      studentId,
+      teacherId: assignment.teacherId,
+      subject,
+      makeupInfo: { ...makeupInfo },
+    }
+  }
+
+  const substituteInfo = assignment.regularSubstituteInfo?.[studentId]
+  if (substituteInfo) {
+    return {
+      studentId,
+      teacherId: substituteInfo.regularTeacherId,
+      subject,
+      makeupInfo: {
+        dayOfWeek: substituteInfo.dayOfWeek,
+        slotNumber: substituteInfo.slotNumber,
+        ...(substituteInfo.date ? { date: substituteInfo.date } : {}),
+      },
+    }
+  }
+
+  if (!assignment.isRegular) return null
+
+  const [date] = slot.split('_')
+  return {
+    studentId,
+    teacherId: assignment.teacherId,
+    subject,
+    makeupInfo: {
+      dayOfWeek: getSlotDayOfWeek(slot),
+      slotNumber: getSlotNumber(slot),
+      date,
+    },
+  }
+}
+
+const hasAssignedRegularOccurrence = (
+  assignmentState: Record<string, Assignment[]>,
+  occurrenceRef: RegularOccurrenceRef,
+): boolean => {
+  const targetKey = getRegularOccurrenceKey(occurrenceRef)
+
+  for (const [slot, slotAssignments] of Object.entries(assignmentState)) {
+    for (const assignment of slotAssignments) {
+      if (!assignment.teacherId && !assignment.isRegular) continue
+      const existingRef = getRegularOccurrenceRefForStudentInAssignment(slot, assignment, occurrenceRef.studentId)
+      if (!existingRef) continue
+      if (getRegularOccurrenceKey(existingRef) !== targetKey) continue
+      return true
+    }
+  }
+
+  return false
+}
+
+const buildProposalOccurrenceRefs = (
+  proposal: ProposalAction,
+  sourceAssignment?: Assignment,
+  sourceSlot?: string,
+): RegularOccurrenceRef[] => {
+  if (proposal.type === 'update-student-constraints' || proposal.type === 'remove-student-assignment') return []
+
+  if (proposal.type === 'force-assign') {
+    if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0 && proposal.substituteInfo) {
+      return proposal.assignmentStudentIds.map((studentId) => ({
+        studentId,
+        teacherId: proposal.substituteInfo!.regularTeacherId,
+        subject: proposal.assignmentStudentSubjects?.[studentId] ?? proposal.subject,
+        makeupInfo: {
+          dayOfWeek: proposal.substituteInfo!.dayOfWeek,
+          slotNumber: proposal.substituteInfo!.slotNumber,
+          ...(proposal.substituteInfo!.date ? { date: proposal.substituteInfo!.date } : {}),
+        },
+      }))
+    }
+
+    if (proposal.makeupInfo) {
+      return [{
+        studentId: proposal.studentId,
+        teacherId: proposal.teacherId,
+        subject: proposal.subject,
+        makeupInfo: { ...proposal.makeupInfo },
+      }]
+    }
+
+    if (proposal.substituteInfo) {
+      return [{
+        studentId: proposal.studentId,
+        teacherId: proposal.substituteInfo.regularTeacherId,
+        subject: proposal.subject,
+        makeupInfo: {
+          dayOfWeek: proposal.substituteInfo.dayOfWeek,
+          slotNumber: proposal.substituteInfo.slotNumber,
+          ...(proposal.substituteInfo.date ? { date: proposal.substituteInfo.date } : {}),
+        },
+      }]
+    }
+
+    return []
+  }
+
+  if (!sourceAssignment || !sourceSlot) return []
+  return proposal.assignmentStudentIds
+    .map((studentId) => getRegularOccurrenceRefForStudentInAssignment(sourceSlot, sourceAssignment, studentId))
+    .filter(Boolean) as RegularOccurrenceRef[]
+}
+
 const sortConstraintCards = (cards: ConstraintCardType[]): ConstraintCardType[] => {
   const order = new Map(ALL_CONSTRAINT_CARDS.map((card, index) => [card, index]))
   return [...new Set(cards)].sort((left, right) => (order.get(left) ?? 999) - (order.get(right) ?? 999))
@@ -237,9 +355,10 @@ const STATUS_REVIEW_SUBJECTS = '講師の担当科目設定を見直してくだ
 const STATUS_SECTION_PRIORITY: Record<StatusSection['key'], number> = {
   shortage: 0,
   under: 1,
-  over: 2,
-  overRemoved: 3,
-  makeup: 4,
+  duplicate: 2,
+  over: 3,
+  overRemoved: 4,
+  makeup: 5,
 }
 
 const sortStatusSections = (sections: StatusSection[]): StatusSection[] =>
@@ -542,6 +661,9 @@ const canExecuteProposalAction = (
   if (!teacher || students.length !== actionStudentIds.length) return false
 
   if (proposal.type === 'force-assign') {
+    const occurrenceRefs = buildProposalOccurrenceRefs(proposal)
+    if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return false
+
     if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.slot)) return false
     if (students.some((student) => !isStudentAvailable(student, proposal.slot))) return false
 
@@ -574,6 +696,9 @@ const canExecuteProposalAction = (
     && assignment.teacherUnavailableOriginalId === proposal.teacherId,
   )
   if (sourceIndex < 0) return false
+  const sourceAssignment = sourceAssignments[sourceIndex]
+  const occurrenceRefs = buildProposalOccurrenceRefs(proposal, sourceAssignment, proposal.sourceSlot)
+  if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return false
   if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.targetSlot)) return false
   if (students.some((student) => !isStudentAvailable(student, proposal.targetSlot))) return false
 
@@ -5137,6 +5262,38 @@ const AdminPage = () => {
     return mergeUnplacedMakeupEntries(unplacedMakeupEntries)
   }
 
+  const collectRegularOccurrenceConflicts = (
+    effectiveAssignments: Record<string, Assignment[]>,
+  ): Array<{ studentId: string; subject: string; makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }; slots: string[] }> => {
+    const seen = new Map<string, { studentId: string; subject: string; makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }; slots: string[] }>()
+
+    for (const [slot, slotAssignments] of Object.entries(effectiveAssignments)) {
+      for (const assignment of slotAssignments) {
+        if (!assignment.teacherId && !assignment.isRegular) continue
+        for (const studentId of assignment.studentIds) {
+          const occurrenceRef = getRegularOccurrenceRefForStudentInAssignment(slot, assignment, studentId)
+          if (!occurrenceRef) continue
+
+          const key = getRegularOccurrenceKey(occurrenceRef)
+          const existing = seen.get(key)
+          if (existing) {
+            if (!existing.slots.includes(slot)) existing.slots.push(slot)
+            continue
+          }
+
+          seen.set(key, {
+            studentId,
+            subject: occurrenceRef.subject,
+            makeupInfo: { ...occurrenceRef.makeupInfo },
+            slots: [slot],
+          })
+        }
+      }
+    }
+
+    return [...seen.values()].filter((entry) => entry.slots.length > 1)
+  }
+
   const buildCurrentStatusReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
     if (!data) return null
 
@@ -5153,6 +5310,7 @@ const AdminPage = () => {
     const underAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem > 0) || missingTotal(student) > 0)
     const overAssigned = studentsWithRemaining.filter((student) => student.remaining.some((entry) => entry.rem < 0))
     const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
+    const duplicateOccurrences = collectRegularOccurrenceConflicts(effectiveAssignments)
     const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
     const makeupEntries = buildUnplacedMakeupEntries(
       statusAssignments,
@@ -5171,6 +5329,20 @@ const AdminPage = () => {
       { blockAssignmentsUntilShortagesResolved },
     )
     const overAssignedDetailItems = buildOverAssignedDetailItems(assignmentState, overAssigned)
+    const duplicateOccurrenceItems = duplicateOccurrences.map((entry) => {
+      const studentName = data.students.find((student) => student.id === entry.studentId)?.name ?? entry.studentId
+      const occurrenceLabel = entry.makeupInfo.date
+        ? (() => {
+            const [, month, day] = entry.makeupInfo.date!.split('-')
+            return `${Number(month)}/${Number(day)} ${entry.makeupInfo.slotNumber}限`
+          })()
+        : `${['日', '月', '火', '水', '木', '金', '土'][entry.makeupInfo.dayOfWeek] ?? '?'}曜${entry.makeupInfo.slotNumber}限`
+      return {
+        label: `${studentName} / ${entry.subject} / ${occurrenceLabel}`,
+        causes: [`同じ通常授業起点の振替が複数あります: ${entry.slots.map((slot) => slotLabel(slot, isMendan, mendanStart)).join(' / ')}`],
+        proposals: [toStatusProposal('重複した振替は手動で1件に整理してください')],
+      }
+    })
 
     const sections = sortStatusSections([
       {
@@ -5182,6 +5354,11 @@ const AdminPage = () => {
         key: 'over' as const,
         title: '過割当',
         items: overAssignedDetailItems,
+      },
+      {
+        key: 'duplicate' as const,
+        title: '振替重複',
+        items: duplicateOccurrenceItems,
       },
       {
         key: 'shortage' as const,
@@ -5447,6 +5624,12 @@ const AdminPage = () => {
         return current
       }
 
+      const occurrenceRefs = buildProposalOccurrenceRefs(proposal)
+      if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(workingAssignments, occurrenceRef))) {
+        errorMessage = 'この振替元は既に別コマへ割当済みです。古い提案は実行できません。状態を更新してください。'
+        return current
+      }
+
       if (proposal.type === 'force-assign') {
         if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.slot)) {
           errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
@@ -5587,6 +5770,12 @@ const AdminPage = () => {
         errorMessage = '移動対象の講師未割当ペアが見つからないため、移動提案を実行できませんでした。'
         return current
       }
+      const sourceAssignment = sourceAssignments[sourceIndex]
+      const moveOccurrenceRefs = buildProposalOccurrenceRefs(proposal, sourceAssignment, proposal.sourceSlot)
+      if (moveOccurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(workingAssignments, occurrenceRef))) {
+        errorMessage = 'この振替元は既に別コマへ割当済みです。古い提案は実行できません。状態を更新してください。'
+        return current
+      }
       if (!hasInstructorAvailability('teacher', proposal.teacherId, proposal.targetSlot)) {
         errorMessage = `${teacher.name} は現在 ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に出席不可です。`
         return current
@@ -5598,7 +5787,6 @@ const AdminPage = () => {
         }
       }
 
-      const sourceAssignment = sourceAssignments[sourceIndex]
       const targetAssignments = [...(workingAssignments[proposal.targetSlot] ?? [])]
       if (targetAssignments.some((assignment) => assignment.studentIds.some((sid) => proposal.assignmentStudentIds.includes(sid)))) {
         errorMessage = `${studentName} は既に ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に割当済みです。`
@@ -6182,12 +6370,13 @@ const AdminPage = () => {
       // When moving a regular assignment, convert to non-regular with regularMakeupInfo
       const movedCopy = { ...moved }
       if (movedCopy.isRegular) {
+        const srcDate = sourceSlot.split('_')[0]
         const srcDayOfWeek = getSlotDayOfWeek(sourceSlot)
         const srcSlotNum = getSlotNumber(sourceSlot)
-        const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number }> = { ...(movedCopy.regularMakeupInfo ?? {}) }
+        const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(movedCopy.regularMakeupInfo ?? {}) }
         for (const sid of movedCopy.studentIds) {
           if (!regularMakeupInfo[sid]) {
-            regularMakeupInfo[sid] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNum }
+            regularMakeupInfo[sid] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNum, date: srcDate }
           }
         }
         movedCopy.isRegular = false
