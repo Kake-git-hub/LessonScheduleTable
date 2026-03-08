@@ -172,6 +172,19 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     }
   }
 
+  const isChangedPdfCell = (
+    daySubCol: number,
+    currentDeskCell: DeskPdfCell,
+    baselineDeskCell: DeskPdfCell | null,
+  ): boolean => {
+    if (!baselineDeskCell) return false
+    return (
+      (daySubCol === 1 && currentDeskCell.teacherCompareKey !== baselineDeskCell.teacherCompareKey)
+      || (daySubCol === 2 && currentDeskCell.student1.compareKey !== baselineDeskCell.student1.compareKey)
+      || (daySubCol === 3 && currentDeskCell.student2.compareKey !== baselineDeskCell.student2.compareKey)
+    )
+  }
+
   const allDates: string[] = []
   const start = new Date(`${startDate}T00:00:00`)
   const end = new Date(`${endDate}T00:00:00`)
@@ -359,24 +372,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const dayDate = fullWeek[dayIdx]
           const daySubCol = (col - 1) % 4
           const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, assignments)
-          const baselineDeskCell = baselineAssignments
-            ? buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, baselineAssignments)
-            : null
           const isHolidayColumn = holidaySet.has(dayDate) || !lectureDateSet.has(dayDate)
 
           if (isHolidayColumn) {
             hookData.cell.styles.fillColor = [229, 231, 235]
-          }
-
-          const isChangedCell = baselineDeskCell != null && (
-            (daySubCol === 1 && deskCell.teacherCompareKey !== baselineDeskCell.teacherCompareKey)
-            || (daySubCol === 2 && deskCell.student1.compareKey !== baselineDeskCell.student1.compareKey)
-            || (daySubCol === 3 && deskCell.student2.compareKey !== baselineDeskCell.student2.compareKey)
-          )
-
-          if (isChangedCell) {
-            hookData.cell.styles.lineColor = [220, 38, 38]
-            hookData.cell.styles.lineWidth = 0.8
           }
 
           if (daySubCol === 0) {
@@ -404,6 +403,37 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             }
           }
         }
+      },
+      didDrawCell: (hookData) => {
+        if (hookData.section !== 'body') return
+
+        const col = hookData.column.index
+        if (col === 0) return
+
+        const slotNumber = rowSlotNum[hookData.row.index] ?? 1
+        const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
+        const dayIdx = Math.floor((col - 1) / 4)
+        const dayDate = fullWeek[dayIdx]
+        const daySubCol = (col - 1) % 4
+
+        if (daySubCol === 0) return
+
+        const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, assignments)
+        const baselineDeskCell = baselineAssignments
+          ? buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, baselineAssignments)
+          : null
+
+        if (!isChangedPdfCell(daySubCol, deskCell, baselineDeskCell)) return
+
+        const inset = 0.45
+        const rectX = hookData.cell.x + inset
+        const rectY = hookData.cell.y + inset
+        const rectW = Math.max(0, hookData.cell.width - inset * 2)
+        const rectH = Math.max(0, hookData.cell.height - inset * 2)
+
+        doc.setDrawColor(220, 38, 38)
+        doc.setLineWidth(0.45)
+        doc.rect(rectX, rectY, rectW, rectH)
       },
     })
   }
