@@ -4627,7 +4627,7 @@ const AdminPage = () => {
     student: Student,
     subject: string,
     candidateTeachers: Teacher[],
-    options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand },
+    options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand; allowExistingTeacherPair?: boolean },
   ): PlacementAnalysis => {
     if (!data) return { force: [], substitute: [], teacher: [], student: [], cards: [], blockers: [] }
 
@@ -4638,6 +4638,7 @@ const AdminPage = () => {
     const cardSuggestions = new Map<string, StatusProposal>()
     const blockerReasons = new Set<string>()
     const deskLimit = data.settings.deskCount ?? 0
+    const allowExistingTeacherPair = options?.allowExistingTeacherPair ?? false
 
     for (const slot of availableSlots) {
       if (getSlotNumber(slot) === 0) continue
@@ -4656,6 +4657,7 @@ const AdminPage = () => {
         const teacherStudentIncompatible = constraintFor(data.constraints, teacher.id, student.id) === 'incompatible'
         const existingStudentIncompatible = !!teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')
         const teacherPairFull = !!teacherAssignment && teacherAssignment.studentIds.length >= 2
+        const existingPairBlocked = !!teacherAssignment && !allowExistingTeacherPair
         const deskBlocked = !teacherAssignment && deskLimit > 0 && slotAssignments.length >= deskLimit
         const evalResult = evaluateConstraintCards(
           student,
@@ -4671,6 +4673,7 @@ const AdminPage = () => {
         if (teacherStudentIncompatible) hardReasons.push(`講師(${teacher.name})と生徒の相性不可`)
         if (existingStudentIncompatible) hardReasons.push(`講師(${teacher.name})ペア内の既存生徒と相性不可`)
         if (teacherPairFull) hardReasons.push(`講師(${teacher.name})のペアが満席`)
+        if (existingPairBlocked) hardReasons.push(`講師(${teacher.name})は既に同コマの別ペアを担当済み`)
         if (deskBlocked) hardReasons.push('机数上限で新規ペア不可')
         if (evalResult.blocked && evalResult.blockReason) hardReasons.push(evalResult.blockReason)
 
@@ -4678,7 +4681,7 @@ const AdminPage = () => {
           for (const reason of hardReasons) blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: ${reason}`)
         }
 
-        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && !evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && !evalResult.blocked) {
           const verb = options?.makeupDemand ? '振替' : '割当'
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
           const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}`
@@ -4694,7 +4697,7 @@ const AdminPage = () => {
           continue
         }
 
-        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && evalResult.blocked) {
           const verb = options?.makeupDemand ? '強制振替' : '強制割当'
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
           const label = `制約違反${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${evalResult.blockReason ? ` (${evalResult.blockReason})` : ''}`
@@ -4709,7 +4712,7 @@ const AdminPage = () => {
           forceSuggestions.set(`${slot}|${teacher.id}|${student.id}|${subject}|${options?.makeupDemand ? 'makeup' : 'normal'}`, toStatusProposal(label, action))
         }
 
-        if (!teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
+        if (!teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
           const key = `${teacher.id}|${subject}`
           const existing = teacherSuggestions.get(key)
           if (existing) {
@@ -4718,7 +4721,7 @@ const AdminPage = () => {
             teacherSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
           }
         }
-        if (teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
+        if (teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
           const key = `${teacher.id}|${subject}`
           const existing = studentSuggestions.get(key)
           if (existing) {
@@ -4727,15 +4730,15 @@ const AdminPage = () => {
             studentSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
           }
         }
-        if (teacherAvailable && studentAvailable && evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && !existingPairBlocked && evalResult.blocked) {
           const suggestion = buildConstraintSuggestion(student, evalResult.blockReason ?? '', slot, teacher.name)
           if (suggestion) cardSuggestions.set(suggestion.label, suggestion)
         }
-        if (!teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
+        if (!teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})と生徒の両方が未出席`)
-        } else if (!teacherAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
+        } else if (!teacherAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})が未出席`)
-        } else if (!studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
+        } else if (!studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 生徒が出席不可`)
         }
       }
@@ -4773,6 +4776,8 @@ const AdminPage = () => {
           if (!teacherAssignment && deskBlocked) continue
           if (teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) continue
           if (teacherAssignment && teacherAssignment.studentIds.length >= 2) continue
+
+          if (teacherAssignment && !allowExistingTeacherPair) continue
 
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
           const regularTeacher = data.teachers.find((item) => item.id === makeupDemand.teacherId)
