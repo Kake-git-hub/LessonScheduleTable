@@ -103,6 +103,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const colorNormal = { fill: [22, 163, 74] as [number, number, number], text: pdfTextBlack }
   const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: pdfTextBlack }
   const colorSubstitute = { fill: [251, 207, 232] as [number, number, number], text: pdfTextBlack }
+  const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
   const formatSlotTimeLabel = (slotNumber: number): string => {
     const totalMinutes = startHour * 60 + startMinute + (slotNumber - 1) * slotIntervalMinutes
@@ -276,7 +277,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     }
 
     const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
     const margin = 6
+    const tableStartY = 16
+    const tableBottomMargin = 6
     const availWidth = pageWidth - margin * 2
     const timeColWidth = 10
     const dayBlockWidth = (availWidth - timeColWidth) / 7
@@ -294,19 +298,34 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
+    const totalBodyRows = Math.max(1, slotsPerDay * effectiveDeskCount)
+    const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
+    const targetBodyRowHeight = clamp((availableTableHeight - 14) / totalBodyRows, 4.2, 8.5)
+    const headRow1Height = clamp(targetBodyRowHeight * 0.92, 4.4, 6.4)
+    const headRow2Height = clamp(targetBodyRowHeight * 0.88, 4.0, 5.8)
+    const baseFontSize = clamp(targetBodyRowHeight * 0.7, 3.6, 5.4)
+    const headFontSize = clamp(baseFontSize + 0.2, 3.8, 5.4)
+    const subHeadFontSize = clamp(baseFontSize, 3.5, 5.3)
+    const timeFontSize = clamp(targetBodyRowHeight * 0.74, 3.8, 6)
+    const teacherFontSize = clamp(targetBodyRowHeight * 0.62, 3.3, 5.1)
+    const studentFontSize = clamp(targetBodyRowHeight * 0.6, 3.2, 5)
+    const cellPadding = clamp(targetBodyRowHeight * 0.08, 0.12, 0.5)
+    const diffBorderInset = clamp(targetBodyRowHeight * 0.06, 0.22, 0.45)
+    const diffBorderWidth = clamp(targetBodyRowHeight * 0.055, 0.24, 0.45)
+
     autoTable(doc, {
-      startY: 16,
+      startY: tableStartY,
       margin: { left: margin, right: margin },
       theme: 'grid',
       styles: {
         font: 'NotoSansJP',
-        fontSize: 5.4,
-        cellPadding: 0.5,
+        fontSize: baseFontSize,
+        cellPadding,
         lineWidth: 0.2,
         lineColor: [80, 80, 80],
         valign: 'middle',
         overflow: 'linebreak',
-        minCellHeight: 8.5,
+        minCellHeight: targetBodyRowHeight,
       },
       headStyles: {
         fillColor: [255, 255, 255],
@@ -315,12 +334,15 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         halign: 'center',
         lineWidth: 0.3,
         lineColor: [40, 40, 40],
+        minCellHeight: headRow1Height,
       },
       head: [headerRow1, headerRow2],
       body: bodyRows,
       columnStyles,
       didParseCell: (hookData) => {
         if (hookData.section === 'head' && hookData.row.index === 0) {
+          hookData.cell.styles.fontSize = headFontSize
+          hookData.cell.styles.minCellHeight = headRow1Height
           const col = hookData.column.index
           if (col > 0 && (col - 1) % 4 === 0) {
             hookData.cell.colSpan = 4
@@ -340,7 +362,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         }
 
         if (hookData.section === 'head' && hookData.row.index === 1) {
-          hookData.cell.styles.fontSize = 5.3
+          hookData.cell.styles.fontSize = subHeadFontSize
+          hookData.cell.styles.minCellHeight = headRow2Height
           const col = hookData.column.index
           if (col > 0) {
             const dayIdx = Math.floor((col - 1) / 4)
@@ -356,6 +379,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const slotNumber = rowSlotNum[hookData.row.index] ?? 1
           const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
           const col = hookData.column.index
+          hookData.cell.styles.minCellHeight = targetBodyRowHeight
 
           if (col === 0) {
             if (deskIdx === 0) {
@@ -365,7 +389,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
               hookData.cell.styles.valign = 'middle'
               hookData.cell.styles.fillColor = [255, 255, 255]
             }
-            hookData.cell.styles.fontSize = 6
+            hookData.cell.styles.fontSize = timeFontSize
             return
           }
 
@@ -388,14 +412,14 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           }
 
           if (daySubCol === 1) {
-            hookData.cell.styles.fontSize = 5.1
+            hookData.cell.styles.fontSize = teacherFontSize
             hookData.cell.styles.halign = 'center'
             hookData.cell.styles.valign = 'middle'
           }
 
           if (daySubCol === 2 || daySubCol === 3) {
             const studentCell = daySubCol === 2 ? deskCell.student1 : deskCell.student2
-            hookData.cell.styles.fontSize = 5
+            hookData.cell.styles.fontSize = studentFontSize
             hookData.cell.styles.halign = 'center'
             if (studentCell.fillColor) {
               hookData.cell.styles.fillColor = studentCell.fillColor
@@ -426,14 +450,14 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
         if (!isChangedPdfCell(daySubCol, deskCell, baselineDeskCell)) return
 
-        const inset = 0.45
+        const inset = diffBorderInset
         const rectX = hookData.cell.x + inset
         const rectY = hookData.cell.y + inset
         const rectW = Math.max(0, hookData.cell.width - inset * 2)
         const rectH = Math.max(0, hookData.cell.height - inset * 2)
 
         doc.setDrawColor(220, 38, 38)
-        doc.setLineWidth(0.45)
+        doc.setLineWidth(diffBorderWidth)
         doc.rect(rectX, rectY, rectW, rectH)
       },
     })
