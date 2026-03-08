@@ -2931,7 +2931,7 @@ const AdminPage = () => {
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
-  const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
+  const [, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
@@ -4456,6 +4456,22 @@ const AdminPage = () => {
           for (const reason of hardReasons) blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: ${reason}`)
         }
 
+        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && !evalResult.blocked) {
+          const verb = options?.makeupDemand ? '振替' : '割当'
+          const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
+          const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}`
+          const action: ForceAssignAction = {
+            type: 'force-assign',
+            slot,
+            teacherId: teacher.id,
+            studentId: student.id,
+            subject,
+            ...(options?.makeupDemand ? { makeupInfo: options.makeupDemand.makeupInfo } : {}),
+          }
+          forceSuggestions.set(`${slot}|${teacher.id}|${student.id}|${subject}|${options?.makeupDemand ? 'makeup' : 'normal'}`, toStatusProposal(label, action))
+          continue
+        }
+
         if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && evalResult.blocked) {
           const verb = options?.makeupDemand ? '強制振替' : '強制割当'
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
@@ -5067,13 +5083,12 @@ const AdminPage = () => {
 
     const lastAutoAt = data.settings.lastAutoAssignedAt ?? 0
     if (!lastAutoAt) return true
-    if (currentStatusReport?.sections.some((section) => section.items.length > 0)) return true
     if (manuallyModifiedSlots.size > 0) return true
     if (data.students.some((student) => student.submittedAt > lastAutoAt)) return true
     if (data.teachers.some((teacher) => ((data.teacherSubmittedAt ?? {})[teacher.id] ?? 0) > lastAutoAt)) return true
 
     return false
-  }, [currentStatusReport, data, isMendan, manuallyModifiedSlots])
+  }, [data, isMendan, manuallyModifiedSlots])
 
   useEffect(() => {
     if (!data || !pendingProposalStatusRefreshRef.current) return
@@ -6707,11 +6722,6 @@ service cloud.firestore {
                     : undefined}
                 >
                   {isMendan ? '自動割当（先着順）' : !isMendan && currentAutoAssignBlockerCount > 0 ? '未解決を先に解消' : '自動提案'}
-                </button>
-              )}
-              {latestStatusReport && !autoAssignLoading && (
-                <button className="btn secondary" type="button" onClick={() => openStatusModal(latestStatusReport, 'full')}>
-                  結果詳細
                 </button>
               )}
               <button className="btn secondary" type="button" onClick={() => void handleUndo()} disabled={undoCount === 0} title="元に戻す (Undo)">
