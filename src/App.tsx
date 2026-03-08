@@ -494,6 +494,19 @@ const isRegularOccurrenceCoveredElsewhere = (
   })
 }
 
+const filterStudentSubjectsForIds = (
+  studentIds: string[],
+  studentSubjects?: Record<string, string>,
+): Record<string, string> | undefined => {
+  if (!studentSubjects) return undefined
+  const filtered = studentIds.reduce<Record<string, string>>((acc, studentId) => {
+    const subject = studentSubjects[studentId]
+    if (subject) acc[studentId] = subject
+    return acc
+  }, {})
+  return Object.keys(filtered).length > 0 ? filtered : undefined
+}
+
 const buildTeacherMoveChoices = (
   data: SessionData,
   allSlotKeys: string[],
@@ -4752,6 +4765,60 @@ const AdminPage = () => {
     return shortages
   }
 
+  const materializeUnavailableRegularShortages = (assignmentState: Record<string, Assignment[]>): Record<string, Assignment[]> => {
+    if (!data || isMendan) return assignmentState
+
+    const nextAssignments: Record<string, Assignment[]> = Object.fromEntries(
+      Object.entries(assignmentState).map(([slot, slotAssignments]) => [slot, slotAssignments.map((assignment) => normalizeAssignment({ ...assignment }))]),
+    )
+
+    for (const slot of slotKeys) {
+      const slotRegularLessons = findRegularLessonsForSlot(data.regularLessons, slot)
+      if (slotRegularLessons.length === 0) continue
+
+      const slotAssignments = [...(nextAssignments[slot] ?? [])]
+      let changed = false
+
+      for (const lesson of slotRegularLessons) {
+        if (hasInstructorAvailability('teacher', lesson.teacherId, slot)) continue
+
+        const availableStudentIds = lesson.studentIds.filter((studentId) => {
+          const student = data.students.find((item) => item.id === studentId)
+          if (!student) return false
+          if (!isStudentAvailableForRegularLesson(student, slot)) return false
+          if (isRegularOccurrenceCoveredElsewhere(nextAssignments, slot, studentId, lesson.teacherId)) return false
+          return true
+        })
+        if (availableStudentIds.length === 0) continue
+
+        const hasExistingAssignment = slotAssignments.some((assignment) =>
+          !assignment.isGroupLesson
+          && assignment.isRegular
+          && sameStudentSet(assignment.studentIds, availableStudentIds)
+          && (assignment.teacherId === lesson.teacherId || assignment.teacherUnavailableOriginalId === lesson.teacherId),
+        )
+        if (hasExistingAssignment) continue
+
+        const teacher = data.teachers.find((item) => item.id === lesson.teacherId)
+        const filteredStudentSubjects = filterStudentSubjectsForIds(availableStudentIds, lesson.studentSubjects)
+        slotAssignments.push(normalizeAssignment({
+          teacherId: '',
+          studentIds: availableStudentIds,
+          subject: filteredStudentSubjects?.[availableStudentIds[0]] ?? lesson.subject,
+          ...(filteredStudentSubjects ? { studentSubjects: filteredStudentSubjects } : {}),
+          teacherUnassignedReason: `${teacher?.name ?? lesson.teacherId} が出席不可のため講師未割当`,
+          teacherUnavailableOriginalId: lesson.teacherId,
+          isRegular: true,
+        }))
+        changed = true
+      }
+
+      if (changed) nextAssignments[slot] = slotAssignments
+    }
+
+    return nextAssignments
+  }
+
   const rankTeacherForShortage = (assignmentState: Record<string, Assignment[]>, teacherId: string, slot: string): [number, number, string] => {
     const [date] = slot.split('_')
     const targetSlotNum = getSlotNumber(slot)
@@ -5011,10 +5078,11 @@ const AdminPage = () => {
   const buildCurrentStatusReport = (assignmentState: Record<string, Assignment[]>): StatusReport | null => {
     if (!data) return null
 
+    const statusAssignments = materializeUnavailableRegularShortages(assignmentState)
     const liveActual = data.actualResults ?? {}
-    const effectiveAssignments = buildEffectiveAssignments(assignmentState, liveActual)
+    const effectiveAssignments = buildEffectiveAssignments(statusAssignments, liveActual)
     const { studentsWithRemaining, currentPendingMakeupDemands, currentAvailableSlotKeys } = buildStudentsWithRemaining(
-      assignmentState,
+      statusAssignments,
       effectiveAssignments,
       liveActual,
     )
@@ -5025,14 +5093,14 @@ const AdminPage = () => {
     const teacherShortages = collectTeacherShortageItems(effectiveAssignments)
     const blockAssignmentsUntilShortagesResolved = teacherShortages.length > 0
     const makeupEntries = buildUnplacedMakeupEntries(
-      assignmentState,
+      statusAssignments,
       effectiveAssignments,
       currentAvailableSlotKeys,
       currentPendingMakeupDemands,
       currentPendingMakeupDemands,
     )
     const remainingDetailItems = buildRemainingDetailItems(
-      assignmentState,
+      statusAssignments,
       effectiveAssignments,
       currentAvailableSlotKeys,
       underAssigned,
@@ -5239,6 +5307,7 @@ const AdminPage = () => {
     }
 
     await updateAssignments((current) => {
+      const workingAssignments = materializeUnavailableRegularShortages(current.assignments)
       const students = actionStudentIds.map((sid) => current.students.find((s) => s.id === sid)).filter(Boolean) as Student[]
       const teacher = current.teachers.find((t) => t.id === proposal.teacherId)
       if (students.length !== actionStudentIds.length || !teacher) {
@@ -5258,7 +5327,7 @@ const AdminPage = () => {
           }
         }
 
-        const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
+        const slotAssignments = [...(workingAssignments[proposal.slot] ?? [])]
         if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
           const targetStudentIds = proposal.assignmentStudentIds
           const targetIndex = slotAssignments.findIndex((assignment) => !assignment.teacherId && !assignment.isGroupLesson && sameStudentSet(assignment.studentIds, targetStudentIds))
@@ -5373,7 +5442,7 @@ const AdminPage = () => {
         }
         const nextCurrent = {
           ...current,
-          assignments: { ...current.assignments, [proposal.slot]: slotAssignments },
+          assignments: { ...workingAssignments, [proposal.slot]: slotAssignments },
           autoAssignHighlights: {
             ...currentHighlights,
             added: nextAdded,
@@ -5387,7 +5456,7 @@ const AdminPage = () => {
       }
 
       if (proposal.type === 'remove-student-assignment') {
-        const slotAssignments = [...(current.assignments[proposal.slot] ?? [])]
+        const slotAssignments = [...(workingAssignments[proposal.slot] ?? [])]
         const targetIndex = slotAssignments.findIndex((assignment) =>
           !assignment.isGroupLesson
           && assignment.teacherId === proposal.teacherId
@@ -5447,7 +5516,7 @@ const AdminPage = () => {
           if (nextAdded[proposal.slot].length === 0) delete nextAdded[proposal.slot]
         }
 
-        const nextAssignments = { ...current.assignments }
+        const nextAssignments = { ...workingAssignments }
         if (slotAssignments.length === 0) {
           delete nextAssignments[proposal.slot]
         } else {
@@ -5475,7 +5544,7 @@ const AdminPage = () => {
         return nextCurrent
       }
 
-      const sourceAssignments = [...(current.assignments[proposal.sourceSlot] ?? [])]
+      const sourceAssignments = [...(workingAssignments[proposal.sourceSlot] ?? [])]
       const sourceIndex = sourceAssignments.findIndex((assignment) =>
         !assignment.isGroupLesson
         && !assignment.teacherId
@@ -5498,7 +5567,7 @@ const AdminPage = () => {
       }
 
       const sourceAssignment = sourceAssignments[sourceIndex]
-      const targetAssignments = [...(current.assignments[proposal.targetSlot] ?? [])]
+      const targetAssignments = [...(workingAssignments[proposal.targetSlot] ?? [])]
       if (targetAssignments.some((assignment) => assignment.studentIds.some((sid) => proposal.assignmentStudentIds.includes(sid)))) {
         errorMessage = `${studentName} は既に ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に割当済みです。`
         return current
@@ -5581,7 +5650,7 @@ const AdminPage = () => {
       }
 
       sourceAssignments.splice(sourceIndex, 1)
-      const nextAssignments = { ...current.assignments }
+      const nextAssignments = { ...workingAssignments }
       if (sourceAssignments.length === 0) {
         delete nextAssignments[proposal.sourceSlot]
       } else {
@@ -5666,7 +5735,7 @@ const AdminPage = () => {
       return
     }
     if (!isMendan) {
-      const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(data.assignments, data.actualResults))
+      const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(materializeUnavailableRegularShortages(data.assignments), data.actualResults))
       if (currentShortages.length > 0) {
         alert(`先に${instructorLabel}不足を解消してください。\nコマ割り未完了 ${currentShortages.length} 件が残っている間は、自動提案で残コマを埋められません。`)
         return
