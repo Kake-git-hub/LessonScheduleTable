@@ -5914,12 +5914,20 @@ const AdminPage = () => {
         })
         if (availableStudentIds.length === 0) continue
 
-        const hasExistingAssignment = slotAssignments.some((assignment) =>
-          !assignment.isGroupLesson
-          && assignment.isRegular
-          && sameStudentSet(assignment.studentIds, availableStudentIds)
-          && (assignment.teacherId === lesson.teacherId || assignment.teacherUnavailableOriginalId === lesson.teacherId),
-        )
+        const hasExistingAssignment = availableStudentIds.every((studentId) => {
+          const expectedSubject = lesson.studentSubjects?.[studentId] ?? lesson.subject
+          return slotAssignments.some((assignment) => {
+            if (assignment.isGroupLesson) return false
+            if (!assignment.studentIds.includes(studentId)) return false
+            const occurrenceRef = getRegularOccurrenceRefForStudentInAssignment(slot, assignment, studentId)
+            if (!occurrenceRef) return false
+            if (occurrenceRef.teacherId !== lesson.teacherId) return false
+            if (occurrenceRef.subject !== expectedSubject) return false
+            return occurrenceRef.makeupInfo.dayOfWeek === lesson.dayOfWeek
+              && occurrenceRef.makeupInfo.slotNumber === lesson.slotNumber
+              && occurrenceRef.makeupInfo.date === slot.split('_')[0]
+          })
+        })
         if (hasExistingAssignment) continue
 
         const teacher = data.teachers.find((item) => item.id === lesson.teacherId)
