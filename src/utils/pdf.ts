@@ -375,7 +375,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
-    const emptyRowFactor = 0.58
+    const emptyRowFactor = 0.68
     const totalBodyRows = Math.max(1, rowHasAnyContent.length)
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
     const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
