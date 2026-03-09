@@ -941,17 +941,17 @@ const findForceAssignSourceIndex = (
   })
 }
 
-const canExecuteProposalAction = (
+const getProposalActionBlockReason = (
   sessionData: SessionData,
   assignmentState: Record<string, Assignment[]>,
   proposal: ProposalAction,
-): boolean => {
+): string | null => {
   if (proposal.type === 'update-student-constraints') {
-    return sessionData.students.some((student) => student.id === proposal.studentId)
+    return sessionData.students.some((student) => student.id === proposal.studentId) ? null : '対象生徒が見つかりません'
   }
 
   if (proposal.type === 'remove-student-assignment') {
-    return false
+    return 'この提案はモーダルから実行できません'
   }
 
   const actionStudentIds = proposal.type === 'move-teacher-shortage'
@@ -961,47 +961,61 @@ const canExecuteProposalAction = (
     .map((studentId) => sessionData.students.find((student) => student.id === studentId))
     .filter(Boolean) as Student[]
   const teacher = sessionData.teachers.find((item) => item.id === proposal.teacherId)
-  if (!teacher || students.length !== actionStudentIds.length) return false
+  if (!teacher) return '講師データが見つかりません'
+  if (students.length !== actionStudentIds.length) return '生徒データが見つかりません'
 
   if (proposal.type === 'force-assign') {
     const occurrenceRefs = buildProposalOccurrenceRefs(proposal)
-    if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return false
+    if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return '同じ通常授業起点の振替が既に別コマへ割当済みです'
 
-    if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.slot)) return false
-    if (students.some((student) => !isStudentAvailable(student, proposal.slot))) return false
+    if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.slot)) return `${teacher.name} がこのコマに出席不可です`
+    const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.slot))
+    if (unavailableStudent) return `${unavailableStudent.name} がこのコマに出席不可です`
 
     const slotAssignments = assignmentState[proposal.slot] ?? []
     if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
       const sourceIndex = findForceAssignSourceIndex(slotAssignments, proposal)
-      if (sourceIndex < 0) return false
+      if (sourceIndex < 0) return '元の講師未割当枠が見つかりません'
 
       const sourceAssignment = slotAssignments[sourceIndex]
       const assignmentSubjects = sourceAssignment.studentIds.map((studentId) => sourceAssignment.studentSubjects?.[studentId] ?? sourceAssignment.subject)
       const allowsSubjectOverride = !!proposal.substituteInfo
-      if (!allowsSubjectOverride && !students.every((student, index) => canTeachSubject(teacher.subjects, student.grade, assignmentSubjects[index] ?? proposal.subject))) return false
+      if (!allowsSubjectOverride) {
+        const subjectMismatch = students.find((student, index) => !canTeachSubject(teacher.subjects, student.grade, assignmentSubjects[index] ?? proposal.subject))
+        if (subjectMismatch) {
+          const mismatchSubject = assignmentSubjects[students.indexOf(subjectMismatch)] ?? proposal.subject
+          return `${teacher.name} は ${subjectMismatch.name}(${mismatchSubject}) を担当外です`
+        }
+      }
 
       const exactReplacementConflict = slotAssignments.some((assignment, index) => index !== sourceIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
       if (!proposal.mergeIntoExistingPair) {
-        if (exactReplacementConflict) return false
+        if (exactReplacementConflict) return `${teacher.name} は同コマで既に別ペアを担当しています`
         return collectOverlappingStudentIds(slotAssignments, proposal.assignmentStudentIds, [sourceIndex]).length === 0
+          ? null
+          : '対象生徒が同コマで既に別割当に入っています'
       }
 
       const targetIndex = slotAssignments.findIndex((assignment, index) => index !== sourceIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-      if (targetIndex < 0) return false
+      if (targetIndex < 0) return `${teacher.name} の既存ペアが見つかりません`
       const targetAssignment = slotAssignments[targetIndex]
-      if (targetAssignment.studentIds.length + proposal.assignmentStudentIds.length > 2) return false
-      if (targetAssignment.studentIds.some((studentId) => proposal.assignmentStudentIds!.includes(studentId))) return false
-      if (targetAssignment.studentIds.some((studentId) => proposal.assignmentStudentIds!.some((sourceStudentId) => constraintFor(sessionData.constraints, studentId, sourceStudentId) === 'incompatible'))) return false
+      if (targetAssignment.studentIds.length + proposal.assignmentStudentIds.length > 2) return `${teacher.name} の既存ペアが満席です`
+      if (targetAssignment.studentIds.some((studentId) => proposal.assignmentStudentIds!.includes(studentId))) return '既存ペアに同じ生徒が含まれています'
+      if (targetAssignment.studentIds.some((studentId) => proposal.assignmentStudentIds!.some((sourceStudentId) => constraintFor(sessionData.constraints, studentId, sourceStudentId) === 'incompatible'))) return '既存ペアの生徒と相性不可です'
       return collectOverlappingStudentIds(slotAssignments, proposal.assignmentStudentIds, [sourceIndex, targetIndex]).length === 0
+        ? null
+        : '対象生徒が同コマで既に別割当に入っています'
     }
 
-    if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) return false
+    if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) return '対象生徒が同コマで既に割当済みです'
 
     const targetAssignment = slotAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-    if (targetAssignment) return false
+    if (targetAssignment) return `${teacher.name} は同コマで既に担当があります`
 
     const deskCount = sessionData.settings.deskCount ?? 0
     return deskCount <= 0 || slotAssignments.length < deskCount
+      ? null
+      : '机数上限です'
   }
 
   const sourceAssignments = assignmentState[proposal.sourceSlot] ?? []
@@ -1011,22 +1025,31 @@ const canExecuteProposalAction = (
     && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds)
     && assignment.teacherUnavailableOriginalId === proposal.teacherId,
   )
-  if (sourceIndex < 0) return false
+  if (sourceIndex < 0) return '移動元の講師未割当枠が見つかりません'
   const sourceAssignment = sourceAssignments[sourceIndex]
   const occurrenceRefs = buildProposalOccurrenceRefs(proposal, sourceAssignment, proposal.sourceSlot)
-  if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return false
-  if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.targetSlot)) return false
-  if (students.some((student) => !isStudentAvailable(student, proposal.targetSlot))) return false
+  if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return '同じ通常授業起点の振替が既に別コマへ割当済みです'
+  if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.targetSlot)) return `${teacher.name} が移動先コマに出席不可です`
+  const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.targetSlot))
+  if (unavailableStudent) return `${unavailableStudent.name} が移動先コマに出席不可です`
 
   const targetAssignments = assignmentState[proposal.targetSlot] ?? []
-  if (targetAssignments.some((assignment) => assignment.studentIds.some((studentId) => proposal.assignmentStudentIds.includes(studentId)))) return false
+  if (targetAssignments.some((assignment) => assignment.studentIds.some((studentId) => proposal.assignmentStudentIds.includes(studentId)))) return '対象生徒が移動先コマで既に割当済みです'
 
   const existingTeacherPair = targetAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-  if (existingTeacherPair) return false
+  if (existingTeacherPair) return `${teacher.name} は移動先コマで既に別ペアを担当しています`
 
   const deskCount = sessionData.settings.deskCount ?? 0
   return deskCount <= 0 || targetAssignments.length < deskCount
+    ? null
+    : '移動先コマが机数上限です'
 }
+
+const canExecuteProposalAction = (
+  sessionData: SessionData,
+  assignmentState: Record<string, Assignment[]>,
+  proposal: ProposalAction,
+): boolean => getProposalActionBlockReason(sessionData, assignmentState, proposal) == null
 
 const filterExecutableStatusProposals = (
   sessionData: SessionData,
@@ -6103,6 +6126,34 @@ const AdminPage = () => {
         ? []
         : [`${student.name}(${subject})`]
     })
+    const summarizeBlockedEntries = (entries: Array<{ label: string; reason: string }>): string => {
+      if (entries.length === 0) return '理由を特定できませんでした'
+      const summary = entries.slice(0, 5).map((entry) => `${entry.label}(${entry.reason})`).join('、')
+      const rest = entries.length - 5
+      return rest > 0 ? `${summary} ほか${rest}件` : summary
+    }
+    const buildTeacherPoolReasonProposal = (label: string, mode: 'normal' | 'override'): StatusProposal | null => {
+      if (mode === 'override' && !shortageSubstituteInfo) return null
+      const blockedEntries = data.teachers.flatMap((teacher) => {
+        const reasons: string[] = []
+        if (usedTeacherIds.has(teacher.id)) reasons.push('同コマで既に担当あり')
+        if (!hasInstructorAvailability('teacher', teacher.id, item.slot)) reasons.push('出席不可')
+        const incompatibleStudents = students.filter((student) => constraintFor(data.constraints, teacher.id, student.id) === 'incompatible')
+        if (incompatibleStudents.length > 0) reasons.push(`相性不可: ${incompatibleStudents.map((student) => student.name).join('/')}`)
+        const mismatchDetails = getSubjectOverrideDetails(teacher)
+        if (mode === 'normal' && mismatchDetails.length > 0) reasons.push(`担当外: ${mismatchDetails.join(' / ')}`)
+        if (mode === 'override' && mismatchDetails.length === 0) reasons.push('担当可能なので通常候補側')
+        return reasons.length > 0 ? [{ label: teacher.name, reason: reasons.join(', ') }] : []
+      })
+      return blockedEntries.length > 0 ? toStatusProposal(`${label}: ${summarizeBlockedEntries(blockedEntries)}`) : null
+    }
+    const buildChoiceBlockReasonProposal = (label: string, choices: StatusProposalChoice[]): StatusProposal | null => {
+      const blockedEntries = choices.flatMap((choice) => {
+        const reason = getProposalActionBlockReason(data, assignmentState, choice.action)
+        return reason ? [{ label: choice.label, reason }] : []
+      })
+      return blockedEntries.length > 0 ? toStatusProposal(`${label}: ${summarizeBlockedEntries(blockedEntries)}`) : null
+    }
     const originalTeacherMoveChoices = originalTeacherId
       ? buildTeacherMoveChoices(data, slotKeys, assignmentState, item.slot, item.assignment, originalTeacherId, isMendan, mendanStart)
       : []
@@ -6369,7 +6420,24 @@ const AdminPage = () => {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
         proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
       }
-      return filterExecutableStatusProposals(data, assignmentState, proposals)
+      const filteredProposals = filterExecutableStatusProposals(data, assignmentState, proposals)
+      const filteredLabels = new Set(filteredProposals.map((proposal) => proposal.label))
+      const diagnostics: StatusProposal[] = []
+      if (!filteredLabels.has('通常代行候補')) {
+        const normalChoices = [...replacementChoices, ...mergeCandidates.map((entry) => entry.choice)]
+        const normalDiagnostic = normalChoices.length > 0
+          ? buildChoiceBlockReasonProposal('通常代行候補が出ない理由', normalChoices)
+          : buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal')
+        if (normalDiagnostic) diagnostics.push(normalDiagnostic)
+      }
+      if (!filteredLabels.has('制約超過代行候補')) {
+        const overrideChoices = [...overrideReplacementChoices, ...overrideMergeCandidates.map((entry) => entry.choice)]
+        const overrideDiagnostic = overrideChoices.length > 0
+          ? buildChoiceBlockReasonProposal('制約超過代行候補が出ない理由', overrideChoices)
+          : buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override')
+        if (overrideDiagnostic) diagnostics.push(overrideDiagnostic)
+      }
+      return [...filteredProposals, ...diagnostics.filter(Boolean) as StatusProposal[]]
     }
 
     if (orderedCompatibleTeachers.length > 0) {
@@ -6398,11 +6466,24 @@ const AdminPage = () => {
         return filterExecutableStatusProposals(data, assignmentState, [toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices)])
       }
       if (originalTeacher) {
+        const diagnostics = [
+          buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal'),
+          buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override'),
+        ].filter(Boolean) as StatusProposal[]
+        if (diagnostics.length > 0) {
+          return [...diagnostics, toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
+        }
         return [toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
       }
     }
 
-    return [toStatusProposal('担当候補なし: 科目設定か空きコマを見直してください')]
+    const diagnostics = [
+      buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal'),
+      buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override'),
+    ].filter(Boolean) as StatusProposal[]
+    return diagnostics.length > 0
+      ? diagnostics
+      : [toStatusProposal('担当候補なし: 科目設定か空きコマを見直してください')]
   }
 
   const buildUnplacedMakeupEntries = (
