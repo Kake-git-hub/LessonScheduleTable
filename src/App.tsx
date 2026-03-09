@@ -5550,11 +5550,18 @@ const AdminPage = () => {
     [activeStatusReport],
   )
 
+  const hasChoiceBasedResolution = useMemo(
+    () => activeStatusReport?.sections.some((section) =>
+      section.items.some((item) => item.proposals.some((proposal) => (proposal.choices?.length ?? 0) > 0)),
+    ) ?? false,
+    [activeStatusReport],
+  )
+
   const canRunAutoAssignNow = useMemo(() => {
     if (!data) return false
     if (isMendan) return true
-    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages
-  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages])
+    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages && !hasChoiceBasedResolution
+  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages, hasChoiceBasedResolution])
 
   const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
 
@@ -7055,6 +7062,8 @@ service cloud.firestore {
                   disabled={autoAssignLoading}
                   title={!isMendan && currentAutoAssignBlockerCount > 0
                     ? `先に解消: ${currentAutoAssignBlockerLabel}`
+                    : unresolvedCount > 0 && hasChoiceBasedResolution
+                      ? '選択が必要な提案があります。詳細から実行してください'
                     : unresolvedCount > 0
                       ? unresolvedTooltip
                       : undefined}
