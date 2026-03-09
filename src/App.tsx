@@ -5546,6 +5546,12 @@ const AdminPage = () => {
     [activeStatusReport],
   )
 
+  const canRunAutoAssignNow = useMemo(() => {
+    if (!data) return false
+    if (isMendan) return true
+    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages
+  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages])
+
   const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
 
   const unifiedResolveButtonLabel = unresolvedCount > 0
@@ -7035,7 +7041,7 @@ service cloud.firestore {
                       openStatusModal(activeStatusReport, 'blocking')
                       return
                     }
-                    if (unresolvedCount > 0 && !shouldShowAutoAssignButton && activeStatusReport) {
+                    if (unresolvedCount > 0 && !canRunAutoAssignNow && activeStatusReport) {
                       setLatestStatusReport(activeStatusReport)
                       openStatusModal(activeStatusReport, 'full')
                       return
