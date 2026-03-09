@@ -252,6 +252,32 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     return clamp(best, minFontSize, maxFontSize)
   }
 
+  const resolveHeaderHeights = (bodyRowHeight: number): { headRow1Height: number; headRow2Height: number } => ({
+    headRow1Height: clamp(Math.min(5.2, bodyRowHeight * 0.9), 3.7, 5.2),
+    headRow2Height: clamp(Math.min(4.8, bodyRowHeight * 0.84), 3.5, 4.8),
+  })
+
+  const fitBodyRowHeightToPage = (totalBodyRows: number, availableTableHeight: number): number => {
+    let low = 2.6
+    let high = 8.5
+    let best = low
+    const safeHeight = Math.max(40, availableTableHeight - 2.2)
+
+    while (high - low > 0.01) {
+      const mid = (low + high) / 2
+      const { headRow1Height, headRow2Height } = resolveHeaderHeights(mid)
+      const totalHeight = totalBodyRows * mid + headRow1Height + headRow2Height
+      if (totalHeight <= safeHeight) {
+        best = mid
+        low = mid
+      } else {
+        high = mid
+      }
+    }
+
+    return clamp(best, 2.6, 8.5)
+  }
+
   const dowOrder = [1, 2, 3, 4, 5, 6, 0]
 
   for (let wi = 0; wi < weeks.length; wi++) {
@@ -347,9 +373,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
     const totalBodyRows = Math.max(1, slotsPerDay * effectiveDeskCount)
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
-    const targetBodyRowHeight = clamp((availableTableHeight - 8.8) / totalBodyRows, 3.7, 8.5)
-    const headRow1Height = clamp(Math.min(5.2, targetBodyRowHeight * 0.9), 3.7, 5.2)
-    const headRow2Height = clamp(Math.min(4.8, targetBodyRowHeight * 0.84), 3.5, 4.8)
+    const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
+    const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
     const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
     const headerCellPadding = clamp(cellPadding * 0.9, 0.08, 0.22)
     const bodyUsableHeight = Math.max(1.5, targetBodyRowHeight - cellPadding * 2)
