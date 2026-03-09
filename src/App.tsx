@@ -8873,9 +8873,16 @@ service cloud.firestore {
                                   })
                                   .map((inst) => {
                                   const usedElsewhere = usedTeacherIds.has(inst.id) && inst.id !== assignment.teacherId
+                                  const hasSelectedStudents = !isMendan && assignment.studentIds.length > 0
+                                  const canTeachAssignedStudents = !hasSelectedStudents || assignment.studentIds.every((studentId) => {
+                                    const student = data.students.find((entry) => entry.id === studentId)
+                                    if (!student) return false
+                                    return canTeachSubject(inst.subjects ?? [], student.grade, getStudentSubject(assignment, studentId))
+                                  })
+                                  const incompatibilitySuffix = hasSelectedStudents && !canTeachAssignedStudents ? ' (担当外)' : ''
                                   return (
                                     <option key={inst.id} value={inst.id} disabled={usedElsewhere}>
-                                      {inst.name}{usedElsewhere ? ' (割当済)' : ''}
+                                      {inst.name}{usedElsewhere ? ' (割当済)' : ''}{incompatibilitySuffix}
                                     </option>
                                   )
                                 })}
