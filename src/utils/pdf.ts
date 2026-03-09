@@ -54,6 +54,7 @@ async function loadJapaneseFont(doc: jsPDF): Promise<void> {
 // ---------- Schedule PDF (A3 portrait, one week per page) ----------
 
 export type SchedulePdfParams = {
+  classroomName?: string
   sessionName: string
   startDate: string
   endDate: string
@@ -85,7 +86,7 @@ type DeskPdfCell = {
 
 export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void> {
   const {
-    sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
+    classroomName, sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
     assignments, baselineAssignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, getIsoDayOfWeek,
   } = params
 
@@ -276,11 +277,25 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     }
     const lectureDateSet = new Set(weekDates)
 
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const pageHeight = doc.internal.pageSize.getHeight()
+    const margin = 6
+    const titlePrefix = classroomName?.trim() ? `${classroomName.trim()} ` : ''
     const [, fm, fd] = firstDate.split('-')
     const lastDate = weekDates[weekDates.length - 1]
     const [, lm, ld] = lastDate.split('-')
-    doc.setFontSize(14)
-    doc.text(`${sessionName}  ${Number(fm)}/${Number(fd)} - ${Number(lm)}/${Number(ld)}`, 10, 12)
+    const titleText = `${titlePrefix}${sessionName}  ${Number(fm)}/${Number(fd)} - ${Number(lm)}/${Number(ld)}`
+    const titleTop = 7
+    const titleGap = 2.5
+    const titleFontSize = fitFontSizeToWidth([titleText], pageWidth - margin * 2, 14, 8, 'bold')
+    const titleHeight = titleFontSize * mmPerPt * pdfLineHeightFactor
+    const titleBaselineY = titleTop + titleFontSize * mmPerPt
+    const tableStartY = titleTop + titleHeight + titleGap
+    const tableBottomMargin = 6
+
+    doc.setFont('NotoSansJP', 'bold')
+    doc.setFontSize(titleFontSize)
+    doc.text(titleText, margin, titleBaselineY)
 
     const headerRow1: string[] = ['']
     const headerRow2: string[] = ['']
@@ -313,11 +328,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       }
     }
 
-    const pageWidth = doc.internal.pageSize.getWidth()
-    const pageHeight = doc.internal.pageSize.getHeight()
-    const margin = 6
-    const tableStartY = 16
-    const tableBottomMargin = 6
     const availWidth = pageWidth - margin * 2
     const timeColWidth = 10
     const dayBlockWidth = (availWidth - timeColWidth) / 7

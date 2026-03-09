@@ -3170,6 +3170,7 @@ const AdminPage = () => {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
+  const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
   // --- Actual result recording ---
   const [recordingSlot, setRecordingSlot] = useState<string | null>(null)
   const [editingResults, setEditingResults] = useState<(ActualResult & { _uid?: number })[]>([])
@@ -3215,6 +3216,15 @@ const AdminPage = () => {
       saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     }).catch(() => { /* ignore */ })
   }, [data, sessionId])
+
+  useEffect(() => {
+    if (!classroomId) return
+    const unsub = watchClassrooms((items) => {
+      const matched = items.find((item) => item.id === classroomId)
+      setCurrentClassroomName(matched?.name ?? classroomId)
+    })
+    return () => unsub()
+  }, [classroomId])
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -7064,6 +7074,7 @@ service cloud.firestore {
                 className="btn secondary"
                 type="button"
                 onClick={() => void exportSchedulePdf({
+                  classroomName: currentClassroomName,
                   sessionName: data.settings.name,
                   startDate: data.settings.startDate,
                   endDate: data.settings.endDate,
