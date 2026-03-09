@@ -178,6 +178,36 @@ describe('buildIncrementalAutoAssignments', () => {
     expect(slot2[0].regularSubstituteInfo?.s1).toEqual({ regularTeacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' })
   })
 
+  it('assigns makeup for regular-lesson subjects even if the student special-subject list differs', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-22', slotsPerDay: 2, holidays: [] },
+      teachers: [makeTeacher({ id: 't1', subjects: ['数', '英'] })],
+      students: [makeStudent({
+        id: 's1',
+        subjects: ['英'],
+        subjectSlots: { 英: 1 },
+        unavailableSlots: ['2026-07-21_1'],
+      })],
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      availability: {
+        'teacher:t1': ['2026-07-21_1', '2026-07-22_1'],
+        'student:s1': ['2026-07-22_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1', '2026-07-22_1'])
+    const slotAssignments = result.assignments['2026-07-22_1'] ?? []
+    const makeupAssignment = slotAssignments.find((assignment) => assignment.regularMakeupInfo?.s1)
+
+    expect(makeupAssignment).toBeDefined()
+    expect(makeupAssignment?.teacherId).toBe('t1')
+    expect(makeupAssignment?.studentIds).toContain('s1')
+    expect(makeupAssignment?.regularMakeupInfo?.s1).toEqual({ dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' })
+    expect(makeupAssignment?.studentSubjects?.s1 ?? makeupAssignment?.subject).toBe('数')
+  })
+
   it('removes duplicate makeup coverage for the same regular occurrence on rerun', async () => {
     const data = makeSessionData({
       settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-22', slotsPerDay: 2, holidays: [], lastAutoAssignedAt: Date.now() },

@@ -248,6 +248,19 @@ export const buildIncrementalAutoAssignments = async (
     })
   }
 
+  const getMakeupSubjectsForTeacher = (studentId: string, teacherId: string, targetDate?: string): string[] => {
+    const mkInfos = makeupStudentInfo.get(studentId)
+    if (!mkInfos) return []
+    return [...new Set(mkInfos
+      .filter((mk) => mk.teacherId === teacherId && (!mk.absentDate || !targetDate || targetDate > mk.absentDate))
+      .map((mk) => mk.subject))]
+  }
+
+  const canUseSubjectForStudent = (studentId: string, teacherId: string, studentSubjects: string[], baseSubj: string, targetDate?: string): boolean => {
+    if (studentSubjects.includes(baseSubj)) return true
+    return hasMakeupForTeacher(studentId, teacherId, baseSubj, targetDate)
+  }
+
   // Pre-populate result with actual results (recorded slots) so student load counting includes them
   const seededSlotKeys = new Set<string>()
   if (data.actualResults) {
@@ -627,8 +640,10 @@ export const buildIncrementalAutoAssignments = async (
         })[0]
         // Pick the best viable subject for this new student
         const [bestSlotDate] = slot.split('_')
+        const makeupSubjects = getMakeupSubjectsForTeacher(best.id, teacher.id, bestSlotDate)
         const bestSubj = teachableBaseSubjects(teacher.subjects, best.grade).find((baseSubj) => {
-          if (!best.subjects.includes(baseSubj)) return false
+          if (!canUseSubjectForStudent(best.id, teacher.id, best.subjects, baseSubj, bestSlotDate)) return false
+          if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
           const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
           return allocated < requested || hasMakeupForTeacher(best.id, teacher.id, baseSubj, bestSlotDate)
@@ -806,7 +821,11 @@ export const buildIncrementalAutoAssignments = async (
         // --- Determine subject assignment (same or mixed) ---
         // Find base subjects ALL students in combo can learn and teacher can teach to ALL of them
         const commonBaseSubjects = (BASE_SUBJECTS as readonly string[]).filter((baseSubj) =>
-          combo.every((student) => student.subjects.includes(baseSubj) && canTeachSubject(teacher.subjects, student.grade, baseSubj)),
+          combo.every((student) => {
+            const makeupSubjects = getMakeupSubjectsForTeacher(student.id, teacher.id, currentDate)
+            if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
+            return canUseSubjectForStudent(student.id, teacher.id, student.subjects, baseSubj, currentDate) && canTeachSubject(teacher.subjects, student.grade, baseSubj)
+          }),
         )
         const viableCommonSubjects = commonBaseSubjects.filter((baseSubj) =>
           combo.every((student) => {
@@ -829,13 +848,17 @@ export const buildIncrementalAutoAssignments = async (
         if (combo.length === 2) {
           const [s1, s2] = combo
           const s1Viable = teachableBaseSubjects(teacher.subjects, s1.grade).filter((baseSubj) => {
-            if (!s1.subjects.includes(baseSubj)) return false
+            const makeupSubjects = getMakeupSubjectsForTeacher(s1.id, teacher.id, currentDate)
+            if (!canUseSubjectForStudent(s1.id, teacher.id, s1.subjects, baseSubj, currentDate)) return false
+            if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
             const req = (s1.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
             return alloc < req || hasMakeupForTeacher(s1.id, teacher.id, baseSubj, currentDate)
           })
           const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
-            if (!s2.subjects.includes(baseSubj)) return false
+            const makeupSubjects = getMakeupSubjectsForTeacher(s2.id, teacher.id, currentDate)
+            if (!canUseSubjectForStudent(s2.id, teacher.id, s2.subjects, baseSubj, currentDate)) return false
+            if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
             const req = (s2.subjectSlots ?? {})[baseSubj] ?? 0
             const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
             return alloc < req || hasMakeupForTeacher(s2.id, teacher.id, baseSubj, currentDate)
