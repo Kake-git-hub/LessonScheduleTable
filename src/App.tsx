@@ -17,12 +17,13 @@ import type {
   RegularLesson,
   RegularMakeupInfo,
   SessionData,
+  SessionSettings,
   Student,
   SubmissionLogEntry,
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { BASE_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
+import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
@@ -127,6 +128,139 @@ type PlacementAnalysis = {
   student: StatusProposal[]
   cards: StatusProposal[]
   blockers: string[]
+}
+
+type EditingResultKind = 'auto' | 'regular' | 'makeup' | 'substitute' | 'none'
+
+type EditingActualResult = ActualResult & {
+  _uid?: number
+  _classification?: EditingResultKind
+  _sourceDate?: string
+  _sourceDayOfWeek?: string
+  _sourceSlotNumber?: string
+  _regularTeacherId?: string
+}
+
+type RegularLessonDraft = {
+  teacherId: string
+  student1Id: string
+  student2Id: string
+  studentSubjects: Record<string, string>
+  dayOfWeek: string
+  slotNumber: string
+}
+
+type MasterTableKey = 'managers' | 'teachers' | 'students' | 'regularLessons' | 'groupLessons' | 'constraints'
+type MasterTableSortDirection = 'asc' | 'desc'
+type MasterTableSortState = { column: string; direction: MasterTableSortDirection }
+
+const DAY_NAME_OPTIONS = ['日', '月', '火', '水', '木', '金', '土'] as const
+
+const createEmptyRegularLessonDraft = (): RegularLessonDraft => ({
+  teacherId: '',
+  student1Id: '',
+  student2Id: '',
+  studentSubjects: {},
+  dayOfWeek: '',
+  slotNumber: '',
+})
+
+const updateRegularLessonDraftStudent = (
+  draft: RegularLessonDraft,
+  key: 'student1Id' | 'student2Id',
+  nextStudentId: string,
+): RegularLessonDraft => {
+  const previousStudentId = draft[key]
+  const nextStudentSubjects = { ...draft.studentSubjects }
+  if (previousStudentId && previousStudentId !== nextStudentId) {
+    delete nextStudentSubjects[previousStudentId]
+  }
+
+  const nextDraft: RegularLessonDraft = {
+    ...draft,
+    [key]: nextStudentId,
+    studentSubjects: nextStudentSubjects,
+  }
+
+  if (nextDraft.student1Id && nextDraft.student1Id === nextDraft.student2Id) {
+    const duplicateKey = key === 'student1Id' ? 'student2Id' : 'student1Id'
+    const duplicateStudentId = nextDraft[duplicateKey]
+    if (duplicateStudentId) {
+      delete nextStudentSubjects[duplicateStudentId]
+    }
+    nextDraft[duplicateKey] = ''
+  }
+
+  return nextDraft
+}
+
+const buildRegularLessonDraftFromLesson = (lesson: RegularLesson): RegularLessonDraft => ({
+  teacherId: lesson.teacherId,
+  student1Id: lesson.studentIds[0] ?? '',
+  student2Id: lesson.studentIds[1] ?? '',
+  studentSubjects: { ...(lesson.studentSubjects ?? {}) },
+  dayOfWeek: String(lesson.dayOfWeek),
+  slotNumber: String(lesson.slotNumber),
+})
+
+const normalizeImportedSubjectName = (value: unknown): string => {
+  const normalized = String(value ?? '').trim().normalize('NFKC').replace(/\s+/g, '')
+  if (!normalized) return ''
+
+  const compact = normalized.replace(/[・･/／,、]/g, '')
+  const aliasMap: Record<string, string> = {
+    英語: '英',
+    数学: '数',
+    算数: '算',
+    国語: '国',
+    理科: '理',
+    社会: '社',
+    算数英語: '算英',
+    算数国語: '算国',
+    英語国語: '英国',
+    IT: 'IT',
+  }
+
+  if ((BASE_SUBJECTS as readonly string[]).includes(compact) || (ELEMENTARY_COMBO_SUBJECTS as readonly string[]).includes(compact)) {
+    return compact
+  }
+
+  return aliasMap[compact] ?? compact
+}
+
+const normalizeTableValue = (value: unknown): string => {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.trim().toLocaleLowerCase('ja-JP')
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.join(',').toLocaleLowerCase('ja-JP')
+  return String(value).trim().toLocaleLowerCase('ja-JP')
+}
+
+const normalizeDateList = (dates: string[]): string[] => [...new Set(dates.filter(Boolean))].sort((left, right) => left.localeCompare(right, 'ja-JP'))
+
+const filterAndSortMasterRows = <T,>(
+  rows: T[],
+  getters: Record<string, (row: T) => unknown>,
+  filters: Record<string, string>,
+  sortState: MasterTableSortState | null,
+): T[] => {
+  const filteredRows = rows.filter((row) => Object.entries(filters).every(([column, filterValue]) => {
+    if (!filterValue.trim()) return true
+    const getter = getters[column]
+    if (!getter) return true
+    return normalizeTableValue(getter(row)).includes(filterValue.trim().toLocaleLowerCase('ja-JP'))
+  }))
+
+  if (!sortState) return filteredRows
+  const getter = getters[sortState.column]
+  if (!getter) return filteredRows
+
+  return [...filteredRows].sort((left, right) => {
+    const leftValue = normalizeTableValue(getter(left))
+    const rightValue = normalizeTableValue(getter(right))
+    const compared = leftValue.localeCompare(rightValue, 'ja-JP', { numeric: true, sensitivity: 'base' })
+    return sortState.direction === 'asc' ? compared : -compared
+  })
 }
 
 const toStatusProposal = (label: string, action?: ProposalAction, choices?: StatusProposalChoice[]): StatusProposal => ({ label, ...(action ? { action } : {}), ...(choices && choices.length > 0 ? { choices } : {}) })
@@ -1330,13 +1464,7 @@ const HomePage = () => {
   const [constraintPersonBType, setConstraintPersonBType] = useState<PairConstraintPersonType>('student')
   const [constraintPersonBId, setConstraintPersonBId] = useState('')
   const [constraintType, setConstraintType] = useState<ConstraintType>('incompatible')
-  const [regularTeacherId, setRegularTeacherId] = useState('')
-  const [regularStudent1Id, setRegularStudent1Id] = useState('')
-  const [regularStudent2Id, setRegularStudent2Id] = useState('')
-  const [regularSubject, setRegularSubject] = useState('')
-  const [regularStudentSubjects, setRegularStudentSubjects] = useState<Record<string, string>>({})
-  const [regularDayOfWeek, setRegularDayOfWeek] = useState('')
-  const [regularSlotNumber, setRegularSlotNumber] = useState('')
+  const [newRegularLessonDraft, setNewRegularLessonDraft] = useState<RegularLessonDraft>(createEmptyRegularLessonDraft)
   // Group lesson form state
   const [groupTeacherId, setGroupTeacherId] = useState('')
   const [groupSubject, setGroupSubject] = useState('')
@@ -1359,12 +1487,165 @@ const HomePage = () => {
   const [editStudentName, setEditStudentName] = useState('')
   const [editStudentEmail, setEditStudentEmail] = useState('')
   const [editStudentGrade, setEditStudentGrade] = useState('')
+  const [masterTableSorts, setMasterTableSorts] = useState<Record<MasterTableKey, MasterTableSortState | null>>({
+    managers: null,
+    teachers: null,
+    students: null,
+    regularLessons: null,
+    groupLessons: null,
+    constraints: null,
+  })
+  const [masterTableFilters, setMasterTableFilters] = useState<Record<MasterTableKey, Record<string, string>>>({
+    managers: {},
+    teachers: {},
+    students: {},
+    regularLessons: {},
+    groupLessons: {},
+    constraints: {},
+  })
 
   // Editing state for regular lessons
   const [editingRegularLessonId, setEditingRegularLessonId] = useState<string | null>(null)
+  const [editingRegularLessonDraft, setEditingRegularLessonDraft] = useState<RegularLessonDraft | null>(null)
 
   // Editing state for pair constraints
   const [editingConstraintId, setEditingConstraintId] = useState<string | null>(null)
+
+  const toggleMasterTableSort = (table: MasterTableKey, column: string): void => {
+    setMasterTableSorts((prev) => {
+      const current = prev[table]
+      if (!current || current.column !== column) {
+        return { ...prev, [table]: { column, direction: 'asc' } }
+      }
+      if (current.direction === 'asc') {
+        return { ...prev, [table]: { column, direction: 'desc' } }
+      }
+      return { ...prev, [table]: null }
+    })
+  }
+
+  const setMasterTableFilter = (table: MasterTableKey, column: string, value: string): void => {
+    setMasterTableFilters((prev) => ({
+      ...prev,
+      [table]: {
+        ...prev[table],
+        [column]: value,
+      },
+    }))
+  }
+
+  const renderMasterTableHeader = (table: MasterTableKey, column: string, label: string) => {
+    const sortState = masterTableSorts[table]
+    const isActive = sortState?.column === column
+    const sortLabel = isActive ? (sortState?.direction === 'asc' ? ' ▲' : ' ▼') : ''
+    return (
+      <th>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <button
+            type="button"
+            onClick={() => toggleMasterTableSort(table, column)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              padding: 0,
+              cursor: 'pointer',
+              textAlign: 'left',
+              fontWeight: 700,
+              color: isActive ? '#0f766e' : 'inherit',
+            }}
+          >
+            {label}{sortLabel}
+          </button>
+          <input
+            value={masterTableFilters[table][column] ?? ''}
+            onChange={(event) => setMasterTableFilter(table, column, event.target.value)}
+            placeholder="絞り込み"
+            style={{ width: '100%', minWidth: 0, fontSize: '12px', padding: '4px 6px' }}
+          />
+        </div>
+      </th>
+    )
+  }
+
+  const managerRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.managers ?? [],
+    {
+      name: (manager) => manager.name,
+      email: (manager) => manager.email,
+    },
+    masterTableFilters.managers,
+    masterTableSorts.managers,
+  ), [masterData?.managers, masterTableFilters.managers, masterTableSorts.managers])
+
+  const teacherRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.teachers ?? [],
+    {
+      name: (teacher) => teacher.name,
+      email: (teacher) => teacher.email,
+      subjects: (teacher) => teacher.subjects.join(', '),
+      memo: (teacher) => teacher.memo,
+    },
+    masterTableFilters.teachers,
+    masterTableSorts.teachers,
+  ), [masterData?.teachers, masterTableFilters.teachers, masterTableSorts.teachers])
+
+  const studentRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.students ?? [],
+    {
+      name: (student) => student.name,
+      email: (student) => student.email,
+      grade: (student) => student.grade,
+    },
+    masterTableFilters.students,
+    masterTableSorts.students,
+  ), [masterData?.students, masterTableFilters.students, masterTableSorts.students])
+
+  const regularLessonRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.regularLessons ?? [],
+    {
+      teacher: (lesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
+      student1: (lesson) => lesson.studentIds[0] ? (masterData?.students.find((student) => student.id === lesson.studentIds[0])?.name ?? '-') : '',
+      subject1: (lesson) => lesson.studentIds[0] ? (lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject) : '',
+      student2: (lesson) => lesson.studentIds[1] ? (masterData?.students.find((student) => student.id === lesson.studentIds[1])?.name ?? '-') : '',
+      subject2: (lesson) => lesson.studentIds[1] ? (lesson.studentSubjects?.[lesson.studentIds[1]] ?? lesson.subject) : '',
+      day: (lesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
+      slot: (lesson) => lesson.slotNumber,
+    },
+    masterTableFilters.regularLessons,
+    masterTableSorts.regularLessons,
+  ), [masterData, masterTableFilters.regularLessons, masterTableSorts.regularLessons])
+
+  const groupLessonRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.groupLessons ?? [],
+    {
+      teacher: (lesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
+      subject: (lesson) => lesson.subject,
+      students: (lesson) => lesson.studentIds.map((studentId) => masterData?.students.find((student) => student.id === studentId)?.name ?? '?').join(', '),
+      day: (lesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
+      slot: () => '午前',
+    },
+    masterTableFilters.groupLessons,
+    masterTableSorts.groupLessons,
+  ), [masterData, masterTableFilters.groupLessons, masterTableSorts.groupLessons])
+
+  const constraintRows = useMemo(() => filterAndSortMasterRows(
+    masterData?.constraints ?? [],
+    {
+      personA: (constraint) => {
+        const people = constraint.personAType === 'teacher' ? masterData?.teachers : masterData?.students
+        const name = people?.find((person) => person.id === constraint.personAId)?.name ?? '-'
+        return `${name} (${constraint.personAType === 'teacher' ? '講師' : '生徒'})`
+      },
+      personB: (constraint) => {
+        const people = constraint.personBType === 'teacher' ? masterData?.teachers : masterData?.students
+        const name = people?.find((person) => person.id === constraint.personBId)?.name ?? '-'
+        return `${name} (${constraint.personBType === 'teacher' ? '講師' : '生徒'})`
+      },
+      type: () => '不可',
+    },
+    masterTableFilters.constraints,
+    masterTableSorts.constraints,
+  ), [masterData, masterTableFilters.constraints, masterTableSorts.constraints])
 
   useEffect(() => {
     if (import.meta.env.DEV) {
@@ -1477,22 +1758,37 @@ const HomePage = () => {
     changeLogRef.current.add('制約変更')
   }
 
-  const addRegularLesson = async (): Promise<void> => {
-    const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
-    if (!regularTeacherId || studentIds.length === 0 || !regularDayOfWeek || !regularSlotNumber) return
-    // Require all students to have a subject set
-    const allHaveSubject = studentIds.every((sid) => regularStudentSubjects[sid])
-    if (!allHaveSubject) return
-    const defaultSubject = regularStudentSubjects[studentIds[0]] ?? regularSubject
-    const nl: RegularLesson = {
-      id: createId(), teacherId: regularTeacherId, studentIds, subject: defaultSubject,
-      studentSubjects: { ...regularStudentSubjects },
-      dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10),
+  const getRegularLessonSubjectOptions = useCallback((teacherId: string, studentId: string): string[] => {
+    const student = masterData?.students.find((item) => item.id === studentId)
+    if (!student) return [...BASE_SUBJECTS as readonly string[]]
+    const teacher = masterData?.teachers.find((item) => item.id === teacherId)
+    if (!teacher) return [...BASE_SUBJECTS as readonly string[]]
+    return teachableBaseSubjects(teacher.subjects, student.grade)
+  }, [masterData])
+
+  const buildRegularLessonFromDraft = useCallback((draft: RegularLessonDraft, lessonId: string = createId()): RegularLesson | null => {
+    const studentIds = [draft.student1Id, draft.student2Id].filter(Boolean)
+    if (!draft.teacherId || studentIds.length === 0 || !draft.dayOfWeek || !draft.slotNumber) return null
+    const allHaveSubject = studentIds.every((studentId) => draft.studentSubjects[studentId])
+    if (!allHaveSubject) return null
+
+    return {
+      id: lessonId,
+      teacherId: draft.teacherId,
+      studentIds,
+      subject: draft.studentSubjects[studentIds[0]],
+      studentSubjects: Object.fromEntries(studentIds.map((studentId) => [studentId, draft.studentSubjects[studentId]])),
+      dayOfWeek: Number.parseInt(draft.dayOfWeek, 10),
+      slotNumber: Number.parseInt(draft.slotNumber, 10),
     }
+  }, [])
+
+  const addRegularLesson = async (): Promise<void> => {
+    const nl = buildRegularLessonFromDraft(newRegularLessonDraft)
+    if (!nl) return
     await updateMaster((c) => ({ ...c, regularLessons: [...c.regularLessons, nl] }))
     changeLogRef.current.add('通常授業追加')
-    setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setNewRegularLessonDraft(createEmptyRegularLessonDraft())
   }
 
   const startEditManager = (m: Manager): void => {
@@ -1555,43 +1851,31 @@ const HomePage = () => {
     changeLogRef.current.add('通常授業削除')
   }
 
-  // Edit regular lesson: populate form fields with existing data
   const startEditRegularLesson = (l: RegularLesson): void => {
     setEditingRegularLessonId(l.id)
-    setRegularTeacherId(l.teacherId)
-    setRegularStudent1Id(l.studentIds[0] ?? '')
-    setRegularStudent2Id(l.studentIds[1] ?? '')
-    setRegularSubject(l.subject)
-    setRegularStudentSubjects(l.studentSubjects ?? {})
-    setRegularDayOfWeek(String(l.dayOfWeek))
-    setRegularSlotNumber(String(l.slotNumber))
+    setEditingRegularLessonDraft(buildRegularLessonDraftFromLesson(l))
   }
 
   const saveEditRegularLesson = async (): Promise<void> => {
-    if (!editingRegularLessonId) return
-    const studentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
-    if (!regularTeacherId || studentIds.length === 0 || !regularDayOfWeek || !regularSlotNumber) return
-    const allHaveSubject = studentIds.every((sid) => regularStudentSubjects[sid])
-    if (!allHaveSubject) return
-    const defaultSubject = regularStudentSubjects[studentIds[0]] ?? regularSubject
+    if (!editingRegularLessonId || !editingRegularLessonDraft) return
+    const nextLesson = buildRegularLessonFromDraft(editingRegularLessonDraft, editingRegularLessonId)
+    if (!nextLesson) return
     await updateMaster((c) => ({
       ...c,
       regularLessons: c.regularLessons.map((l) =>
         l.id === editingRegularLessonId
-          ? { ...l, teacherId: regularTeacherId, studentIds, subject: defaultSubject, studentSubjects: { ...regularStudentSubjects }, dayOfWeek: Number.parseInt(regularDayOfWeek, 10), slotNumber: Number.parseInt(regularSlotNumber, 10) }
+          ? nextLesson
           : l,
       ),
     }))
     changeLogRef.current.add('通常授業編集')
     setEditingRegularLessonId(null)
-    setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setEditingRegularLessonDraft(null)
   }
 
   const cancelEditRegularLesson = (): void => {
     setEditingRegularLessonId(null)
-    setRegularTeacherId(''); setRegularStudent1Id(''); setRegularStudent2Id('')
-    setRegularSubject(''); setRegularStudentSubjects({}); setRegularDayOfWeek(''); setRegularSlotNumber('')
+    setEditingRegularLessonDraft(null)
   }
 
   // Group lesson CRUD
@@ -1885,8 +2169,8 @@ const HomePage = () => {
       const rows = XLSX.utils.sheet_to_json(regularWs, { header: 1 }) as unknown as unknown[][]
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i]
-        const tName = String(row?.[0] ?? '').trim(); const s1 = String(row?.[1] ?? '').trim(); const subj1 = String(row?.[2] ?? '').trim()
-        const s2 = String(row?.[3] ?? '').trim(); const subj2 = String(row?.[4] ?? '').trim()
+        const tName = String(row?.[0] ?? '').trim(); const s1 = String(row?.[1] ?? '').trim(); const subj1 = normalizeImportedSubjectName(row?.[2])
+        const s2 = String(row?.[3] ?? '').trim(); const subj2 = normalizeImportedSubjectName(row?.[4])
         const dayStr = String(row?.[5] ?? '').trim(); const slotNum = Number(row?.[6])
         const tid = findTeacherId(tName)
         if (!tid || !subj1) continue
@@ -2263,9 +2547,9 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void addManager()}>追加</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>メール</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('managers', 'name', '名前')}{renderMasterTableHeader('managers', 'email', 'メール')}<th>操作</th></tr></thead>
                     <tbody>
-                      {(masterData.managers ?? []).map((m) => (
+                      {managerRows.map((m) => (
                         editingManagerId === m.id ? (
                           <tr key={m.id}>
                             <td>{m.name}</td>
@@ -2306,9 +2590,9 @@ const HomePage = () => {
                     ))}
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>メール</th><th>科目</th><th>メモ</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('teachers', 'name', '名前')}{renderMasterTableHeader('teachers', 'email', 'メール')}{renderMasterTableHeader('teachers', 'subjects', '科目')}{renderMasterTableHeader('teachers', 'memo', 'メモ')}<th>操作</th></tr></thead>
                     <tbody>
-                      {masterData.teachers.map((t) => (
+                      {teacherRows.map((t) => (
                         editingTeacherId === t.id ? (
                           <tr key={t.id}>
                             <td>{t.name}</td>
@@ -2353,9 +2637,9 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void addStudent()}>追加</button>
                   </div>
                   <table className="table">
-                    <thead><tr><th>名前</th><th>メール</th><th>学年</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('students', 'name', '名前')}{renderMasterTableHeader('students', 'email', 'メール')}{renderMasterTableHeader('students', 'grade', '学年')}<th>操作</th></tr></thead>
                     <tbody>
-                      {masterData.students.map((s) => (
+                      {studentRows.map((s) => (
                         editingStudentId === s.id ? (
                           <tr key={s.id}>
                             <td>{s.name}</td>
@@ -2387,83 +2671,147 @@ const HomePage = () => {
                 <div className="panel">
                   <h3>通常授業管理</h3>
                   <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
-                    <select value={regularTeacherId} onChange={(e) => setRegularTeacherId(e.target.value)}>
+                    <select value={newRegularLessonDraft.teacherId} onChange={(e) => setNewRegularLessonDraft((prev) => ({ ...prev, teacherId: e.target.value }))}>
                       <option value="">講師未割当</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
                     </select>
-                    <select value={regularStudent1Id} onChange={(e) => { setRegularStudent1Id(e.target.value); setRegularStudentSubjects((prev) => { const next = { ...prev }; delete next[regularStudent1Id]; return next }) }}>
+                    <select value={newRegularLessonDraft.student1Id} onChange={(e) => setNewRegularLessonDraft((prev) => updateRegularLessonDraftStudent(prev, 'student1Id', e.target.value))}>
                       <option value="">生徒1を選択</option>
-                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent2Id}>{s.name}</option>))}
+                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === newRegularLessonDraft.student2Id}>{s.name}</option>))}
                     </select>
-                    <select value={regularStudent2Id} onChange={(e) => { setRegularStudent2Id(e.target.value); setRegularStudentSubjects((prev) => { const next = { ...prev }; delete next[regularStudent2Id]; return next }) }}>
+                    <select
+                      value={newRegularLessonDraft.studentSubjects[newRegularLessonDraft.student1Id] ?? ''}
+                      onChange={(e) => setNewRegularLessonDraft((prev) => ({
+                        ...prev,
+                        studentSubjects: prev.student1Id
+                          ? { ...prev.studentSubjects, [prev.student1Id]: e.target.value }
+                          : prev.studentSubjects,
+                      }))}
+                      disabled={!newRegularLessonDraft.student1Id}
+                    >
+                      <option value="">科目を選択</option>
+                      {(newRegularLessonDraft.student1Id
+                        ? getRegularLessonSubjectOptions(newRegularLessonDraft.teacherId, newRegularLessonDraft.student1Id)
+                        : [...BASE_SUBJECTS as readonly string[]]
+                      ).map((s) => (<option key={s} value={s}>{s}</option>))}
+                    </select>
+                    <select value={newRegularLessonDraft.student2Id} onChange={(e) => setNewRegularLessonDraft((prev) => updateRegularLessonDraftStudent(prev, 'student2Id', e.target.value))}>
                       <option value="">生徒2(任意)</option>
-                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === regularStudent1Id}>{s.name}</option>))}
+                      {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === newRegularLessonDraft.student1Id}>{s.name}</option>))}
                     </select>
-                    <select value={regularDayOfWeek} onChange={(e) => setRegularDayOfWeek(e.target.value)}>
+                    <select
+                      value={newRegularLessonDraft.studentSubjects[newRegularLessonDraft.student2Id] ?? ''}
+                      onChange={(e) => setNewRegularLessonDraft((prev) => ({
+                        ...prev,
+                        studentSubjects: prev.student2Id
+                          ? { ...prev.studentSubjects, [prev.student2Id]: e.target.value }
+                          : prev.studentSubjects,
+                      }))}
+                      disabled={!newRegularLessonDraft.student2Id}
+                    >
+                      <option value="">科目を選択</option>
+                      {(newRegularLessonDraft.student2Id
+                        ? getRegularLessonSubjectOptions(newRegularLessonDraft.teacherId, newRegularLessonDraft.student2Id)
+                        : [...BASE_SUBJECTS as readonly string[]]
+                      ).map((s) => (<option key={s} value={s}>{s}</option>))}
+                    </select>
+                    <select value={newRegularLessonDraft.dayOfWeek} onChange={(e) => setNewRegularLessonDraft((prev) => ({ ...prev, dayOfWeek: e.target.value }))}>
                       <option value="">曜日を選択</option>
                       <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
                       <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
                     </select>
-                    <input type="number" value={regularSlotNumber} onChange={(e) => setRegularSlotNumber(e.target.value)} placeholder="時限番号" min="1" />
-                    {editingRegularLessonId ? (
-                      <>
-                        <button className="btn" type="button" onClick={() => void saveEditRegularLesson()}>更新</button>
-                        <button className="btn secondary" type="button" onClick={cancelEditRegularLesson}>キャンセル</button>
-                      </>
-                    ) : (
-                      <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
-                    )}
+                    <input type="number" value={newRegularLessonDraft.slotNumber} onChange={(e) => setNewRegularLessonDraft((prev) => ({ ...prev, slotNumber: e.target.value }))} placeholder="時限番号" min="1" />
+                    <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
                   </div>
-                  {/* Per-student subject selects */}
-                  {(() => {
-                    const selectedStudentIds = [regularStudent1Id, regularStudent2Id].filter(Boolean)
-                    const teacher = masterData.teachers.find((t) => t.id === regularTeacherId)
-                    if (selectedStudentIds.length === 0) return null
-                    return (
-                      <div style={{ marginTop: 8, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                        {selectedStudentIds.map((sid, idx) => {
-                          const student = masterData.students.find((s) => s.id === sid)
-                          if (!student) return null
-                          const availableSubjects = teacher
-                            ? teachableBaseSubjects(teacher.subjects, student.grade)
-                            : [...BASE_SUBJECTS as readonly string[]]
-                          return (
-                            <label key={sid} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span>{student.name}(生徒{idx + 1}):</span>
-                              <select
-                                value={regularStudentSubjects[sid] ?? ''}
-                                onChange={(e) => setRegularStudentSubjects((prev) => ({ ...prev, [sid]: e.target.value }))}
-                              >
-                                <option value="">科目を選択</option>
-                                {availableSubjects.map((s) => (<option key={s} value={s}>{s}</option>))}
-                              </select>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    )
-                  })()}
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
                   <table className="table">
-                    <thead><tr><th>講師</th><th>生徒1</th><th>科目</th><th>生徒2</th><th>科目</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('regularLessons', 'teacher', '講師')}{renderMasterTableHeader('regularLessons', 'student1', '生徒1')}{renderMasterTableHeader('regularLessons', 'subject1', '科目')}{renderMasterTableHeader('regularLessons', 'student2', '生徒2')}{renderMasterTableHeader('regularLessons', 'subject2', '科目')}{renderMasterTableHeader('regularLessons', 'day', '曜日')}{renderMasterTableHeader('regularLessons', 'slot', '時限')}<th>操作</th></tr></thead>
                     <tbody>
-                      {masterData.regularLessons.map((l) => {
-                        const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                      {regularLessonRows.map((l) => {
                         const s1Id = l.studentIds[0]
                         const s2Id = l.studentIds[1]
+                        const isEditing = editingRegularLessonId === l.id && editingRegularLessonDraft !== null
                         return (
-                          <tr key={l.id}>
-                            <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
-                            <td>{s1Id ? (masterData.students.find((s) => s.id === s1Id)?.name ?? '-') : ''}</td>
-                            <td>{s1Id ? (l.studentSubjects?.[s1Id] ?? l.subject) : ''}</td>
-                            <td>{s2Id ? (masterData.students.find((s) => s.id === s2Id)?.name ?? '-') : ''}</td>
-                            <td>{s2Id ? (l.studentSubjects?.[s2Id] ?? l.subject) : ''}</td>
-                            <td>{dayNames[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
-                            <td>
-                              <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
-                              <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
-                            </td>
-                          </tr>
+                          isEditing ? (
+                            <tr key={l.id}>
+                              <td>
+                                <select value={editingRegularLessonDraft.teacherId} onChange={(e) => setEditingRegularLessonDraft((prev) => prev ? { ...prev, teacherId: e.target.value } : prev)}>
+                                  <option value="">講師未割当</option>
+                                  {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                                </select>
+                              </td>
+                              <td>
+                                <select value={editingRegularLessonDraft.student1Id} onChange={(e) => setEditingRegularLessonDraft((prev) => prev ? updateRegularLessonDraftStudent(prev, 'student1Id', e.target.value) : prev)}>
+                                  <option value="">生徒1を選択</option>
+                                  {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === editingRegularLessonDraft.student2Id}>{s.name}</option>))}
+                                </select>
+                              </td>
+                              <td>
+                                <select
+                                  value={editingRegularLessonDraft.studentSubjects[editingRegularLessonDraft.student1Id] ?? ''}
+                                  onChange={(e) => setEditingRegularLessonDraft((prev) => prev && prev.student1Id ? {
+                                    ...prev,
+                                    studentSubjects: { ...prev.studentSubjects, [prev.student1Id]: e.target.value },
+                                  } : prev)}
+                                  disabled={!editingRegularLessonDraft.student1Id}
+                                >
+                                  <option value="">科目を選択</option>
+                                  {(editingRegularLessonDraft.student1Id
+                                    ? getRegularLessonSubjectOptions(editingRegularLessonDraft.teacherId, editingRegularLessonDraft.student1Id)
+                                    : [...BASE_SUBJECTS as readonly string[]]
+                                  ).map((s) => (<option key={s} value={s}>{s}</option>))}
+                                </select>
+                              </td>
+                              <td>
+                                <select value={editingRegularLessonDraft.student2Id} onChange={(e) => setEditingRegularLessonDraft((prev) => prev ? updateRegularLessonDraftStudent(prev, 'student2Id', e.target.value) : prev)}>
+                                  <option value="">生徒2(任意)</option>
+                                  {masterData.students.map((s) => (<option key={s.id} value={s.id} disabled={s.id === editingRegularLessonDraft.student1Id}>{s.name}</option>))}
+                                </select>
+                              </td>
+                              <td>
+                                <select
+                                  value={editingRegularLessonDraft.studentSubjects[editingRegularLessonDraft.student2Id] ?? ''}
+                                  onChange={(e) => setEditingRegularLessonDraft((prev) => prev && prev.student2Id ? {
+                                    ...prev,
+                                    studentSubjects: { ...prev.studentSubjects, [prev.student2Id]: e.target.value },
+                                  } : prev)}
+                                  disabled={!editingRegularLessonDraft.student2Id}
+                                >
+                                  <option value="">科目を選択</option>
+                                  {(editingRegularLessonDraft.student2Id
+                                    ? getRegularLessonSubjectOptions(editingRegularLessonDraft.teacherId, editingRegularLessonDraft.student2Id)
+                                    : [...BASE_SUBJECTS as readonly string[]]
+                                  ).map((s) => (<option key={s} value={s}>{s}</option>))}
+                                </select>
+                              </td>
+                              <td>
+                                <select value={editingRegularLessonDraft.dayOfWeek} onChange={(e) => setEditingRegularLessonDraft((prev) => prev ? { ...prev, dayOfWeek: e.target.value } : prev)}>
+                                  <option value="">曜日を選択</option>
+                                  <option value="0">日曜</option><option value="1">月曜</option><option value="2">火曜</option>
+                                  <option value="3">水曜</option><option value="4">木曜</option><option value="5">金曜</option><option value="6">土曜</option>
+                                </select>
+                              </td>
+                              <td><input type="number" value={editingRegularLessonDraft.slotNumber} onChange={(e) => setEditingRegularLessonDraft((prev) => prev ? { ...prev, slotNumber: e.target.value } : prev)} min="1" /></td>
+                              <td>
+                                <button className="btn" type="button" style={{ marginRight: '4px' }} onClick={() => void saveEditRegularLesson()}>保存</button>
+                                <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={cancelEditRegularLesson}>キャンセル</button>
+                                <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
+                              </td>
+                            </tr>
+                          ) : (
+                            <tr key={l.id}>
+                              <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
+                              <td>{s1Id ? (masterData.students.find((s) => s.id === s1Id)?.name ?? '-') : ''}</td>
+                              <td>{s1Id ? (l.studentSubjects?.[s1Id] ?? l.subject) : ''}</td>
+                              <td>{s2Id ? (masterData.students.find((s) => s.id === s2Id)?.name ?? '-') : ''}</td>
+                              <td>{s2Id ? (l.studentSubjects?.[s2Id] ?? l.subject) : ''}</td>
+                              <td>{DAY_NAME_OPTIONS[l.dayOfWeek]}曜</td><td>{l.slotNumber}限</td>
+                              <td>
+                                <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditRegularLesson(l)}>編集</button>
+                                <button className="btn secondary" type="button" onClick={() => void removeRegularLesson(l.id)}>削除</button>
+                              </td>
+                            </tr>
+                          )
                         )
                       })}
                     </tbody>
@@ -2509,17 +2857,16 @@ const HomePage = () => {
                   </div>
                   <p className="muted">集団授業は一科目・講師1人・生徒複数で毎週指定曜日の午前枠で実施されます。</p>
                   <table className="table">
-                    <thead><tr><th>講師</th><th>科目</th><th>生徒</th><th>曜日</th><th>時限</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('groupLessons', 'teacher', '講師')}{renderMasterTableHeader('groupLessons', 'subject', '科目')}{renderMasterTableHeader('groupLessons', 'students', '生徒')}{renderMasterTableHeader('groupLessons', 'day', '曜日')}{renderMasterTableHeader('groupLessons', 'slot', '時限')}<th>操作</th></tr></thead>
                     <tbody>
-                      {(masterData.groupLessons ?? []).map((l) => {
-                        const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+                      {groupLessonRows.map((l) => {
                         const studentNames = l.studentIds.map((sid) => masterData.students.find((s) => s.id === sid)?.name ?? '?').join(', ')
                         return (
                           <tr key={l.id}>
                             <td>{masterData.teachers.find((t) => t.id === l.teacherId)?.name ?? '-'}</td>
                             <td>{l.subject}</td>
                             <td style={{ fontSize: '0.85em', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{studentNames}</td>
-                            <td>{dayNames[l.dayOfWeek]}曜</td><td>午前</td>
+                            <td>{DAY_NAME_OPTIONS[l.dayOfWeek]}曜</td><td>午前</td>
                             <td>
                               <button className="btn secondary" type="button" style={{ marginRight: '4px' }} onClick={() => startEditGroupLesson(l)}>編集</button>
                               <button className="btn secondary" type="button" onClick={() => void removeGroupLesson(l.id)}>削除</button>
@@ -2568,9 +2915,9 @@ const HomePage = () => {
                     )}
                   </div>
                   <table className="table">
-                    <thead><tr><th>人物A</th><th></th><th>人物B</th><th>種別</th><th>操作</th></tr></thead>
+                    <thead><tr>{renderMasterTableHeader('constraints', 'personA', '人物A')}<th></th>{renderMasterTableHeader('constraints', 'personB', '人物B')}{renderMasterTableHeader('constraints', 'type', '種別')}<th>操作</th></tr></thead>
                     <tbody>
-                      {masterData.constraints.map((c) => {
+                      {constraintRows.map((c) => {
                         const personAName = c.personAType === 'teacher'
                           ? masterData.teachers.find((t) => t.id === c.personAId)?.name
                           : masterData.students.find((s) => s.id === c.personAId)?.name
@@ -3229,10 +3576,15 @@ const AdminPage = () => {
   const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
   // --- Actual result recording ---
   const [recordingSlot, setRecordingSlot] = useState<string | null>(null)
-  const [editingResults, setEditingResults] = useState<(ActualResult & { _uid?: number })[]>([])
+  const [editingResults, setEditingResults] = useState<EditingActualResult[]>([])
   // --- Salary calculation ---
   const [showSalary, setShowSalary] = useState(false)
-  const [showSubmissionPicker, setShowSubmissionPicker] = useState(false)
+  const [showScheduleSettingsEditor, setShowScheduleSettingsEditor] = useState(false)
+  const [editSessionStartDate, setEditSessionStartDate] = useState('')
+  const [editSessionEndDate, setEditSessionEndDate] = useState('')
+  const [editSubmissionStartDate, setEditSubmissionStartDate] = useState('')
+  const [editSubmissionEndDate, setEditSubmissionEndDate] = useState('')
+  const [editHolidays, setEditHolidays] = useState<string[]>([])
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
@@ -3272,6 +3624,15 @@ const AdminPage = () => {
       saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     }).catch(() => { /* ignore */ })
   }, [data, sessionId])
+
+  useEffect(() => {
+    if (!data || showScheduleSettingsEditor) return
+    setEditSessionStartDate(data.settings.startDate ?? '')
+    setEditSessionEndDate(data.settings.endDate ?? '')
+    setEditSubmissionStartDate(data.settings.submissionStartDate ?? '')
+    setEditSubmissionEndDate(data.settings.submissionEndDate ?? '')
+    setEditHolidays(normalizeDateList(data.settings.holidays ?? []))
+  }, [data, showScheduleSettingsEditor])
 
   useEffect(() => {
     if (!classroomId) return
@@ -3519,6 +3880,37 @@ const AdminPage = () => {
     if (!current) return
     await persist(updater(current))
   }
+
+  const openScheduleSettingsEditor = (): void => {
+    if (!data) return
+    setEditSessionStartDate(data.settings.startDate ?? '')
+    setEditSessionEndDate(data.settings.endDate ?? '')
+    setEditSubmissionStartDate(data.settings.submissionStartDate ?? '')
+    setEditSubmissionEndDate(data.settings.submissionEndDate ?? '')
+    setEditHolidays(normalizeDateList(data.settings.holidays ?? []))
+    setShowScheduleSettingsEditor(true)
+  }
+
+  const closeScheduleSettingsEditor = (): void => {
+    if (!data) {
+      setShowScheduleSettingsEditor(false)
+      return
+    }
+    setEditSessionStartDate(data.settings.startDate ?? '')
+    setEditSessionEndDate(data.settings.endDate ?? '')
+    setEditSubmissionStartDate(data.settings.submissionStartDate ?? '')
+    setEditSubmissionEndDate(data.settings.submissionEndDate ?? '')
+    setEditHolidays(normalizeDateList(data.settings.holidays ?? []))
+    setShowScheduleSettingsEditor(false)
+  }
+
+  const hasScheduleSettingsChanges = !!data && (
+    editSessionStartDate !== (data.settings.startDate ?? '') ||
+    editSessionEndDate !== (data.settings.endDate ?? '') ||
+    editSubmissionStartDate !== (data.settings.submissionStartDate ?? '') ||
+    editSubmissionEndDate !== (data.settings.submissionEndDate ?? '') ||
+    JSON.stringify(normalizeDateList(editHolidays)) !== JSON.stringify(normalizeDateList(data.settings.holidays ?? []))
+  )
 
   // ── Bulk random fill (DEV) ──
   const bulkRandomInstructors = async () => {
@@ -3850,28 +4242,67 @@ const AdminPage = () => {
 
   // --- Actual result recording helpers ---
   let editingResultUid = 0
+  const buildEditingActualResultDraft = (slot: string, result: ActualResult): EditingActualResult => {
+    if (!data) return { ...result, _classification: 'auto' }
+
+    const firstStudentId = result.studentIds.find(Boolean) ?? ''
+    const originalAssignment = firstStudentId
+      ? (data.assignments[slot] ?? []).find((assignment) => assignment.studentIds.includes(firstStudentId))
+      : undefined
+    const sourceMakeup = firstStudentId ? result.regularMakeupInfo?.[firstStudentId] : undefined
+    const sourceSubstitute = firstStudentId ? result.regularSubstituteInfo?.[firstStudentId] : undefined
+
+    return {
+      ...result,
+      _classification: 'auto',
+      _sourceDate: sourceMakeup?.date ?? sourceSubstitute?.date ?? '',
+      _sourceDayOfWeek: String(sourceMakeup?.dayOfWeek ?? sourceSubstitute?.dayOfWeek ?? getSlotDayOfWeek(slot)),
+      _sourceSlotNumber: String(sourceMakeup?.slotNumber ?? sourceSubstitute?.slotNumber ?? getSlotNumber(slot)),
+      _regularTeacherId: sourceSubstitute?.regularTeacherId ?? originalAssignment?.teacherId ?? result.teacherId,
+    }
+  }
+
   const startRecording = (slot: string): void => {
     if (!data) return
     const assignments = data.assignments[slot] ?? []
     const existing = data.actualResults?.[slot]
     if (existing) {
       // Edit mode: load existing results
-      setEditingResults(existing.map((r) => ({ ...r, studentIds: [...r.studentIds], _uid: ++editingResultUid })))
+      setEditingResults(existing.map((result) => ({
+        ...buildEditingActualResultDraft(slot, { ...result, studentIds: [...result.studentIds] }),
+        _uid: ++editingResultUid,
+      })))
     } else {
       // New: copy from current assignments
       setEditingResults(assignments.map((a) => ({
-        teacherId: a.teacherId,
-        studentIds: [...a.studentIds],
-        subject: a.subject,
-        ...(a.studentSubjects ? { studentSubjects: { ...a.studentSubjects } } : {}),
-        ...(a.regularMakeupInfo ? { regularMakeupInfo: { ...a.regularMakeupInfo } } : {}),
-        ...(a.regularSubstituteInfo ? { regularSubstituteInfo: { ...a.regularSubstituteInfo } } : {}),
-        ...(a.isRegular ? { isRegular: true } : {}),
-        ...(a.isGroupLesson ? { isGroupLesson: true } : {}),
+        ...buildEditingActualResultDraft(slot, {
+          teacherId: a.teacherId,
+          studentIds: [...a.studentIds],
+          subject: a.subject,
+          ...(a.studentSubjects ? { studentSubjects: { ...a.studentSubjects } } : {}),
+          ...(a.regularMakeupInfo ? { regularMakeupInfo: { ...a.regularMakeupInfo } } : {}),
+          ...(a.regularSubstituteInfo ? { regularSubstituteInfo: { ...a.regularSubstituteInfo } } : {}),
+          ...(a.isRegular ? { isRegular: true } : {}),
+          ...(a.isGroupLesson ? { isGroupLesson: true } : {}),
+        }),
         _uid: ++editingResultUid,
       })))
     }
     setRecordingSlot(slot)
+  }
+
+  const buildEditingSourceInfo = (slot: string, result: EditingActualResult): { date?: string; dayOfWeek: number; slotNumber: number } => {
+    const sourceDate = result._sourceDate?.trim() ?? ''
+    const parsedDayOfWeek = sourceDate
+      ? getIsoDayOfWeek(sourceDate)
+      : Number.parseInt(result._sourceDayOfWeek ?? '', 10)
+    const parsedSlotNumber = Number.parseInt(result._sourceSlotNumber ?? '', 10)
+
+    return {
+      ...(sourceDate ? { date: sourceDate } : {}),
+      dayOfWeek: Number.isNaN(parsedDayOfWeek) ? getSlotDayOfWeek(slot) : parsedDayOfWeek,
+      slotNumber: Number.isNaN(parsedSlotNumber) ? getSlotNumber(slot) : parsedSlotNumber,
+    }
   }
 
   const saveActualResults = async (): Promise<void> => {
@@ -3879,7 +4310,17 @@ const AdminPage = () => {
     const current = dataRef.current
     if (!current) return
     // Strip _uid and undefined fields before persisting (Firestore rejects undefined)
-    const cleaned: ActualResult[] = editingResults.map(({ _uid: _, ...rest }) => {
+    const cleaned: ActualResult[] = editingResults.map((editingResult) => {
+      const normalizedEditingResult = recomputeEditingResult(recordingSlot, editingResult)
+      const {
+        _uid: _,
+        _classification: __,
+        _sourceDate: ___,
+        _sourceDayOfWeek: ____ ,
+        _sourceSlotNumber: _____,
+        _regularTeacherId: ______,
+        ...rest
+      } = normalizedEditingResult
       const result: ActualResult = { teacherId: rest.teacherId, studentIds: rest.studentIds, subject: rest.subject }
       if (rest.studentSubjects && Object.keys(rest.studentSubjects).length > 0) {
         result.studentSubjects = rest.studentSubjects
@@ -3906,25 +4347,177 @@ const AdminPage = () => {
     setEditingResults([])
   }
 
-  const clearActualResults = async (slot: string): Promise<void> => {
-    if (!data) return
-    if (!window.confirm('この実績記録を解除しますか？\n割当は元の計画に戻ります。')) return
-    const current = dataRef.current
-    if (!current) return
-    const nextResults = { ...(data.actualResults ?? {}) }
-    delete nextResults[slot]
-    pushUndo(current)
-    // Use empty object instead of undefined (Firestore rejects undefined values)
-    await persist({ ...data, actualResults: Object.keys(nextResults).length > 0 ? nextResults : {} })
+  const syncEditingResultWithOriginalAssignment = (
+    slot: string,
+    result: EditingActualResult,
+  ): EditingActualResult => {
+    if (!data) return normalizeAssignment(result)
+
+    const slotAssignments = data.assignments[slot] ?? []
+    const [slotDate] = slot.split('_')
+    const studentIds = result.studentIds.filter(Boolean)
+    const nextStudentSubjects: Record<string, string> = {}
+    const nextRegularMakeupInfo: Record<string, RegularMakeupInfo> = {}
+    const nextRegularSubstituteInfo: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }> = {}
+    let hasRegularStudent = false
+
+    for (const studentId of studentIds) {
+      const originalAssignment = slotAssignments.find((assignment) => assignment.studentIds.includes(studentId))
+      const currentSubject = result.studentSubjects?.[studentId]
+      const originalSubject = originalAssignment ? getStudentSubject(originalAssignment, studentId) : undefined
+      nextStudentSubjects[studentId] = currentSubject ?? originalSubject ?? result.subject
+
+      if (originalAssignment?.regularMakeupInfo?.[studentId]) {
+        nextRegularMakeupInfo[studentId] = { ...originalAssignment.regularMakeupInfo[studentId] }
+        continue
+      }
+
+      if (originalAssignment?.regularSubstituteInfo?.[studentId]) {
+        nextRegularSubstituteInfo[studentId] = { ...originalAssignment.regularSubstituteInfo[studentId] }
+        continue
+      }
+
+      if (originalAssignment?.isRegular) {
+        if (result.teacherId && originalAssignment.teacherId && result.teacherId !== originalAssignment.teacherId) {
+          nextRegularSubstituteInfo[studentId] = {
+            regularTeacherId: originalAssignment.teacherId,
+            dayOfWeek: getSlotDayOfWeek(slot),
+            slotNumber: getSlotNumber(slot),
+            date: slotDate,
+          }
+        } else {
+          hasRegularStudent = true
+        }
+        continue
+      }
+
+      if (result.regularMakeupInfo?.[studentId]) {
+        nextRegularMakeupInfo[studentId] = { ...result.regularMakeupInfo[studentId] }
+        continue
+      }
+
+      if (result.regularSubstituteInfo?.[studentId]) {
+        nextRegularSubstituteInfo[studentId] = { ...result.regularSubstituteInfo[studentId] }
+      }
+    }
+
+    const nextResult: EditingActualResult = {
+      ...result,
+      studentIds,
+      subject: studentIds.length > 0
+        ? (nextStudentSubjects[studentIds[0]] ?? result.subject)
+        : result.subject,
+    }
+
+    if (studentIds.length > 0) nextResult.studentSubjects = nextStudentSubjects
+    else delete nextResult.studentSubjects
+
+    if (Object.keys(nextRegularMakeupInfo).length > 0) nextResult.regularMakeupInfo = nextRegularMakeupInfo
+    else delete nextResult.regularMakeupInfo
+
+    if (Object.keys(nextRegularSubstituteInfo).length > 0) nextResult.regularSubstituteInfo = nextRegularSubstituteInfo
+    else delete nextResult.regularSubstituteInfo
+
+    if (hasRegularStudent) nextResult.isRegular = true
+    else delete nextResult.isRegular
+
+    return normalizeAssignment(nextResult)
   }
 
-  const updateEditingResult = (idx: number, field: keyof ActualResult, value: string | string[]): void => {
-    setEditingResults((prev) => prev.map((r, i) => {
-      if (i !== idx) return r
-      if (field === 'teacherId') return { ...r, teacherId: value as string }
-      if (field === 'studentIds') return { ...r, studentIds: value as string[] }
-      if (field === 'subject') return { ...r, subject: value as string }
-      return r
+  const applyEditingResultClassification = (slot: string, result: EditingActualResult): EditingActualResult => {
+    const studentIds = result.studentIds.filter(Boolean)
+    const nextResult: EditingActualResult = {
+      ...result,
+      studentIds,
+      subject: studentIds.length > 0
+        ? (result.studentSubjects?.[studentIds[0]] ?? result.subject)
+        : result.subject,
+    }
+
+    if (result._classification === 'regular') {
+      nextResult.isRegular = studentIds.length > 0
+      delete nextResult.regularMakeupInfo
+      delete nextResult.regularSubstituteInfo
+      return normalizeAssignment(nextResult)
+    }
+
+    if (result._classification === 'makeup') {
+      const sourceInfo = buildEditingSourceInfo(slot, result)
+      nextResult.isRegular = false
+      nextResult.regularMakeupInfo = studentIds.reduce<Record<string, RegularMakeupInfo>>((acc, studentId) => {
+        acc[studentId] = { ...sourceInfo }
+        return acc
+      }, {})
+      delete nextResult.regularSubstituteInfo
+      return normalizeAssignment(nextResult)
+    }
+
+    if (result._classification === 'substitute') {
+      const sourceInfo = buildEditingSourceInfo(slot, result)
+      const fallbackTeacherId = result._regularTeacherId?.trim() || result.teacherId
+      nextResult.isRegular = false
+      nextResult.regularSubstituteInfo = studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
+        acc[studentId] = {
+          regularTeacherId: fallbackTeacherId,
+          dayOfWeek: sourceInfo.dayOfWeek,
+          slotNumber: sourceInfo.slotNumber,
+          ...(sourceInfo.date ? { date: sourceInfo.date } : {}),
+        }
+        return acc
+      }, {})
+      delete nextResult.regularMakeupInfo
+      return normalizeAssignment(nextResult)
+    }
+
+    if (result._classification === 'none') {
+      delete nextResult.isRegular
+      delete nextResult.regularMakeupInfo
+      delete nextResult.regularSubstituteInfo
+      return normalizeAssignment(nextResult)
+    }
+
+    return syncEditingResultWithOriginalAssignment(slot, result)
+  }
+
+  const recomputeEditingResult = (slot: string, result: EditingActualResult): EditingActualResult => {
+    if (!slot) return normalizeAssignment(result)
+    if (result._classification && result._classification !== 'auto') {
+      return applyEditingResultClassification(slot, result)
+    }
+    return syncEditingResultWithOriginalAssignment(slot, result)
+  }
+
+  const updateEditingResultTeacher = (idx: number, teacherId: string): void => {
+    setEditingResults((prev) => prev.map((result, resultIndex) => {
+      if (resultIndex !== idx) return result
+      const nextResult = recomputeEditingResult(recordingSlot ?? '', { ...result, teacherId })
+      return nextResult
+    }))
+  }
+
+  const updateEditingResultStudentIds = (idx: number, studentIds: string[]): void => {
+    setEditingResults((prev) => prev.map((result, resultIndex) => {
+      if (resultIndex !== idx) return result
+      const nextResult = recomputeEditingResult(recordingSlot ?? '', { ...result, studentIds })
+      return nextResult
+    }))
+  }
+
+  const updateEditingResultClassification = (idx: number, classification: EditingResultKind): void => {
+    setEditingResults((prev) => prev.map((result, resultIndex) => {
+      if (resultIndex !== idx) return result
+      return recomputeEditingResult(recordingSlot ?? '', { ...result, _classification: classification })
+    }))
+  }
+
+  const updateEditingResultSourceField = (
+    idx: number,
+    field: '_sourceDate' | '_sourceDayOfWeek' | '_sourceSlotNumber' | '_regularTeacherId',
+    value: string,
+  ): void => {
+    setEditingResults((prev) => prev.map((result, resultIndex) => {
+      if (resultIndex !== idx) return result
+      return recomputeEditingResult(recordingSlot ?? '', { ...result, [field]: value })
     }))
   }
 
@@ -6196,17 +6789,60 @@ const AdminPage = () => {
     }
   }
 
+  const buildResetSchedulingState = (
+    current: SessionData,
+    nextSettings: SessionSettings = current.settings,
+  ): SessionData => ({
+    ...current,
+    assignments: {},
+    actualResults: {},
+    autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
+    pdfComparisonBaseline: undefined,
+    settings: {
+      ...nextSettings,
+      lastAutoAssignedAt: 0,
+      confirmed: false,
+    },
+  })
+
   const resetAssignments = async (): Promise<void> => {
     if (!window.confirm('コマ割りをリセットしますか？\n（手動割当・自動提案結果・実績記録を全てクリアします）')) return
     setManuallyModifiedSlots(new Set())
-    await updateAssignments((current) => ({
-      ...current,
-      assignments: {},
-      actualResults: {},
-      autoAssignHighlights: { added: {}, changed: {}, makeup: {} },
-      pdfComparisonBaseline: undefined,
-      settings: { ...current.settings, lastAutoAssignedAt: 0 },
-    }))
+    await updateAssignments((current) => buildResetSchedulingState(current))
+  }
+
+  const saveScheduleSettings = async (): Promise<void> => {
+    if (!data) return
+    if (!editSessionStartDate || !editSessionEndDate) {
+      alert('講習期間（開始日・終了日）を入力してください。')
+      return
+    }
+    if (!hasScheduleSettingsChanges) {
+      setShowScheduleSettingsEditor(false)
+      return
+    }
+
+    const nextSettings: SessionSettings = {
+      ...data.settings,
+      startDate: editSessionStartDate,
+      endDate: editSessionEndDate,
+      holidays: normalizeDateList(editHolidays),
+      ...(editSubmissionStartDate ? { submissionStartDate: editSubmissionStartDate } : { submissionStartDate: undefined }),
+      ...(editSubmissionEndDate ? { submissionEndDate: editSubmissionEndDate } : { submissionEndDate: undefined }),
+    }
+
+    const confirmed = window.confirm(
+      '講習期間・提出期間・休日を変更すると、現在の割り当てをリセットします。\n' +
+      '（手動割当・自動提案結果・実績記録・確定状態を全てクリアします）\n\n' +
+      '割り当てをリセットして問題ないですか？',
+    )
+    if (!confirmed) return
+
+    setManuallyModifiedSlots(new Set())
+    closeStatusModal()
+    setLatestStatusReport(null)
+    await updateAssignments((current) => buildResetSchedulingState(current, nextSettings))
+    setShowScheduleSettingsEditor(false)
   }
 
   const savePdfComparisonBaseline = async (): Promise<void> => {
@@ -6818,6 +7454,16 @@ service cloud.firestore {
           <button className="btn btn-primary" type="button" onClick={() => void handleSaveAndClose()}>保存して閉じる</button>
         </div>
         <div className="admin-submission-row">
+          <span className="muted" style={{ fontWeight: 600 }}>講習期間:</span>
+          <span className="badge ok">{data.settings.startDate} 〜 {data.settings.endDate}</span>
+          <span className="muted" style={{ fontWeight: 600, marginLeft: '8px' }}>休日:</span>
+          {(data.settings.holidays ?? []).length > 0 ? (
+            <span className="badge warn">{normalizeDateList(data.settings.holidays ?? []).map((holiday) => holiday.replace(/^\d{4}-/, '').replace('-', '/')).join(', ')}</span>
+          ) : (
+            <span className="badge" style={{ background: '#f1f5f9', color: '#64748b' }}>未設定</span>
+          )}
+        </div>
+        <div className="admin-submission-row">
           <span className="muted" style={{ fontWeight: 600 }}>提出期間:</span>
           {data.settings.submissionStartDate && data.settings.submissionEndDate ? (
             <span className="badge ok">{data.settings.submissionStartDate} 〜 {data.settings.submissionEndDate}</span>
@@ -6827,19 +7473,36 @@ service cloud.firestore {
             <span className="badge" style={{ background: '#f1f5f9', color: '#64748b' }}>未設定（制限なし）</span>
           )}
           <button className="btn secondary" type="button" style={{ padding: '2px 10px', fontSize: '12px' }}
-            onClick={() => setShowSubmissionPicker((v) => !v)}>
-            {showSubmissionPicker ? '閉じる' : '📅 変更'}
+            onClick={() => (showScheduleSettingsEditor ? closeScheduleSettingsEditor() : openScheduleSettingsEditor())}>
+            {showScheduleSettingsEditor ? '閉じる' : '📅 期間・休日を変更'}
           </button>
-          <span className="muted" style={{ fontSize: '11px' }}>※未設定＝制限なし。期間後もカレンダー表示あり</span>
+          <span className="muted" style={{ fontSize: '11px' }}>※保存時に割り当てをリセットするか確認します</span>
         </div>
-        {showSubmissionPicker && (
+        {showScheduleSettingsEditor && (
           <div style={{ marginTop: 8 }}>
             <DateRangePicker
-              startDate={data.settings.submissionStartDate ?? ''}
-              endDate={data.settings.submissionEndDate ?? ''}
-              onStartChange={(d) => void update((c) => ({ ...c, settings: { ...c.settings, submissionStartDate: d || undefined } }))}
-              onEndChange={(d) => void update((c) => ({ ...c, settings: { ...c.settings, submissionEndDate: d || undefined } }))}
+              label="📅 講習期間"
+              startDate={editSessionStartDate}
+              endDate={editSessionEndDate}
+              onStartChange={setEditSessionStartDate}
+              onEndChange={setEditSessionEndDate}
             />
+            <DateRangePicker
+              label="📝 提出期間 ※この期間のみ希望URLが有効"
+              startDate={editSubmissionStartDate}
+              endDate={editSubmissionEndDate}
+              onStartChange={setEditSubmissionStartDate}
+              onEndChange={setEditSubmissionEndDate}
+            />
+            <div style={{ marginTop: 12 }}>
+              <span className="muted" style={{ marginBottom: '4px', display: 'block' }}>🚫 休日: 日付をクリックで選択/解除</span>
+              <HolidayCalendar selected={editHolidays} onChange={(dates) => setEditHolidays(normalizeDateList(dates))} />
+            </div>
+            <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn" type="button" onClick={() => void saveScheduleSettings()} disabled={!hasScheduleSettingsChanges}>保存して反映</button>
+              <button className="btn secondary" type="button" onClick={closeScheduleSettingsEditor}>キャンセル</button>
+              <span className="muted" style={{ fontSize: '11px' }}>講習期間・提出期間・休日を変更するとコマ割りはリセットされます。</span>
+            </div>
           </div>
         )}
         <p className="muted" style={{ marginTop: 6 }}>管理者のみ編集できます。希望入力は個別URLで配布してください。</p>
@@ -7490,16 +8153,6 @@ service cloud.firestore {
                             📝 実績修正
                           </button>
                         )}
-                        {isRecorded && recordingSlot !== slot && (
-                          <button
-                            className="btn secondary"
-                            type="button"
-                            style={{ fontSize: '0.75em', padding: '3px 8px', whiteSpace: 'nowrap', lineHeight: 1.2, background: '#fee2e2', borderColor: '#fca5a5', color: '#dc2626' }}
-                            onClick={() => void clearActualResults(slot)}
-                          >
-                            🔓 実績解除
-                          </button>
-                        )}
                         {(!isRecorded || recordingSlot === slot) && (
                           <button
                             className="btn secondary slot-add-btn"
@@ -7554,10 +8207,61 @@ service cloud.firestore {
                               <button type="button" className="pair-delete-btn" title="このペアを削除"
                                 onClick={() => removeEditingResultPair(rIdx)}>×</button>
                               <select value={result.teacherId}
-                                onChange={(e) => updateEditingResult(rIdx, 'teacherId', e.target.value)}>
+                                onChange={(e) => updateEditingResultTeacher(rIdx, e.target.value)}>
                                 <option value="">{isMendan ? 'マネージャーを選択' : '講師未割当'}</option>
                                 {instructors.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                               </select>
+                              {!isMendan && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', marginTop: '6px' }}>
+                                  <span style={{ fontSize: '0.75em', color: '#475569', fontWeight: 600 }}>種別</span>
+                                  <select
+                                    value={result._classification ?? 'auto'}
+                                    onChange={(e) => updateEditingResultClassification(rIdx, e.target.value as EditingResultKind)}
+                                    style={{ minWidth: '140px' }}
+                                  >
+                                    <option value="auto">元予定に合わせる</option>
+                                    <option value="regular">通常</option>
+                                    <option value="makeup">振替</option>
+                                    <option value="substitute">代行</option>
+                                    <option value="none">種別なし</option>
+                                  </select>
+                                  {(result._classification === 'makeup' || result._classification === 'substitute') && (
+                                    <>
+                                      {result._classification === 'substitute' && (
+                                        <select
+                                          value={result._regularTeacherId ?? ''}
+                                          onChange={(e) => updateEditingResultSourceField(rIdx, '_regularTeacherId', e.target.value)}
+                                          style={{ minWidth: '140px' }}
+                                        >
+                                          <option value="">元講師を選択</option>
+                                          {instructors.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                                        </select>
+                                      )}
+                                      <input
+                                        type="date"
+                                        value={result._sourceDate ?? ''}
+                                        onChange={(e) => updateEditingResultSourceField(rIdx, '_sourceDate', e.target.value)}
+                                      />
+                                      <select
+                                        value={result._sourceDayOfWeek ?? String(getSlotDayOfWeek(slot))}
+                                        onChange={(e) => updateEditingResultSourceField(rIdx, '_sourceDayOfWeek', e.target.value)}
+                                      >
+                                        {DAY_NAME_OPTIONS.map((dayName, dayIndex) => (
+                                          <option key={dayName} value={dayIndex}>{dayName}曜</option>
+                                        ))}
+                                      </select>
+                                      <input
+                                        type="number"
+                                        min="1"
+                                        placeholder="元時限"
+                                        value={result._sourceSlotNumber ?? ''}
+                                        onChange={(e) => updateEditingResultSourceField(rIdx, '_sourceSlotNumber', e.target.value)}
+                                        style={{ width: '88px' }}
+                                      />
+                                    </>
+                                  )}
+                                </div>
+                              )}
                               {result.teacherId && (
                                 <>
                                   {(isMendan ? [0] : result.studentIds.map((_, i) => i)).map((pos) => {
@@ -7578,7 +8282,7 @@ service cloud.firestore {
                                           onChange={(e) => {
                                             const newIds = [...result.studentIds]
                                             newIds[pos] = e.target.value
-                                            updateEditingResult(rIdx, 'studentIds', newIds)
+                                            updateEditingResultStudentIds(rIdx, newIds)
                                           }}>
                                           <option value="">{isMendan ? '保護者を選択' : `生徒${pos + 1}を選択`}</option>
                                           {availableStudents.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
@@ -7597,7 +8301,7 @@ service cloud.firestore {
                                             onClick={() => {
                                               const newIds = [...result.studentIds]
                                               newIds[pos] = ''
-                                              updateEditingResult(rIdx, 'studentIds', newIds)
+                                              updateEditingResultStudentIds(rIdx, newIds)
                                             }}>×</button>
                                         )}
                                       </div>
@@ -7607,7 +8311,7 @@ service cloud.firestore {
                                     <button type="button" className="btn secondary" style={{ fontSize: '0.7em', padding: '2px 6px', marginTop: '4px' }}
                                       onClick={() => {
                                         const newIds = [...result.studentIds, '']
-                                        updateEditingResult(rIdx, 'studentIds', newIds)
+                                        updateEditingResultStudentIds(rIdx, newIds)
                                       }}>
                                       + 生徒追加
                                     </button>
