@@ -5948,6 +5948,7 @@ const AdminPage = () => {
         const subjectMismatches = assignment.studentIds.flatMap((sid) => {
           const student = data.students.find((item) => item.id === sid)
           if (!student) return []
+          if (assignment.regularSubstituteInfo?.[sid]) return []
           const subj = assignment.studentSubjects?.[sid] ?? assignment.subject
           return subj && !canTeachSubject(teacher.subjects, student.grade, subj)
             ? [`${teacher.name} の担当外科目(${subj}) - ${student.name}`]
