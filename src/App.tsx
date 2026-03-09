@@ -7204,16 +7204,18 @@ const AdminPage = () => {
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
+    const protectedSlots = new Set<string>([...recordedSlots, ...manuallyModifiedSlots])
     const mergedAssignments = { ...nextAssignments }
-    for (const slot of recordedSlots) {
+    for (const slot of protectedSlots) {
       mergedAssignments[slot] = data.assignments[slot] ?? []
     }
     const baseAutoAssignReport = buildCurrentStatusReport(mergedAssignments)
 
     await updateAssignments((current) => {
-      // Merge: auto-assign results for non-recorded slots + preserve current assignments for recorded slots
+      // Merge: auto-assign results for untouched slots only.
+      // Keep recorded slots and manually modified slots exactly as the user left them.
       const mergedAssignments = { ...nextAssignments }
-      for (const slot of recordedSlots) {
+      for (const slot of protectedSlots) {
         mergedAssignments[slot] = current.assignments[slot] ?? []
       }
       return {
@@ -7223,7 +7225,6 @@ const AdminPage = () => {
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
-    setManuallyModifiedSlots(new Set())
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
     const overRemovedSection: StatusSection = {
       key: 'overRemoved',
