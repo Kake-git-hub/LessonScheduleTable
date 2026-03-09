@@ -31,11 +31,21 @@ export const isStudentAvailable = (student: Student, slotKey: string): boolean =
   return !student.unavailableDates.includes(date)
 }
 
-export const isStudentAvailableForRegularLesson = (student: Student, slotKey: string): boolean => {
-  if ((student.unavailableSlots ?? []).includes(slotKey)) return false
+export const getStudentRegularLessonStatus = (student: Student, slotKey: string): 'attend' | 'absent' | 'completed' => {
+  const override = student.regularLessonStatuses?.[slotKey]
+  if (override === 'completed') return 'completed'
+  if (override === 'absent') return 'absent'
+  if ((student.unavailableSlots ?? []).includes(slotKey)) return 'absent'
   const [date] = slotKey.split('_')
-  return !student.unavailableDates.includes(date)
+  return student.unavailableDates.includes(date) ? 'absent' : 'attend'
 }
+
+export const isStudentAvailableForRegularLesson = (student: Student, slotKey: string): boolean => {
+  return getStudentRegularLessonStatus(student, slotKey) === 'attend'
+}
+
+export const isStudentRegularLessonCompleted = (student: Student, slotKey: string): boolean =>
+  getStudentRegularLessonStatus(student, slotKey) === 'completed'
 
 /** For mendan sessions: check if parent has positive availability for a slot */
 export const isParentAvailableForMendan = (

@@ -16,6 +16,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore'
 import type { MasterData, SessionData } from './types'
+import { normalizeTeacherSubjects } from './utils/subjects'
 
 const firebaseConfig = {
   apiKey: 'AIzaSyDPs5KUD9j-Oa3lwxEo4so_4tasLlSYI7Q',
@@ -56,6 +57,18 @@ const stripUndefinedDeep = <T,>(value: T): T => {
   }
   return value
 }
+
+const normalizeTeacherList = <T extends { teachers: Array<{ subjects: string[] }> }>(value: T): T => ({
+  ...value,
+  teachers: value.teachers.map((teacher) => ({
+    ...teacher,
+    subjects: normalizeTeacherSubjects(teacher.subjects ?? []),
+  })),
+})
+
+const normalizeMasterData = (data: MasterData): MasterData => normalizeTeacherList(data)
+
+const normalizeSessionData = (data: SessionData): SessionData => normalizeTeacherList(data)
 
 // ---------- Anonymous Auth ----------
 
@@ -230,7 +243,16 @@ export const watchSession = (
   onSnapshot(
     classroomSessionRef(classroomId, sessionId),
     (snapshot) => {
-      callback(snapshot.exists() ? (snapshot.data() as SessionData) : null)
+      if (!snapshot.exists()) {
+        callback(null)
+        return
+      }
+      const raw = snapshot.data() as SessionData
+      const normalized = normalizeSessionData(raw)
+      callback(normalized)
+      if (JSON.stringify(raw.teachers ?? []) !== JSON.stringify(normalized.teachers ?? [])) {
+        void setDoc(classroomSessionRef(classroomId, sessionId), stripUndefinedDeep(normalized), { merge: false })
+      }
     },
     (error) => {
       if (onError) onError(error)
@@ -240,7 +262,7 @@ export const watchSession = (
 
 export const loadSession = async (classroomId: string, sessionId: string): Promise<SessionData | null> => {
   const snapshot = await getDoc(classroomSessionRef(classroomId, sessionId))
-  return snapshot.exists() ? (snapshot.data() as SessionData) : null
+  return snapshot.exists() ? normalizeSessionData(snapshot.data() as SessionData) : null
 }
 
 /** One-shot fetch of session list items (non-realtime). */
@@ -258,10 +280,10 @@ export const listSessionItems = async (classroomId: string): Promise<SessionList
 export const saveSession = async (classroomId: string, sessionId: string, data: SessionData): Promise<void> => {
   const now = Date.now()
   const createdAt = data.settings.createdAt ?? now
-  const next: SessionData = stripUndefinedDeep({
+  const next: SessionData = stripUndefinedDeep(normalizeSessionData({
     ...data,
     settings: { ...data.settings, createdAt, updatedAt: now },
-  })
+  }))
   await setDoc(classroomSessionRef(classroomId, sessionId), next)
 }
 
@@ -285,7 +307,16 @@ export const watchMasterData = (
   onSnapshot(
     classroomMasterRef(classroomId),
     (snapshot) => {
-      callback(snapshot.exists() ? (snapshot.data() as MasterData) : null)
+      if (!snapshot.exists()) {
+        callback(null)
+        return
+      }
+      const raw = snapshot.data() as MasterData
+      const normalized = normalizeMasterData(raw)
+      callback(normalized)
+      if (JSON.stringify(raw.teachers ?? []) !== JSON.stringify(normalized.teachers ?? [])) {
+        void setDoc(classroomMasterRef(classroomId), stripUndefinedDeep(normalized), { merge: false })
+      }
     },
     (error) => {
       if (onError) onError(error)
@@ -295,11 +326,11 @@ export const watchMasterData = (
 
 export const loadMasterData = async (classroomId: string): Promise<MasterData | null> => {
   const snapshot = await getDoc(classroomMasterRef(classroomId))
-  return snapshot.exists() ? (snapshot.data() as MasterData) : null
+  return snapshot.exists() ? normalizeMasterData(snapshot.data() as MasterData) : null
 }
 
 export const saveMasterData = async (classroomId: string, data: MasterData): Promise<void> => {
-  await setDoc(classroomMasterRef(classroomId), stripUndefinedDeep(data))
+  await setDoc(classroomMasterRef(classroomId), stripUndefinedDeep(normalizeMasterData(data)))
 }
 
 /** Load all session IDs for a classroom (one-shot). */

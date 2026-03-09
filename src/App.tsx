@@ -14,6 +14,7 @@ import type {
   PairConstraint,
   PairConstraintPersonType,
   PersonType,
+  RegularLessonAttendanceStatus,
   RegularLesson,
   RegularMakeupInfo,
   SessionData,
@@ -23,9 +24,9 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject } from './utils/subjects'
+import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject, normalizeTeacherSubject } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
-import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
+import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
@@ -819,6 +820,11 @@ const areStringArraysEqual = (left: string[], right: string[]): boolean => {
 const areSubjectSlotsEqual = (left: Record<string, number>, right: Record<string, number>): boolean => {
   const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])]
   return keys.every((key) => (left[key] ?? 0) === (right[key] ?? 0))
+}
+
+const areStringRecordEqual = (left: Record<string, string>, right: Record<string, string>): boolean => {
+  const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])]
+  return keys.every((key) => (left[key] ?? '') === (right[key] ?? ''))
 }
 
 const isRegularOccurrenceCoveredElsewhere = (
@@ -2208,7 +2214,7 @@ const HomePage = () => {
         const row = rows[i]
         const name = String(row?.[0] ?? '').trim()
         if (!name) continue
-        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => isKnownTeacherSubject(s) || FIXED_SUBJECTS.includes(s))
+        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => normalizeTeacherSubject(s.trim())).filter((s) => isKnownTeacherSubject(s) || FIXED_SUBJECTS.includes(s))
         const memo = String(row?.[2] ?? '').trim()
         const email = String(row?.[3] ?? '').trim()
         if (md.teachers.some((t) => t.name === name)) continue
@@ -4193,9 +4199,9 @@ const AdminPage = () => {
       const mergedStudents = master.students.map((ms) => {
         const existing = data.students.find((s) => s.id === ms.id)
         if (existing) {
-          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], submittedAt: existing.submittedAt }
+          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], regularLessonStatuses: existing.regularLessonStatuses ?? {}, submittedAt: existing.submittedAt }
         }
-        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], submittedAt: 0 }
+        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], regularLessonStatuses: {}, submittedAt: 0 }
       })
       // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
       const next: SessionData = {
@@ -4232,7 +4238,7 @@ const AdminPage = () => {
       .map((slot) => (data.assignments[slot] ?? []).map((a) => assignmentSignature(a)).sort().join(';'))
       .join(',')
     // Include student unavailability in signature so auto-fill reacts to absent students
-    const studentUnavailSig = data.students.map(s => `${s.id}:${(s.unavailableSlots ?? []).join(';')}`).join('|')
+    const studentUnavailSig = data.students.map(s => `${s.id}:${(s.unavailableSlots ?? []).join(';')}:${Object.entries(s.regularLessonStatuses ?? {}).sort(([left], [right]) => left.localeCompare(right)).map(([slot, status]) => `${slot}=${status}`).join(';')}`).join('|')
     const sig = `${slotKeys.join(',')}|${data.regularLessons.map((l) => `${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}:${JSON.stringify(l.studentSubjects ?? {})}`).join(',')}|${(data.groupLessons ?? []).map((l) => `G${l.id}:${l.dayOfWeek}:${l.slotNumber}:${l.teacherId}:${l.studentIds.join('+')}:${l.subject}`).join(',')}|${studentUnavailSig}|${assignmentStateSig}`
     if (sig === regularFillSigRef.current) return
     regularFillSigRef.current = sig
@@ -5390,8 +5396,10 @@ const AdminPage = () => {
           const dow = getIsoDayOfWeek(date)
           if (dow !== rl.dayOfWeek || getSlotNumber(slot) !== rl.slotNumber) continue
           const actualForSlot = actualResults?.[slot]
+          const regularStatus = getStudentRegularLessonStatus(student, slot)
+          if (regularStatus === 'completed') continue
           const absentFromActual = actualForSlot != null && !actualForSlot.some((r) => r.studentIds.includes(sid))
-          const needsMakeup = !isStudentAvailableForRegularLesson(student, slot)
+          const needsMakeup = regularStatus === 'absent'
           if (!needsMakeup && !absentFromActual) continue
           demands.push({
             studentId: sid,
@@ -9446,20 +9454,6 @@ const StudentInputPage = ({
     student.subjectSlots ?? {},
   )
 
-  // Initialize unavailable slots from existing data (migrate from legacy unavailableDates if needed)
-  const [unavailableSlots, setUnavailableSlots] = useState<Set<string>>(() => {
-    const initial = new Set(student.unavailableSlots ?? [])
-    // Migrate legacy: if unavailableDates exist and unavailableSlots is empty, expand dates to all slots
-    if (initial.size === 0 && (student.unavailableDates ?? []).length > 0) {
-      for (const date of student.unavailableDates) {
-        for (let s = 1; s <= data.settings.slotsPerDay; s++) {
-          initial.add(`${date}_${s}`)
-        }
-      }
-    }
-    return initial
-  })
-
   const regularSlotMap = useMemo(() => {
     const map = new Map<string, string>()
     const studentLessons = data.regularLessons.filter((lesson) => lesson.studentIds.includes(student.id))
@@ -9476,6 +9470,44 @@ const StudentInputPage = ({
   }, [dates, data.regularLessons, student.id])
   const regularSlotKeys = useMemo(() => new Set(regularSlotMap.keys()), [regularSlotMap])
 
+  // Initialize unavailable slots from existing data (migrate from legacy unavailableDates if needed)
+  const [unavailableSlots, setUnavailableSlots] = useState<Set<string>>(() => {
+    const initial = new Set(student.unavailableSlots ?? [])
+    // Migrate legacy: if unavailableDates exist and unavailableSlots is empty, expand dates to all slots
+    if (initial.size === 0 && (student.unavailableDates ?? []).length > 0) {
+      for (const date of student.unavailableDates) {
+        for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+          initial.add(`${date}_${s}`)
+        }
+      }
+    }
+    return initial
+  })
+  const [regularLessonStatuses, setRegularLessonStatuses] = useState<Record<string, RegularLessonAttendanceStatus>>(() => {
+    const initial = { ...(student.regularLessonStatuses ?? {}) }
+    const unavailable = new Set(student.unavailableSlots ?? [])
+    if (unavailable.size === 0 && (student.unavailableDates ?? []).length > 0) {
+      for (const date of student.unavailableDates) {
+        for (let s = 1; s <= data.settings.slotsPerDay; s++) {
+          unavailable.add(`${date}_${s}`)
+        }
+      }
+    }
+    for (const slotKey of regularSlotMap.keys()) {
+      if (unavailable.has(slotKey) && !initial[slotKey]) {
+        initial[slotKey] = 'absent'
+      }
+    }
+    return initial
+  })
+
+  const getRegularSlotStatus = (slotKey: string): 'attend' | 'absent' | 'completed' => {
+    const status = regularLessonStatuses[slotKey]
+    if (status === 'completed') return 'completed'
+    if (status === 'absent') return 'absent'
+    return unavailableSlots.has(slotKey) ? 'absent' : 'attend'
+  }
+
   const toggleSlot = (slotKey: string) => {
     // Check if this slot has a regular lesson
     const [date, slotNumStr] = slotKey.split('_')
@@ -9484,11 +9516,28 @@ const StudentInputPage = ({
     const hasRegular = data.regularLessons.some(
       (l) => l.studentIds.includes(student.id) && l.dayOfWeek === dow && l.slotNumber === slotNum,
     )
-    if (hasRegular && !unavailableSlots.has(slotKey)) {
-      const confirmed = window.confirm(
-        `この時限には通常授業がありますが、出席不可としますか？`,
-      )
-      if (!confirmed) return
+    if (hasRegular) {
+      const currentStatus = getRegularSlotStatus(slotKey)
+      if (currentStatus === 'attend') {
+        const confirmed = window.confirm('この時限には通常授業がありますが、休みにしますか？')
+        if (!confirmed) return
+      }
+
+      setRegularLessonStatuses((prev) => {
+        const next = { ...prev }
+        if (currentStatus === 'attend') next[slotKey] = 'absent'
+        else if (currentStatus === 'absent') next[slotKey] = 'completed'
+        else delete next[slotKey]
+        return next
+      })
+
+      setUnavailableSlots((prev) => {
+        const next = new Set(prev)
+        if (currentStatus === 'attend') next.add(slotKey)
+        else next.delete(slotKey)
+        return next
+      })
+      return
     }
 
     setUnavailableSlots((prev) => {
@@ -9545,6 +9594,11 @@ const StudentInputPage = ({
 
   const handleSubmit = () => {
     const normalizedUnavailableSlots = normalizeStringArray(Array.from(unavailableSlots))
+    const normalizedRegularLessonStatuses = Object.fromEntries(
+      Object.entries(regularLessonStatuses)
+        .filter(([slotKey, status]) => regularSlotKeys.has(slotKey) && (status === 'absent' || status === 'completed'))
+        .sort(([left], [right]) => left.localeCompare(right)),
+    )
     const subjects = Object.entries(subjectSlots)
       .filter(([, count]) => count > 0)
       .map(([subject]) => subject)
@@ -9562,12 +9616,16 @@ const StudentInputPage = ({
     const previousSubjects = normalizeStringArray(student.subjects ?? [])
     const previousUnavailableDates = normalizeStringArray(student.unavailableDates ?? [])
     const previousUnavailableSlots = normalizeStringArray(student.unavailableSlots ?? [])
+    const previousRegularLessonStatuses = Object.fromEntries(
+      Object.entries(student.regularLessonStatuses ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    )
     const normalizedSubjects = normalizeStringArray(subjects)
     const normalizedDerivedUnavailDates = normalizeStringArray(derivedUnavailDates)
     const hasChanged = !areStringArraysEqual(normalizedSubjects, previousSubjects)
       || !areSubjectSlotsEqual(student.subjectSlots ?? {}, subjectSlots)
       || !areStringArraysEqual(normalizedDerivedUnavailDates, previousUnavailableDates)
       || !areStringArraysEqual(normalizedUnavailableSlots, previousUnavailableSlots)
+      || !areStringRecordEqual(previousRegularLessonStatuses, normalizedRegularLessonStatuses)
 
     const isUpdate = !!(student.submittedAt)
     if (hasChanged) {
@@ -9582,6 +9640,7 @@ const StudentInputPage = ({
         unavailableDates: normalizedDerivedUnavailDates,
         preferredSlots: [],
         unavailableSlots: normalizedUnavailableSlots,
+        regularLessonStatuses: normalizedRegularLessonStatuses,
       }
 
       const updatedStudents = data.students.map((s) =>
@@ -9593,6 +9652,7 @@ const StudentInputPage = ({
               unavailableDates: normalizedDerivedUnavailDates,
               preferredSlots: [],
               unavailableSlots: normalizedUnavailableSlots,
+              regularLessonStatuses: normalizedRegularLessonStatuses,
               submittedAt: now,
             }
           : s,
@@ -9697,7 +9757,7 @@ const StudentInputPage = ({
 
       <div className="student-form-section">
         <h3>出席不可コマ</h3>
-        <p className="muted">出席できないコマをタップして選択してください。日付をタップすると全時限を一括切替できます。</p>
+        <p className="muted">出席できないコマをタップして選択してください。通常授業コマは「通常出席 → 休み → 振替済 → 通常出席」で切り替わります。</p>
         <div className="teacher-table-wrapper student-no-scroll">
           <table className="teacher-table compact-grid">
             <thead>
@@ -9737,15 +9797,22 @@ const StudentInputPage = ({
                       const slotKey = `${date}_${slotNum}`
                       const isUnavail = unavailableSlots.has(slotKey)
                       const hasRegular = regularSlotKeys.has(slotKey)
+                      const regularStatus = hasRegular ? getRegularSlotStatus(slotKey) : 'attend'
                       return (
                         <td key={slotNum}>
                           <button
                             className={`teacher-slot-btn ${isUnavail && hasRegular ? 'unavail-regular' : isUnavail ? 'unavail' : ''} ${hasRegular && !isUnavail ? 'regular' : ''}`}
                             onClick={() => toggleSlot(slotKey)}
                             type="button"
-                            style={hasRegular && !isUnavail ? { fontSize: '11px', lineHeight: '1.1', padding: '2px 1px' } : undefined}
+                            style={hasRegular ? { fontSize: '11px', lineHeight: '1.1', padding: '2px 1px', background: regularStatus === 'completed' ? '#bfdbfe' : undefined, color: regularStatus === 'completed' ? '#1e3a8a' : undefined } : undefined}
                           >
-                            {isUnavail ? '✕' : hasRegular ? <>通常<br />{regularSlotMap.get(slotKey) ?? ''}</> : ''}
+                            {hasRegular
+                              ? regularStatus === 'completed'
+                                ? <>振替済<br />{regularSlotMap.get(slotKey) ?? ''}</>
+                                : regularStatus === 'absent'
+                                  ? <>休み<br />{regularSlotMap.get(slotKey) ?? ''}</>
+                                  : <>通常<br />{regularSlotMap.get(slotKey) ?? ''}</>
+                              : isUnavail ? '✕' : ''}
                           </button>
                         </td>
                       )

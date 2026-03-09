@@ -4,6 +4,8 @@ export type ConstraintType = 'incompatible' | 'recommended'
 
 export type SubjectSlotRequest = Record<string, number>
 
+export type RegularLessonAttendanceStatus = 'absent' | 'completed'
+
 // ── Constraint cards ─────────────────────────────────
 export type ConstraintCardType =
   | 'lateSlotNonExam'       // 受験生以外の後半コマ優先 (default)
@@ -40,6 +42,7 @@ export type Student = {
   unavailableDates: string[]
   preferredSlots: string[]
   unavailableSlots: string[]
+  regularLessonStatuses?: Record<string, RegularLessonAttendanceStatus>
   memo: string
   submittedAt: number
   /** Per-student constraint cards (e.g. "twoConsecutive", "oneSlotOnly") */
@@ -158,6 +161,7 @@ export type SubmissionLogEntry = {
   unavailableDates?: string[]
   preferredSlots?: string[]
   unavailableSlots?: string[]
+  regularLessonStatuses?: Record<string, RegularLessonAttendanceStatus>
   /** Teacher availability snapshot */
   availability?: string[]
 }

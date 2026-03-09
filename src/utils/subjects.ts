@@ -60,6 +60,15 @@ const LEVEL_ORDER: Record<string, number> = { '小': 0, '中': 1, '高1': 2, '�
 
 const SORTED_LEVEL_PREFIXES = [...RECOGNIZED_LEVEL_PREFIXES].sort((a, b) => b.length - a.length)
 
+const TEACHER_BASE_SUBJECT_ALIASES: Record<string, string> = {
+  英語: '英',
+  数学: '数',
+  算数: '算',
+  国語: '国',
+  理科: '理',
+  社会: '社',
+}
+
 const parseTeacherSubject = (subj: string): { level: string; base: string } | null => {
   for (const lv of SORTED_LEVEL_PREFIXES) {
     if (subj.startsWith(lv)) {
@@ -70,6 +79,25 @@ const parseTeacherSubject = (subj: string): { level: string; base: string } | nu
 }
 
 export const isKnownTeacherSubject = (subj: string): boolean => KNOWN_TEACHER_SUBJECTS.has(subj)
+
+export const normalizeTeacherSubject = (subj: string): string => {
+  const normalized = String(subj ?? '').trim().normalize('NFKC').replace(/\s+/g, '')
+  if (!normalized) return ''
+
+  const parsed = parseTeacherSubject(normalized)
+  if (!parsed) return normalized
+
+  const base = TEACHER_BASE_SUBJECT_ALIASES[parsed.base] ?? parsed.base
+  const nextLevel = parsed.level === '高' ? '高1' : parsed.level
+  return `${nextLevel}${base}`
+}
+
+export const normalizeTeacherSubjects = (subjects: string[]): string[] => {
+  const normalized = subjects
+    .map((subject) => normalizeTeacherSubject(subject))
+    .filter(Boolean)
+  return [...new Set(normalized)]
+}
 
 /** Extract the base subject from a (possibly leveled) subject string.
  *  '高2英' → '英', '高英' → '英', '中数' → '数', '英' → '英' (legacy). */

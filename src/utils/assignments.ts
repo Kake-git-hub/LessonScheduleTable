@@ -1,5 +1,5 @@
 import type { ActualResult, Assignment, RegularLesson, RegularMakeupInfo, SessionData } from '../types'
-import { hasAvailability } from './constraints'
+import { getStudentRegularLessonStatus, hasAvailability } from './constraints'
 import { canTeachSubject } from './subjects'
 
 const hasTeacherAvailabilityWithRegularFallback = (data: SessionData, teacherId: string, slot: string): boolean => {
@@ -370,7 +370,7 @@ export const getDatesInRange = (settings: SessionData['settings']): string[] => 
 }
 
 export const getRegularSubjectProgress = (
-  data: Pick<SessionData, 'settings' | 'regularLessons' | 'groupLessons'>,
+  data: Pick<SessionData, 'settings' | 'regularLessons' | 'groupLessons' | 'students'>,
   effectiveAssignments: Record<string, Assignment[]>,
   studentId: string,
 ): { desiredBySubject: Record<string, number>; assignedBySubject: Record<string, number> } => {
@@ -382,15 +382,18 @@ export const getRegularSubjectProgress = (
 
   const occurrences: { date: string; slot: string; dayOfWeek: number; slotNumber: number; subject: string }[] = []
   const desiredBySubject: Record<string, number> = {}
+  const student = data.students.find((entry) => entry.id === studentId)
 
   for (const date of getDatesInRange(data.settings)) {
     const dayOfWeek = getIsoDayOfWeek(date)
     for (const lesson of data.regularLessons) {
       if (lesson.dayOfWeek !== dayOfWeek || !lesson.studentIds.includes(studentId)) continue
+      const slot = `${date}_${lesson.slotNumber}`
+      if (student && getStudentRegularLessonStatus(student, slot) === 'completed') continue
       const subject = lesson.studentSubjects?.[studentId] ?? lesson.subject
       if (groupSubjectSet.has(subject)) continue
       desiredBySubject[subject] = (desiredBySubject[subject] ?? 0) + 1
-      occurrences.push({ date, slot: `${date}_${lesson.slotNumber}`, dayOfWeek, slotNumber: lesson.slotNumber, subject })
+      occurrences.push({ date, slot, dayOfWeek, slotNumber: lesson.slotNumber, subject })
     }
   }
 
