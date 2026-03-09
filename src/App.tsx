@@ -6147,6 +6147,30 @@ const AdminPage = () => {
       })
       return blockedEntries.length > 0 ? toStatusProposal(`${label}: ${summarizeBlockedEntries(blockedEntries)}`) : null
     }
+    const buildMergeReasonProposal = (label: string, mode: 'normal' | 'override'): StatusProposal | null => {
+      const blockedEntries = slotAssignments
+        .filter((assignment) => assignment !== item.assignment && !assignment.isGroupLesson && !!assignment.teacherId && assignment.studentIds.length > 0)
+        .flatMap((assignment) => {
+          const teacher = data.teachers.find((entry) => entry.id === assignment.teacherId)
+          if (!teacher) return []
+          const reasons: string[] = []
+          if (!hasInstructorAvailability('teacher', teacher.id, item.slot)) reasons.push('このコマに出席不可')
+          if (assignment.studentIds.length + item.assignment.studentIds.length > 2) reasons.push('既存ペアが満席')
+          if (assignment.studentIds.some((studentId) => item.assignment.studentIds.includes(studentId))) reasons.push('同じ生徒が既に含まれている')
+          if (students.some((student) => constraintFor(data.constraints, teacher.id, student.id) === 'incompatible')) {
+            const incompatibleStudents = students.filter((student) => constraintFor(data.constraints, teacher.id, student.id) === 'incompatible')
+            reasons.push(`講師との相性不可: ${incompatibleStudents.map((student) => student.name).join('/')}`)
+          }
+          if (assignment.studentIds.some((targetStudentId) => item.assignment.studentIds.some((sourceStudentId) => constraintFor(data.constraints, targetStudentId, sourceStudentId) === 'incompatible'))) {
+            reasons.push('既存ペア生徒との相性不可')
+          }
+          const mismatchDetails = getSubjectOverrideDetails(teacher)
+          if (mode === 'normal' && mismatchDetails.length > 0) reasons.push(`担当外: ${mismatchDetails.join(' / ')}`)
+          if (mode === 'override' && mismatchDetails.length === 0) reasons.push('担当可能なので通常候補側')
+          return reasons.length > 0 ? [{ label: `${teacher.name} の既存ペア`, reason: reasons.join(', ') }] : []
+        })
+      return blockedEntries.length > 0 ? toStatusProposal(`${label}: ${summarizeBlockedEntries(blockedEntries)}`) : null
+    }
     const buildChoiceBlockReasonProposal = (label: string, choices: StatusProposalChoice[]): StatusProposal | null => {
       const blockedEntries = choices.flatMap((choice) => {
         const reason = getProposalActionBlockReason(data, assignmentState, choice.action)
@@ -6429,6 +6453,10 @@ const AdminPage = () => {
           ? buildChoiceBlockReasonProposal('通常代行候補が出ない理由', normalChoices)
           : buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal')
         if (normalDiagnostic) diagnostics.push(normalDiagnostic)
+        if (mergeCandidates.length === 0) {
+          const mergeDiagnostic = buildMergeReasonProposal('既存ペア追加候補が出ない理由', 'normal')
+          if (mergeDiagnostic) diagnostics.push(mergeDiagnostic)
+        }
       }
       if (!filteredLabels.has('制約超過代行候補')) {
         const overrideChoices = [...overrideReplacementChoices, ...overrideMergeCandidates.map((entry) => entry.choice)]
@@ -6436,6 +6464,10 @@ const AdminPage = () => {
           ? buildChoiceBlockReasonProposal('制約超過代行候補が出ない理由', overrideChoices)
           : buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override')
         if (overrideDiagnostic) diagnostics.push(overrideDiagnostic)
+        if (overrideMergeCandidates.length === 0) {
+          const overrideMergeDiagnostic = buildMergeReasonProposal('制約超過の既存ペア追加候補が出ない理由', 'override')
+          if (overrideMergeDiagnostic) diagnostics.push(overrideMergeDiagnostic)
+        }
       }
       return [...filteredProposals, ...diagnostics.filter(Boolean) as StatusProposal[]]
     }
