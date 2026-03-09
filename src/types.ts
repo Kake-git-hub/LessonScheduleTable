@@ -37,6 +37,7 @@ export type Student = {
   name: string
   email: string
   grade: string
+  regularOnly?: boolean
   subjects: string[]
   subjectSlots: SubjectSlotRequest
   unavailableDates: string[]
@@ -156,6 +157,7 @@ export type SubmissionLogEntry = {
   /** 'initial' for first submission, 'update' for subsequent changes */
   type: 'initial' | 'update'
   /** The data snapshot at time of submission (student) */
+  regularOnly?: boolean
   subjects?: string[]
   subjectSlots?: SubjectSlotRequest
   unavailableDates?: string[]

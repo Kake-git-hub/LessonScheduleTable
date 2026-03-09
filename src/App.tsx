@@ -1094,6 +1094,7 @@ const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?:
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
 const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as readonly string[]
+const REGULAR_ONLY_SUBJECT_OPTION = '__regular_only__'
 /** Leveled teacher subjects (小英, 中英, 高1英, 高2英, 高3英, ...). */
 const ALL_TEACHER_SUBJECTS = TEACHER_SUBJECTS
 
@@ -1858,7 +1859,7 @@ const HomePage = () => {
     if (!studentName.trim()) return
     const student: Student = {
       id: createId(), name: studentName.trim(), email: studentEmail.trim(), grade: studentGrade.trim(),
-      subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
+      regularOnly: false, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
     }
     await updateMaster((c) => ({ ...c, students: insertMasterRowByActiveSort('students', c.students, student, studentRowGetters) }))
     changeLogRef.current.add('生徒追加')
@@ -4232,9 +4233,9 @@ const AdminPage = () => {
       const mergedStudents = master.students.map((ms) => {
         const existing = data.students.find((s) => s.id === ms.id)
         if (existing) {
-          return { ...ms, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], regularLessonStatuses: existing.regularLessonStatuses ?? {}, submittedAt: existing.submittedAt }
+          return { ...ms, regularOnly: existing.regularOnly ?? false, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], regularLessonStatuses: existing.regularLessonStatuses ?? {}, submittedAt: existing.submittedAt }
         }
-        return { ...ms, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], regularLessonStatuses: {}, submittedAt: 0 }
+        return { ...ms, regularOnly: false, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], regularLessonStatuses: {}, submittedAt: 0 }
       })
       // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
       const next: SessionData = {
@@ -9501,6 +9502,7 @@ const StudentInputPage = ({
   }, [dates, data.settings.slotsPerDay])
   const showDevRandom = true
   const formRef = useRef<HTMLDivElement>(null)
+  const [regularOnly, setRegularOnly] = useState(student.regularOnly ?? false)
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
     student.subjectSlots ?? {},
   )
@@ -9654,7 +9656,10 @@ const StudentInputPage = ({
         .filter(([slotKey, status]) => regularSlotKeys.has(slotKey) && (status === 'absent' || status === 'completed'))
         .sort(([left], [right]) => left.localeCompare(right)),
     )
-    const subjects = Object.entries(subjectSlots)
+    const normalizedSubjectSlots = regularOnly
+      ? {}
+      : Object.fromEntries(Object.entries(subjectSlots).filter(([, count]) => count > 0))
+    const subjects = Object.entries(normalizedSubjectSlots)
       .filter(([, count]) => count > 0)
       .map(([subject]) => subject)
     // Derive unavailableDates from unavailableSlots (dates where ALL slots are unavailable)
@@ -9668,6 +9673,7 @@ const StudentInputPage = ({
       .map(([d]) => d)
 
     // Determine if this is initial or update submission
+    const previousRegularOnly = !!student.regularOnly
     const previousSubjects = normalizeStringArray(student.subjects ?? [])
     const previousUnavailableDates = normalizeStringArray(student.unavailableDates ?? [])
     const previousUnavailableSlots = normalizeStringArray((student.unavailableSlots ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
@@ -9676,8 +9682,9 @@ const StudentInputPage = ({
     )
     const normalizedSubjects = normalizeStringArray(subjects)
     const normalizedDerivedUnavailDates = normalizeStringArray(derivedUnavailDates)
-    const hasChanged = !areStringArraysEqual(normalizedSubjects, previousSubjects)
-      || !areSubjectSlotsEqual(student.subjectSlots ?? {}, subjectSlots)
+    const hasChanged = regularOnly !== previousRegularOnly
+      || !areStringArraysEqual(normalizedSubjects, previousSubjects)
+      || !areSubjectSlotsEqual(student.subjectSlots ?? {}, normalizedSubjectSlots)
       || !areStringArraysEqual(normalizedDerivedUnavailDates, previousUnavailableDates)
       || !areStringArraysEqual(normalizedUnavailableSlots, previousUnavailableSlots)
       || !areStringRecordEqual(previousRegularLessonStatuses, normalizedRegularLessonStatuses)
@@ -9690,8 +9697,9 @@ const StudentInputPage = ({
         personType: 'student',
         submittedAt: now,
         type: isUpdate ? 'update' : 'initial',
+        regularOnly,
         subjects: normalizedSubjects,
-        subjectSlots,
+        subjectSlots: normalizedSubjectSlots,
         unavailableDates: normalizedDerivedUnavailDates,
         preferredSlots: [],
         unavailableSlots: normalizedUnavailableSlots,
@@ -9702,8 +9710,9 @@ const StudentInputPage = ({
         s.id === student.id
           ? {
               ...s,
+              regularOnly,
               subjects: normalizedSubjects,
-              subjectSlots,
+              subjectSlots: normalizedSubjectSlots,
               unavailableDates: normalizedDerivedUnavailDates,
               preferredSlots: [],
               unavailableSlots: normalizedUnavailableSlots,
@@ -9721,9 +9730,12 @@ const StudentInputPage = ({
       saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
     }
     const submittedAt = new Date().toLocaleString('ja-JP')
-    const subjectDetails = Object.entries(subjectSlots)
+    const subjectDetails = [
+      ...(regularOnly ? ['通常のみ'] : []),
+      ...Object.entries(normalizedSubjectSlots)
       .filter(([, count]) => count > 0)
-      .map(([subj, count]) => `${subj}: ${count}コマ`)
+      .map(([subj, count]) => `${subj}: ${count}コマ`),
+    ]
     const unavailCount = unavailableSlots.size
     void downloadSubmissionReceiptPdf({
       sessionName: data.settings.name,
@@ -9752,8 +9764,21 @@ const StudentInputPage = ({
 
       <div className="student-form-section">
         <h3>希望科目・コマ数</h3>
-        <p className="muted">受講を希望する科目を追加し、コマ数を入力してください。</p>
+        <p className="muted">受講を希望する科目を追加し、コマ数を入力してください。特別講習を取らない場合は「通常のみ」を選べます。</p>
         <div className="subject-slot-entries">
+          {regularOnly && (
+            <div className="subject-slot-entry">
+              <span style={{ fontWeight: 600, minWidth: '56px' }}>通常のみ</span>
+              <span className="form-unit" style={{ flex: 1 }}>特別講習科目0コマで送信</span>
+              <button
+                className="subject-slot-remove"
+                type="button"
+                onClick={() => setRegularOnly(false)}
+              >
+                ×
+              </button>
+            </div>
+          )}
           {Object.entries(subjectSlots)
             .filter(([, count]) => count > 0 || FIXED_SUBJECTS.includes(Object.keys(subjectSlots).find((k) => subjectSlots[k] === count) ?? ''))
             .filter(([subj]) => FIXED_SUBJECTS.includes(subj))
@@ -9777,6 +9802,7 @@ const StudentInputPage = ({
                       delete next[subject]
                       return next
                     })
+                    setRegularOnly(false)
                   }}
                 >
                   ×
@@ -9787,20 +9813,27 @@ const StudentInputPage = ({
         {(() => {
           const selectedSubjects = Object.keys(subjectSlots).filter((s) => FIXED_SUBJECTS.includes(s))
           const availableSubjects = FIXED_SUBJECTS.filter((s) => !selectedSubjects.includes(s))
-          if (availableSubjects.length === 0) return null
+          if (availableSubjects.length === 0 && regularOnly) return null
           return (
             <div style={{ marginTop: '12px' }}>
               <select
                 value=""
                 onChange={(e) => {
                   const v = e.target.value
+                  if (v === REGULAR_ONLY_SUBJECT_OPTION) {
+                    setRegularOnly(true)
+                    setSubjectSlots({})
+                    return
+                  }
                   if (v) {
+                    setRegularOnly(false)
                     setSubjectSlots((prev) => ({ ...prev, [v]: 1 }))
                   }
                 }}
                 style={{ padding: '8px', borderRadius: '8px', border: '1px solid #d1d5db', fontSize: '16px' }}
               >
                 <option value="">＋ 科目を追加</option>
+                {!regularOnly && <option value={REGULAR_ONLY_SUBJECT_OPTION}>通常のみ</option>}
                 {availableSubjects.map((s) => (
                   <option key={s} value={s}>{s}</option>
                 ))}
@@ -9912,7 +9945,7 @@ const StudentInputPage = ({
           const totalDesired = Object.values(subjectSlots).reduce((s, c) => s + c, 0)
           const totalSlots = dates.length * data.settings.slotsPerDay
           const totalAvailable = totalSlots - unavailableSlots.size
-          const noSubjects = Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0
+          const noSubjects = !regularOnly && Object.entries(subjectSlots).filter(([, c]) => c > 0).length === 0
           const overAvailable = totalDesired > totalAvailable
           return (
             <>
