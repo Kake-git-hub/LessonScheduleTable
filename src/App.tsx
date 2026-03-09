@@ -6411,7 +6411,7 @@ const AdminPage = () => {
         const mismatchDetails = getSubjectOverrideDetails(teacher)
         return {
           value: `override:${teacher.id}`,
-          label: `${teacher.name} (制約超過: 担当外 ${mismatchDetails.join(' / ')})${formatConstraintWarningSuffix(constraintWarnings)}`,
+          label: `${teacher.name} (担当外: ${mismatchDetails.join(' / ')})${formatConstraintWarningSuffix(constraintWarnings)}`,
           action: {
             type: 'force-assign' as const,
             slot: item.slot,
@@ -6425,20 +6425,15 @@ const AdminPage = () => {
           },
         }
       })
+      const allCandidateChoices = [
+        ...replacementChoices,
+        ...mergeCandidates.map((entry) => entry.choice),
+        ...overrideReplacementChoices,
+        ...overrideMergeCandidates.map((entry) => entry.choice),
+      ]
       const proposals: StatusProposal[] = []
-      if (replacementChoices.length > 0 || mergeCandidates.length > 0) {
-        proposals.push(toStatusProposal(
-          '通常代行候補',
-          undefined,
-          [...replacementChoices, ...mergeCandidates.map((entry) => entry.choice)],
-        ))
-      }
-      if (overrideReplacementChoices.length > 0 || overrideMergeCandidates.length > 0) {
-        proposals.push(toStatusProposal(
-          '制約超過代行候補',
-          undefined,
-          [...overrideReplacementChoices, ...overrideMergeCandidates.map((entry) => entry.choice)],
-        ))
+      if (allCandidateChoices.length > 0) {
+        proposals.push(toStatusProposal('講師代行候補', undefined, allCandidateChoices))
       }
       if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
@@ -6447,26 +6442,20 @@ const AdminPage = () => {
       const filteredProposals = filterExecutableStatusProposals(data, assignmentState, proposals)
       const filteredLabels = new Set(filteredProposals.map((proposal) => proposal.label))
       const diagnostics: StatusProposal[] = []
-      if (!filteredLabels.has('通常代行候補')) {
+      if (!filteredLabels.has('講師代行候補')) {
         const normalChoices = [...replacementChoices, ...mergeCandidates.map((entry) => entry.choice)]
         const normalDiagnostic = normalChoices.length > 0
-          ? buildChoiceBlockReasonProposal('通常代行候補が出ない理由', normalChoices)
-          : buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal')
+          ? buildChoiceBlockReasonProposal('代行候補が出ない理由', normalChoices)
+          : buildTeacherPoolReasonProposal('代行候補が出ない理由', 'normal')
         if (normalDiagnostic) diagnostics.push(normalDiagnostic)
-        if (mergeCandidates.length === 0) {
+        if (mergeCandidates.length === 0 && overrideMergeCandidates.length === 0) {
           const mergeDiagnostic = buildMergeReasonProposal('既存ペア追加候補が出ない理由', 'normal')
           if (mergeDiagnostic) diagnostics.push(mergeDiagnostic)
         }
-      }
-      if (!filteredLabels.has('制約超過代行候補')) {
         const overrideChoices = [...overrideReplacementChoices, ...overrideMergeCandidates.map((entry) => entry.choice)]
-        const overrideDiagnostic = overrideChoices.length > 0
-          ? buildChoiceBlockReasonProposal('制約超過代行候補が出ない理由', overrideChoices)
-          : buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override')
-        if (overrideDiagnostic) diagnostics.push(overrideDiagnostic)
-        if (overrideMergeCandidates.length === 0) {
-          const overrideMergeDiagnostic = buildMergeReasonProposal('制約超過の既存ペア追加候補が出ない理由', 'override')
-          if (overrideMergeDiagnostic) diagnostics.push(overrideMergeDiagnostic)
+        if (overrideChoices.length > 0) {
+          const overrideDiagnostic = buildChoiceBlockReasonProposal('制約超過候補が出ない理由', overrideChoices)
+          if (overrideDiagnostic) diagnostics.push(overrideDiagnostic)
         }
       }
       return [...filteredProposals, ...diagnostics.filter(Boolean) as StatusProposal[]]
@@ -6499,8 +6488,8 @@ const AdminPage = () => {
       }
       if (originalTeacher) {
         const diagnostics = [
-          buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal'),
-          buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override'),
+          buildTeacherPoolReasonProposal('代行候補が出ない理由', 'normal'),
+          buildTeacherPoolReasonProposal('制約超過候補が出ない理由', 'override'),
         ].filter(Boolean) as StatusProposal[]
         if (diagnostics.length > 0) {
           return [...diagnostics, toStatusProposal(`${originalTeacher.name} の別枠移動先なし。空きコマを増やしてください`)]
@@ -6510,8 +6499,8 @@ const AdminPage = () => {
     }
 
     const diagnostics = [
-      buildTeacherPoolReasonProposal('通常代行候補が出ない理由', 'normal'),
-      buildTeacherPoolReasonProposal('制約超過代行候補が出ない理由', 'override'),
+      buildTeacherPoolReasonProposal('代行候補が出ない理由', 'normal'),
+      buildTeacherPoolReasonProposal('制約超過候補が出ない理由', 'override'),
     ].filter(Boolean) as StatusProposal[]
     return diagnostics.length > 0
       ? diagnostics
@@ -6744,11 +6733,18 @@ const AdminPage = () => {
       {
         key: 'shortage' as const,
         title: `${instructorLabel}不足`,
-        items: [...teacherShortages].sort((a, b) => a.slot.localeCompare(b.slot)).map((item) => ({
-          label: slotLabel(item.slot, isMendan, mendanStart),
-          causes: [item.detail],
-          proposals: buildTeacherShortageProposals(effectiveAssignments, item),
-        })),
+        items: [...teacherShortages].sort((a, b) => a.slot.localeCompare(b.slot)).map((item) => {
+          const studentInfoParts = item.assignment.studentIds.map((sid) => {
+            const student = data.students.find((s) => s.id === sid)
+            const subject = item.assignment.studentSubjects?.[sid] ?? item.assignment.subject
+            return student ? `${student.name}(${subject})` : sid
+          })
+          return {
+            label: slotLabel(item.slot, isMendan, mendanStart),
+            causes: [item.detail, `生徒: ${studentInfoParts.join(' / ')}`],
+            proposals: buildTeacherShortageProposals(effectiveAssignments, item),
+          }
+        }),
       },
     ].filter((section) => section.items.length > 0))
 
