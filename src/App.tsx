@@ -977,7 +977,8 @@ const canExecuteProposalAction = (
 
       const sourceAssignment = slotAssignments[sourceIndex]
       const assignmentSubjects = sourceAssignment.studentIds.map((studentId) => sourceAssignment.studentSubjects?.[studentId] ?? sourceAssignment.subject)
-      if (!students.every((student, index) => canTeachSubject(teacher.subjects, student.grade, assignmentSubjects[index] ?? proposal.subject))) return false
+      const allowsSubjectOverride = !!proposal.substituteInfo
+      if (!allowsSubjectOverride && !students.every((student, index) => canTeachSubject(teacher.subjects, student.grade, assignmentSubjects[index] ?? proposal.subject))) return false
 
       const exactReplacementConflict = slotAssignments.some((assignment, index) => index !== sourceIndex && assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
       if (!proposal.mergeIntoExistingPair) {
@@ -6087,6 +6088,21 @@ const AdminPage = () => {
 
     const originalTeacherId = item.assignment.teacherUnavailableOriginalId
     const originalTeacher = originalTeacherId ? data.teachers.find((teacher) => teacher.id === originalTeacherId) : undefined
+    const shortageSubstituteInfo = originalTeacherId
+      ? {
+          regularTeacherId: originalTeacherId,
+          dayOfWeek: getIsoDayOfWeek(item.slot.split('_')[0]),
+          slotNumber: getSlotNumber(item.slot),
+          date: item.slot.split('_')[0],
+        }
+      : undefined
+    const getSubjectOverrideDetails = (teacher: Teacher): string[] => students.flatMap((student) => {
+      if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return []
+      const subject = item.assignment.studentSubjects?.[student.id] ?? item.assignment.subject
+      return canTeachSubject(teacher.subjects, student.grade, subject)
+        ? []
+        : [`${student.name}(${subject})`]
+    })
     const originalTeacherMoveChoices = originalTeacherId
       ? buildTeacherMoveChoices(data, slotKeys, assignmentState, item.slot, item.assignment, originalTeacherId, isMendan, mendanStart)
       : []
@@ -6173,8 +6189,91 @@ const AdminPage = () => {
       })
       .filter(Boolean) as Array<{ teacher: Teacher; choice: StatusProposalChoice }>
 
+    const overrideMergeCandidates = shortageSubstituteInfo
+      ? slotAssignments
+        .filter((assignment) => assignment !== item.assignment && !assignment.isGroupLesson && !!assignment.teacherId && assignment.studentIds.length > 0)
+        .map((assignment) => {
+          const substituteInfo = shortageSubstituteInfo!
+          const teacher = data.teachers.find((entry) => entry.id === assignment.teacherId)
+          if (!teacher) return null
+          if (!hasInstructorAvailability('teacher', teacher.id, item.slot)) return null
+          if (assignment.studentIds.length + item.assignment.studentIds.length > 2) return null
+          if (assignment.studentIds.some((studentId) => item.assignment.studentIds.includes(studentId))) return null
+          if (students.some((student) => constraintFor(data.constraints, teacher.id, student.id) === 'incompatible')) return null
+          if (assignment.studentIds.some((targetStudentId) => item.assignment.studentIds.some((sourceStudentId) => constraintFor(data.constraints, targetStudentId, sourceStudentId) === 'incompatible'))) return null
+
+          const mismatchDetails = getSubjectOverrideDetails(teacher)
+          if (mismatchDetails.length === 0) return null
+
+          const targetStudentSubjects = { ...(assignment.studentSubjects ?? {}) }
+          const sourceStudentSubjects = item.assignment.studentSubjects ?? {}
+          const mergedStudentIds = [...assignment.studentIds, ...item.assignment.studentIds]
+          const mergedStudentSubjects = { ...targetStudentSubjects, ...sourceStudentSubjects }
+          const targetPrimarySubject = mergedStudentSubjects[mergedStudentIds[0]] ?? assignment.subject
+          const nextSubstituteInfo = item.assignment.studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
+            acc[studentId] = item.assignment.regularSubstituteInfo?.[studentId] ?? substituteInfo
+            return acc
+          }, { ...(assignment.regularSubstituteInfo ?? {}) })
+          const sourceIndex = slotAssignments.findIndex((entry) => entry === item.assignment)
+          const targetIndex = slotAssignments.findIndex((entry) => entry === assignment)
+          if (sourceIndex < 0 || targetIndex < 0) return null
+
+          const prospectiveAssignments = [...slotAssignments]
+          prospectiveAssignments[targetIndex] = {
+            ...assignment,
+            studentIds: mergedStudentIds,
+            subject: targetPrimarySubject,
+            studentSubjects: mergedStudentSubjects,
+            regularSubstituteInfo: nextSubstituteInfo,
+          }
+          prospectiveAssignments.splice(sourceIndex, 1)
+          const constraintWarnings = getProspectiveConstraintWarnings(
+            data,
+            { ...assignmentState, [item.slot]: prospectiveAssignments },
+            item.slot,
+            sourceIndex < targetIndex ? targetIndex - 1 : targetIndex,
+            teacher.id,
+          )
+          return {
+            teacher,
+            choice: {
+              value: `merge-override:${teacher.id}`,
+              label: `${teacher.name} の既存ペアへ追加 (制約超過: 担当外 ${mismatchDetails.join(' / ')})${formatConstraintWarningSuffix(constraintWarnings)}`,
+              action: {
+                type: 'force-assign' as const,
+                slot: item.slot,
+                teacherId: teacher.id,
+                studentId: item.assignment.studentIds[0] ?? '',
+                subject: item.assignment.subject,
+                assignmentStudentIds: [...item.assignment.studentIds],
+                sourceTeacherId: item.assignment.teacherId ?? '',
+                ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
+                mergeIntoExistingPair: true,
+                substituteInfo,
+              },
+            },
+          }
+        })
+        .filter(Boolean) as Array<{ teacher: Teacher; choice: StatusProposalChoice }>
+      : []
+
     const availableCandidates = orderedCompatibleTeachers.filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
-    if (availableCandidates.length > 0 || mergeCandidates.length > 0) {
+    const overrideAvailableTeachers = shortageSubstituteInfo
+      ? data.teachers
+        .filter((teacher) => !usedTeacherIds.has(teacher.id))
+        .filter((teacher) => hasInstructorAvailability('teacher', teacher.id, item.slot))
+        .filter((teacher) => students.every((student) => constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible'))
+        .filter((teacher) => getSubjectOverrideDetails(teacher).length > 0)
+        .sort((left, right) => {
+          const leftRank = rankTeacherForShortage(assignmentState, left.id, item.slot)
+          const rightRank = rankTeacherForShortage(assignmentState, right.id, item.slot)
+          if (leftRank[0] !== rightRank[0]) return leftRank[0] - rightRank[0]
+          if (leftRank[1] !== rightRank[1]) return leftRank[1] - rightRank[1]
+          return leftRank[2].localeCompare(rightRank[2], 'ja')
+        })
+      : []
+
+    if (availableCandidates.length > 0 || mergeCandidates.length > 0 || overrideAvailableTeachers.length > 0 || overrideMergeCandidates.length > 0) {
       const itemIndex = slotAssignments.findIndex((assignment) => assignment === item.assignment)
       const replacementChoices = availableCandidates.map((teacher) => {
         const nextSlotAssignments = [...slotAssignments]
@@ -6215,11 +6314,57 @@ const AdminPage = () => {
           },
         }
       })
-      const proposals: StatusProposal[] = [toStatusProposal(
-        '通常代行候補',
-        undefined,
-        [...replacementChoices, ...mergeCandidates.map((entry) => entry.choice)],
-      )]
+      const overrideReplacementChoices = overrideAvailableTeachers.map((teacher) => {
+        const substituteInfo = shortageSubstituteInfo!
+        const nextSlotAssignments = [...slotAssignments]
+        if (itemIndex >= 0) {
+          nextSlotAssignments[itemIndex] = {
+            ...item.assignment,
+            teacherId: teacher.id,
+            regularSubstituteInfo: item.assignment.studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
+              acc[studentId] = item.assignment.regularSubstituteInfo?.[studentId] ?? substituteInfo
+              return acc
+            }, {}),
+            teacherUnassignedReason: undefined,
+            teacherUnavailableOriginalId: undefined,
+          }
+        }
+        const prospectiveAssignments = { ...assignmentState, [item.slot]: nextSlotAssignments }
+        const constraintWarnings = itemIndex >= 0
+          ? getProspectiveConstraintWarnings(data, prospectiveAssignments, item.slot, itemIndex, teacher.id)
+          : []
+        const mismatchDetails = getSubjectOverrideDetails(teacher)
+        return {
+          value: `override:${teacher.id}`,
+          label: `${teacher.name} (制約超過: 担当外 ${mismatchDetails.join(' / ')})${formatConstraintWarningSuffix(constraintWarnings)}`,
+          action: {
+            type: 'force-assign' as const,
+            slot: item.slot,
+            teacherId: teacher.id,
+            studentId: item.assignment.studentIds[0] ?? '',
+            subject: item.assignment.subject,
+            assignmentStudentIds: [...item.assignment.studentIds],
+            sourceTeacherId: item.assignment.teacherId ?? '',
+            substituteInfo,
+            ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
+          },
+        }
+      })
+      const proposals: StatusProposal[] = []
+      if (replacementChoices.length > 0 || mergeCandidates.length > 0) {
+        proposals.push(toStatusProposal(
+          '通常代行候補',
+          undefined,
+          [...replacementChoices, ...mergeCandidates.map((entry) => entry.choice)],
+        ))
+      }
+      if (overrideReplacementChoices.length > 0 || overrideMergeCandidates.length > 0) {
+        proposals.push(toStatusProposal(
+          '制約超過代行候補',
+          undefined,
+          [...overrideReplacementChoices, ...overrideMergeCandidates.map((entry) => entry.choice)],
+        ))
+      }
       if (originalTeacherMoveChoices.length > 0) {
         const moveType = item.assignment.studentIds.length > 1 ? 'ペア移動' : '個別移動'
         proposals.push(toStatusProposal(`${originalTeacher?.name ?? originalTeacherId} の別枠${moveType}候補`, undefined, originalTeacherMoveChoices))
