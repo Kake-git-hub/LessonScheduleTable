@@ -757,9 +757,11 @@ export const buildIncrementalAutoAssignments = async (
         if (usedStudentIdsInSlot.has(student.id)) return false
         if (!isStudentAvailable(student, slot)) return false
         if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') return false
-        return student.subjects.some((baseSubj) => {
-          return canTeachSubject(teacher.subjects, student.grade, baseSubj)
-        })
+        const makeupSubjects = getMakeupSubjectsForTeacher(student.id, teacher.id, currentDate)
+        if (makeupSubjects.length > 0) {
+          return makeupSubjects.some((baseSubj) => canTeachSubject(teacher.subjects, student.grade, baseSubj))
+        }
+        return student.subjects.some((baseSubj) => canTeachSubject(teacher.subjects, student.grade, baseSubj))
       })
 
       if (candidates.length === 0) continue
