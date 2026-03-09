@@ -15,6 +15,7 @@ import type {
   PairConstraintPersonType,
   PersonType,
   RegularLesson,
+  RegularMakeupInfo,
   SessionData,
   Student,
   SubmissionLogEntry,
@@ -38,7 +39,7 @@ type ForceAssignAction = {
   subject: string
   assignmentStudentIds?: string[]
   assignmentStudentSubjects?: Record<string, string>
-  makeupInfo?: { dayOfWeek: number; slotNumber: number; date?: string }
+  makeupInfo?: RegularMakeupInfo
   substituteInfo?: { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }
 }
 
@@ -109,14 +110,14 @@ type PendingMakeupDemand = {
   teacherId: string
   subject: string
   absentDate?: string
-  makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }
+  makeupInfo: RegularMakeupInfo
 }
 
 type RegularOccurrenceRef = {
   studentId: string
   teacherId: string
   subject: string
-  makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }
+  makeupInfo: RegularMakeupInfo
 }
 
 type PlacementAnalysis = {
@@ -447,7 +448,7 @@ const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   return labels.map((label) => toStatusProposal(label))
 }
 
-type MakeupReasonKind = 'student' | 'teacher' | 'both' | 'unknown'
+type MakeupReasonKind = 'student' | 'teacher' | 'both' | 'actual-absence' | 'unknown'
 
 const hasTeacherAvailabilityForSession = (sessionData: SessionData, teacherId: string, slot: string, dayOfWeek?: number, slotNumber?: number): boolean => {
   if (hasAvailability(sessionData.availability, 'teacher', teacherId, slot)) return true
@@ -462,9 +463,10 @@ const getMakeupReasonKind = (
   sessionData: SessionData,
   studentId: string,
   teacherId: string,
-  makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string },
+  makeupInfo: RegularMakeupInfo,
   absentDate?: string,
 ): MakeupReasonKind => {
+  if (makeupInfo.reasonKind === 'actual-absence') return 'actual-absence'
   const student = sessionData.students.find((entry) => entry.id === studentId)
   const originDate = makeupInfo.date ?? absentDate
   if (!student || !originDate) return absentDate ? 'student' : 'unknown'
@@ -487,6 +489,8 @@ const formatMakeupReasonLabel = (reasonKind: MakeupReasonKind): string => {
       return '講師理由'
     case 'both':
       return '生徒・講師理由'
+    case 'actual-absence':
+      return '実績時の欠席'
     default:
       return '理由未確定'
   }
@@ -2648,7 +2652,7 @@ const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: strin
             studentId: student.id,
             teacherId: lesson?.teacherId ?? origAssignment?.teacherId ?? '',
             subject: absentSubj,
-            makeupInfo: { dayOfWeek: slotDow, slotNumber: slotNum, date: slotDate },
+            makeupInfo: { dayOfWeek: slotDow, slotNumber: slotNum, date: slotDate, ...(isInActual ? { reasonKind: 'actual-absence' as const } : {}) },
           }
         })()
         const absenceKey = getRegularOccurrenceKey(occurrenceRef)
@@ -4637,7 +4641,7 @@ const AdminPage = () => {
             teacherId: rl.teacherId,
             subject: rlSubject,
             ...(absentFromActual ? { absentDate: date } : {}),
-            makeupInfo: { dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date },
+            makeupInfo: { dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date, ...(absentFromActual ? { reasonKind: 'actual-absence' as const } : {}) },
           })
         }
       }
@@ -4658,7 +4662,7 @@ const AdminPage = () => {
               teacherId: substituteInfo?.regularTeacherId ?? orig.teacherId,
               subject: getStudentSubject(orig, sid),
               absentDate: slot.split('_')[0],
-              makeupInfo: makeupInfo ?? { dayOfWeek: substituteInfo!.dayOfWeek, slotNumber: substituteInfo!.slotNumber, date: substituteInfo!.date },
+              makeupInfo: makeupInfo ?? { dayOfWeek: substituteInfo!.dayOfWeek, slotNumber: substituteInfo!.slotNumber, date: substituteInfo!.date, reasonKind: 'actual-absence' },
             })
           }
         }

@@ -1,4 +1,4 @@
-import type { Assignment, SessionData } from '../types'
+import type { Assignment, RegularMakeupInfo, SessionData } from '../types'
 import { personKey } from './schedule'
 import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
@@ -159,7 +159,7 @@ export const buildIncrementalAutoAssignments = async (
   // Stores per-student array of { teacherId, dayOfWeek, slotNumber, date, subject, absentDate? } for each unavailable regular slot
   // Also includes students who were removed from actual results (absent in reality) — both regular and makeup
   // absentDate is set for actual-result-based absences so makeup is only placed on later dates
-  type MakeupInfo = { teacherId: string; dayOfWeek: number; slotNumber: number; date: string; subject: string; absentDate?: string }
+  type MakeupInfo = { teacherId: string; dayOfWeek: number; slotNumber: number; date: string; subject: string; absentDate?: string; reasonKind?: 'actual-absence' }
   const makeupStudentInfo = new Map<string, MakeupInfo[]>()
   // Build a set of ALL slot keys (including recorded) for regular-lesson matching
   const allSlotKeys = [...new Set([...slots, ...Object.keys(data.actualResults ?? {})])]
@@ -181,7 +181,14 @@ export const buildIncrementalAutoAssignments = async (
             && !actualForSlot.some((r) => r.studentIds.includes(sid))
           if (needsMakeup || absentFromActual) {
             const arr = makeupStudentInfo.get(sid) ?? []
-            arr.push({ teacherId: rl.teacherId, dayOfWeek: rl.dayOfWeek, slotNumber: rl.slotNumber, date, subject: rlSubject, ...(absentFromActual ? { absentDate: date } : {}) })
+            arr.push({
+              teacherId: rl.teacherId,
+              dayOfWeek: rl.dayOfWeek,
+              slotNumber: rl.slotNumber,
+              date,
+              subject: rlSubject,
+              ...(absentFromActual ? { absentDate: date, reasonKind: 'actual-absence' as const } : {}),
+            })
             makeupStudentInfo.set(sid, arr)
           }
         }
@@ -208,7 +215,15 @@ export const buildIncrementalAutoAssignments = async (
           const baseInfo = mkInfo ?? subInfo!
           const subject = orig.studentSubjects?.[sid] ?? orig.subject
           const arr = makeupStudentInfo.get(sid) ?? []
-          arr.push({ teacherId: subInfo?.regularTeacherId ?? orig.teacherId, dayOfWeek: baseInfo.dayOfWeek, slotNumber: baseInfo.slotNumber, date: baseInfo.date ?? absentDate, subject, absentDate })
+          arr.push({
+            teacherId: subInfo?.regularTeacherId ?? orig.teacherId,
+            dayOfWeek: baseInfo.dayOfWeek,
+            slotNumber: baseInfo.slotNumber,
+            date: baseInfo.date ?? absentDate,
+            subject,
+            absentDate,
+            reasonKind: 'actual-absence',
+          })
           makeupStudentInfo.set(sid, arr)
         }
       }
@@ -555,7 +570,15 @@ export const buildIncrementalAutoAssignments = async (
         const mkMatch = mkInfos?.find(mk => mk.teacherId === teacher.id && mk.subject === bestSubj && (!mk.absentDate || mkDate2 > mk.absentDate))
         if (mkMatch) {
           // Set regularMakeupInfo so ★ badge appears
-          assignment.regularMakeupInfo = { ...(assignment.regularMakeupInfo ?? {}), [best.id]: { dayOfWeek: mkMatch.dayOfWeek, slotNumber: mkMatch.slotNumber, date: mkMatch.date } }
+          assignment.regularMakeupInfo = {
+            ...(assignment.regularMakeupInfo ?? {}),
+            [best.id]: {
+              dayOfWeek: mkMatch.dayOfWeek,
+              slotNumber: mkMatch.slotNumber,
+              date: mkMatch.date,
+              ...(mkMatch.reasonKind ? { reasonKind: mkMatch.reasonKind } : {}),
+            },
+          }
           const mkIdx = mkInfos!.indexOf(mkMatch)
           if (mkIdx >= 0) mkInfos!.splice(mkIdx, 1)
           const [mkDate] = slot.split('_')
@@ -882,13 +905,18 @@ export const buildIncrementalAutoAssignments = async (
         })
         if (makeupSids.length > 0) {
           // Set regularMakeupInfo so the ★ badge appears alongside 振替
-          const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(a.regularMakeupInfo ?? {}) }
+          const regularMakeupInfo: Record<string, RegularMakeupInfo> = { ...(a.regularMakeupInfo ?? {}) }
           for (const sid of makeupSids) {
             const mkInfos = makeupStudentInfo.get(sid)!
             const matchIdx = mkInfos.findIndex(mk => mk.teacherId === a.teacherId && (!mk.absentDate || currentDate > mk.absentDate))
             if (matchIdx >= 0) {
               const match = mkInfos[matchIdx]
-              regularMakeupInfo[sid] = { dayOfWeek: match.dayOfWeek, slotNumber: match.slotNumber, date: match.date }
+              regularMakeupInfo[sid] = {
+                dayOfWeek: match.dayOfWeek,
+                slotNumber: match.slotNumber,
+                date: match.date,
+                ...(match.reasonKind ? { reasonKind: match.reasonKind } : {}),
+              }
               mkInfos.splice(matchIdx, 1) // consume this makeup entry
             }
           }

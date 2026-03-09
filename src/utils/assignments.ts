@@ -1,4 +1,4 @@
-import type { ActualResult, Assignment, RegularLesson, SessionData } from '../types'
+import type { ActualResult, Assignment, RegularLesson, RegularMakeupInfo, SessionData } from '../types'
 import { hasAvailability } from './constraints'
 import { canTeachSubject } from './subjects'
 
@@ -83,7 +83,7 @@ export const normalizeAssignment = <T extends AssignmentLike>(
     subject: primarySubject,
   } as T & {
     studentSubjects?: Record<string, string>
-    regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+    regularMakeupInfo?: Record<string, RegularMakeupInfo>
     regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
   }
 

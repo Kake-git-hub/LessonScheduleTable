@@ -65,6 +65,13 @@ export type GradeConstraint = {
   subjects?: string[]
 }
 
+export type RegularMakeupInfo = {
+  dayOfWeek: number
+  slotNumber: number
+  date?: string
+  reasonKind?: 'actual-absence'
+}
+
 export type Assignment = {
   teacherId: string
   studentIds: string[]
@@ -81,7 +88,7 @@ export type Assignment = {
   /** Per-student regular-lesson makeup info.
    *  Key: studentId → which regular lesson slot this student is making up.
    *  Present when a student was absent from their regular lesson and assigned elsewhere. */
-  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+  regularMakeupInfo?: Record<string, RegularMakeupInfo>
   /** Per-student substitute info for a regular lesson handled by a different teacher.
    *  Key: studentId → original regular teacher + source regular lesson slot. */
   regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
@@ -93,7 +100,7 @@ export type ActualResult = {
   studentIds: string[]
   subject: string
   studentSubjects?: Record<string, string>
-  regularMakeupInfo?: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>
+  regularMakeupInfo?: Record<string, RegularMakeupInfo>
   regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
   isRegular?: boolean
   isGroupLesson?: boolean
