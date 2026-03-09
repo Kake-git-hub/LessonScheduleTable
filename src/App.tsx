@@ -894,6 +894,27 @@ const filterStudentSubjectsForIds = (
   return Object.keys(filtered).length > 0 ? filtered : undefined
 }
 
+const buildTeacherUnassignedReason = (
+  sessionData: SessionData,
+  teacherId: string,
+  studentIds: string[],
+  subject: string,
+  studentSubjects?: Record<string, string>,
+): string => {
+  const teacherName = sessionData.teachers.find((teacher) => teacher.id === teacherId)?.name ?? teacherId
+  const studentDetails = studentIds
+    .map((studentId) => {
+      const student = sessionData.students.find((entry) => entry.id === studentId)
+      if (!student) return null
+      const currentSubject = studentSubjects?.[studentId] ?? subject
+      return `${student.name}${currentSubject ? `(${currentSubject})` : ''}`
+    })
+    .filter(Boolean) as string[]
+
+  if (studentDetails.length === 0) return `${teacherName} が出席不可のため講師未割当`
+  return `${teacherName} が出席不可のため講師未割当: ${studentDetails.join(' / ')}`
+}
+
 const collectOverlappingStudentIds = (
   slotAssignments: Assignment[],
   targetStudentIds: string[],
@@ -4476,12 +4497,11 @@ const AdminPage = () => {
         if (alreadyPresent) continue
 
         const teacherAvailable = hasInstructorAvailability('teacher', gl.teacherId, slot)
-        const groupTeacher = data.teachers.find((entry) => entry.id === gl.teacherId)
         existing.push({
           teacherId: teacherAvailable ? gl.teacherId : '',
           studentIds: [...gl.studentIds],
           subject: gl.subject,
-          ...(teacherAvailable ? {} : { teacherUnassignedReason: `${groupTeacher?.name ?? gl.teacherId} が出席不可のため講師未割当`, teacherUnavailableOriginalId: gl.teacherId }),
+          ...(teacherAvailable ? {} : { teacherUnassignedReason: buildTeacherUnassignedReason(data, gl.teacherId, gl.studentIds, gl.subject), teacherUnavailableOriginalId: gl.teacherId }),
           isRegular: true,
           isGroupLesson: true,
         })
@@ -5930,14 +5950,19 @@ const AdminPage = () => {
         })
         if (hasExistingAssignment) continue
 
-        const teacher = data.teachers.find((item) => item.id === lesson.teacherId)
         const filteredStudentSubjects = filterStudentSubjectsForIds(availableStudentIds, lesson.studentSubjects)
         slotAssignments.push(normalizeAssignment({
           teacherId: '',
           studentIds: availableStudentIds,
           subject: filteredStudentSubjects?.[availableStudentIds[0]] ?? lesson.subject,
           ...(filteredStudentSubjects ? { studentSubjects: filteredStudentSubjects } : {}),
-          teacherUnassignedReason: `${teacher?.name ?? lesson.teacherId} が出席不可のため講師未割当`,
+          teacherUnassignedReason: buildTeacherUnassignedReason(
+            data,
+            lesson.teacherId,
+            availableStudentIds,
+            lesson.subject,
+            filteredStudentSubjects,
+          ),
           teacherUnavailableOriginalId: lesson.teacherId,
           isRegular: true,
         }))
