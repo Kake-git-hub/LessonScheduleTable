@@ -7012,6 +7012,22 @@ const AdminPage = () => {
     return warnings
   }
 
+  const confirmPairDeletion = (teacherId: string, studentIds: string[]): boolean => {
+    const teacherName = teacherId
+      ? (instructors.find((teacher) => teacher.id === teacherId)?.name ?? teacherId)
+      : (isMendan ? '未割当マネージャー' : '講師未割当')
+    const studentNames = studentIds
+      .filter(Boolean)
+      .map((studentId) => data?.students.find((student) => student.id === studentId)?.name ?? studentId)
+    const pairLabel = studentNames.length > 0 ? studentNames.join(' / ') : (isMendan ? '保護者未選択' : '生徒未選択')
+    return window.confirm(`このペアを削除しますか？\n${teacherName} / ${pairLabel}`)
+  }
+
+  const confirmStudentRemoval = (studentId: string): boolean => {
+    const studentName = data?.students.find((student) => student.id === studentId)?.name ?? 'この生徒'
+    return window.confirm(`${studentName} をこのペアから削除しますか？`)
+  }
+
   const deleteSlotAssignment = async (slot: string, idx: number): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
@@ -8306,7 +8322,10 @@ service cloud.firestore {
                           {editingResults.map((result, rIdx) => (
                             <div key={result._uid ?? rIdx} className="assignment-block" style={{ position: 'relative' }}>
                               <button type="button" className="pair-delete-btn" title="このペアを削除"
-                                onClick={() => removeEditingResultPair(rIdx)}>×</button>
+                                onClick={() => {
+                                  if (!confirmPairDeletion(result.teacherId, result.studentIds)) return
+                                  removeEditingResultPair(rIdx)
+                                }}>×</button>
                               <select value={result.teacherId}
                                 onChange={(e) => updateEditingResultTeacher(rIdx, e.target.value)}>
                                 <option value="">{isMendan ? 'マネージャーを選択' : '講師未割当'}</option>
@@ -8400,6 +8419,7 @@ service cloud.firestore {
                                         {sid && (
                                           <button type="button" className="student-clear-btn" title="この生徒を未選択にする"
                                             onClick={() => {
+                                              if (!confirmStudentRemoval(sid)) return
                                               const newIds = [...result.studentIds]
                                               newIds[pos] = ''
                                               updateEditingResultStudentIds(rIdx, newIds)
@@ -8577,7 +8597,10 @@ service cloud.firestore {
                                     type="button"
                                     title="このペアを削除"
                                     style={{ background: '#e2e8f0', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', color: '#64748b', width: '20px', height: '20px', padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, lineHeight: 1 }}
-                                    onClick={() => void deleteSlotAssignment(slot, idx)}
+                                    onClick={() => {
+                                      if (!confirmPairDeletion(assignment.teacherId, assignment.studentIds)) return
+                                      void deleteSlotAssignment(slot, idx)
+                                    }}
                                   >
                                     ×
                                   </button>
