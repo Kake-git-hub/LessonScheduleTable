@@ -8843,6 +8843,7 @@ service cloud.firestore {
                             {/* Teacher row: select + pair move + delete */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                               <select
+                                className={!assignment.teacherId ? 'slot-select slot-select-placeholder' : 'slot-select'}
                                 style={{ flex: 1, minWidth: 0 }}
                                 value={assignment.teacherId}
                                 onChange={(e) => void setSlotTeacher(slot, idx, e.target.value)}
@@ -8946,6 +8947,7 @@ service cloud.firestore {
                                     >
                                     <div className="star-badge-col">{starBadge}</div>
                                     <select
+                                      className={!currentStudentId ? 'slot-select slot-select-placeholder' : 'slot-select'}
                                       value={currentStudentId}
                                       disabled={assignment.isGroupLesson}
                                       onChange={(e) => {

@@ -415,6 +415,11 @@
   color: #1e293b;
 }
 
+.slot-select-placeholder {
+  color: #dc2626;
+  font-weight: 600;
+}
+
 .availability-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
