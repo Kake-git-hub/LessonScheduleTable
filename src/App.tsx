@@ -5557,11 +5557,17 @@ const AdminPage = () => {
     [activeStatusReport],
   )
 
+  const shouldOpenStatusInsteadOfRerun = useMemo(() => {
+    if (!activeStatusReport || isMendan) return false
+    const alreadyShowingLatestAutoAssign = activeStatusReport.title === '自動提案結果'
+    return unresolvedCount > 0 && alreadyShowingLatestAutoAssign && !shouldShowAutoAssignButton
+  }, [activeStatusReport, isMendan, unresolvedCount, shouldShowAutoAssignButton])
+
   const canRunAutoAssignNow = useMemo(() => {
     if (!data) return false
     if (isMendan) return true
-    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages && !hasChoiceBasedResolution
-  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages, hasChoiceBasedResolution])
+    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages && !hasChoiceBasedResolution && !shouldOpenStatusInsteadOfRerun
+  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages, hasChoiceBasedResolution, shouldOpenStatusInsteadOfRerun])
 
   const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
 
@@ -7062,6 +7068,8 @@ service cloud.firestore {
                   disabled={autoAssignLoading}
                   title={!isMendan && currentAutoAssignBlockerCount > 0
                     ? `先に解消: ${currentAutoAssignBlockerLabel}`
+                    : unresolvedCount > 0 && shouldOpenStatusInsteadOfRerun
+                      ? 'この状態では自動提案は出尽くしています。詳細から候補を選んで実行してください'
                     : unresolvedCount > 0 && hasChoiceBasedResolution
                       ? '選択が必要な提案があります。詳細から実行してください'
                     : unresolvedCount > 0
