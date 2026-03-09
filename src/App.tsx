@@ -2761,7 +2761,7 @@ const HomePage = () => {
 
                 <div className="panel">
                   <h3>通常授業管理</h3>
-                  <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                  <div className="regular-lesson-add-grid">
                     <select value={newRegularLessonDraft.teacherId} onChange={(e) => setNewRegularLessonDraft((prev) => ({ ...prev, teacherId: e.target.value }))}>
                       <option value="">講師未割当</option>
                       {masterData.teachers.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
@@ -2815,7 +2815,17 @@ const HomePage = () => {
                     <button className="btn" type="button" onClick={() => void addRegularLesson()}>追加</button>
                   </div>
                   <p className="muted">通常授業は該当する曜日・時限のスロットに最優先で割り当てられます。</p>
-                  <table className="table">
+                  <table className="table regular-lesson-table">
+                    <colgroup>
+                      <col className="regular-lesson-col-teacher" />
+                      <col className="regular-lesson-col-student1" />
+                      <col className="regular-lesson-col-subject1" />
+                      <col className="regular-lesson-col-student2" />
+                      <col className="regular-lesson-col-subject2" />
+                      <col className="regular-lesson-col-day" />
+                      <col className="regular-lesson-col-slot" />
+                      <col className="regular-lesson-col-actions" />
+                    </colgroup>
                     <thead><tr>{renderMasterTableHeader('regularLessons', 'teacher', '講師')}{renderMasterTableHeader('regularLessons', 'student1', '生徒1')}{renderMasterTableHeader('regularLessons', 'subject1', '科目')}{renderMasterTableHeader('regularLessons', 'student2', '生徒2')}{renderMasterTableHeader('regularLessons', 'subject2', '科目')}{renderMasterTableHeader('regularLessons', 'day', '曜日')}{renderMasterTableHeader('regularLessons', 'slot', '時限')}<th>操作</th></tr></thead>
                     <tbody>
                       {regularLessonRows.map((l) => {

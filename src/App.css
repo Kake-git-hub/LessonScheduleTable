@@ -67,6 +67,47 @@
   min-height: 72px;
 }
 
+.regular-lesson-add-grid {
+  display: grid;
+  grid-template-columns: 15% 15% 12% 15% 12% 12% 11% 8%;
+  gap: 8px;
+  align-items: center;
+}
+
+.regular-lesson-add-grid > * {
+  width: 100%;
+  min-width: 0;
+}
+
+.regular-lesson-add-grid .btn {
+  width: 100%;
+}
+
+.regular-lesson-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.regular-lesson-col-teacher,
+.regular-lesson-col-student1,
+.regular-lesson-col-student2 {
+  width: 15%;
+}
+
+.regular-lesson-col-subject1,
+.regular-lesson-col-subject2,
+.regular-lesson-col-day {
+  width: 12%;
+}
+
+.regular-lesson-col-slot {
+  width: 11%;
+}
+
+.regular-lesson-col-actions {
+  width: 8%;
+}
+
 .btn {
   border: none;
   background: #3b82f6;
@@ -98,6 +139,18 @@
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+@media (max-width: 1200px) {
+  .regular-lesson-add-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .regular-lesson-add-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .badge {
