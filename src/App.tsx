@@ -7348,19 +7348,13 @@ const AdminPage = () => {
       const preserveStudents = prev.studentIds.length > 0
       const nextStudentIds = preserveStudents ? [...prev.studentIds] : []
       const nextStudentSubjects = nextStudentIds.reduce<Record<string, string>>((acc, sid) => {
-        const student = current.students.find((item) => item.id === sid)
         const existingSubject = prev.studentSubjects?.[sid] ?? prev.subject
-        const viable = student ? teachableBaseSubjects(instructorSubjects, student.grade) : []
-        acc[sid] = student && canTeachSubject(instructorSubjects, student.grade, existingSubject)
-          ? existingSubject
-          : (viable[0] ?? existingSubject)
+        if (existingSubject) acc[sid] = existingSubject
         return acc
       }, {})
       const nextSubject = nextStudentIds.length > 0
         ? (nextStudentSubjects[nextStudentIds[0]] ?? prev.subject)
-        : (prev.subject && instructorSubjects.includes(prev.subject)
-            ? prev.subject
-            : (instructorSubjects[0] ?? ''))
+        : (prev.subject || (instructorSubjects[0] ?? ''))
       const [slotDate] = slot.split('_')
       const nextRegularSubstituteInfo = (() => {
         if (!prev.isRegular || !prev.teacherUnavailableOriginalId || nextStudentIds.length === 0) {
