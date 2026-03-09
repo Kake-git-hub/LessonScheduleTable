@@ -448,6 +448,19 @@ const buildNoCandidateProposals = (causes: string[]): StatusProposal[] => {
   return labels.map((label) => toStatusProposal(label))
 }
 
+const formatRegularLessonReference = (
+  sessionData: SessionData,
+  teacherId: string,
+  makeupInfo: RegularMakeupInfo,
+): string => {
+  const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+  const teacherName = sessionData.teachers.find((teacher) => teacher.id === teacherId)?.name ?? teacherId
+  const when = makeupInfo.date
+    ? `${formatShortDate(makeupInfo.date)}(${dayNames[makeupInfo.dayOfWeek] ?? '?'}) ${makeupInfo.slotNumber}限`
+    : `${dayNames[makeupInfo.dayOfWeek] ?? '?'}曜${makeupInfo.slotNumber}限`
+  return `通常授業参考: ${teacherName} / ${when}`
+}
+
 type MakeupReasonKind = 'student' | 'teacher' | 'both' | 'actual-absence' | 'unknown'
 
 const hasTeacherAvailabilityForSession = (sessionData: SessionData, teacherId: string, slot: string, dayOfWeek?: number, slotNumber?: number): boolean => {
@@ -4467,7 +4480,17 @@ const AdminPage = () => {
           return [subj, remainingRegularCount] as const
         })
         .filter(([, count]) => count > 0)
-      if (missingEntries.length > 0) causes.push(...missingEntries.map(([subj, count]) => `通常${subj}残${count}コマ`))
+      if (missingEntries.length > 0) {
+        for (const [subj, count] of missingEntries) {
+          const subjectDemands = regularMissingDemands.filter((demand) => demand.subject === subj).slice(0, count)
+          if (subjectDemands.length > 0) {
+            causes.push(...subjectDemands.map((demand) => `通常${subj}残1コマ (${formatRegularLessonReference(data, demand.teacherId, demand.makeupInfo)})`))
+            if (subjectDemands.length < count) causes.push(`通常${subj}残${count - subjectDemands.length}コマ`)
+          } else {
+            causes.push(`通常${subj}残${count}コマ`)
+          }
+        }
+      }
       const specials = student.remaining.filter((entry) => entry.rem > 0)
       if (specials.length > 0) causes.push(...specials.map((entry) => `特別${entry.subj}残${entry.rem}コマ`))
       if (blockAssignmentsUntilShortagesResolved) {
@@ -4572,9 +4595,10 @@ const AdminPage = () => {
       const matchingDemand = pendingMakeupDemands.find((demand) => demand.studentId === item.studentId && demand.teacherId === item.teacherId && demand.subject === item.subject)
       const makeupReasonKind = matchingDemand ? getMakeupReasonKind(data, matchingDemand.studentId, matchingDemand.teacherId, matchingDemand.makeupInfo, matchingDemand.absentDate) : 'unknown'
       const makeupReasonLabel = formatMakeupReasonLabel(makeupReasonKind)
+      const regularReference = matchingDemand ? formatRegularLessonReference(data, matchingDemand.teacherId, matchingDemand.makeupInfo) : ''
       const causeLabel = conciseCause
-        ? `${item.subject}: ${makeupReasonLabel}の振替未配置 (${conciseCause})`
-        : `${item.subject}: ${makeupReasonLabel}の振替未配置`
+        ? `${item.subject}: ${makeupReasonLabel}の振替未配置 (${conciseCause})${regularReference ? ` / ${regularReference}` : ''}`
+        : `${item.subject}: ${makeupReasonLabel}の振替未配置${regularReference ? ` (${regularReference})` : ''}`
       const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
       const mergedProposals = filterExecutableStatusProposals(data, assignmentState, dedupeStatusProposals([
         ...(existing?.proposals ?? []),
@@ -4775,7 +4799,8 @@ const AdminPage = () => {
         if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && !evalResult.blocked) {
           const verb = options?.makeupDemand ? '振替' : '割当'
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
-          const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}`
+          const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
+          const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${regularReference ? ` / ${regularReference}` : ''}`
           const action: ForceAssignAction = {
             type: 'force-assign',
             slot,
@@ -4791,7 +4816,8 @@ const AdminPage = () => {
         if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && evalResult.blocked) {
           const verb = options?.makeupDemand ? '強制振替' : '強制割当'
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
-          const label = `制約違反${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${evalResult.blockReason ? ` (${evalResult.blockReason})` : ''}`
+          const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
+          const label = `制約違反${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${evalResult.blockReason ? ` (${evalResult.blockReason})` : ''}${regularReference ? ` / ${regularReference}` : ''}`
           const action: ForceAssignAction = {
             type: 'force-assign',
             slot,
@@ -4872,7 +4898,8 @@ const AdminPage = () => {
 
           const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
           const regularTeacher = data.teachers.find((item) => item.id === makeupDemand.teacherId)
-          const label = `通常講師代行案: ${slotLabel(slot, isMendan, mendanStart)} / ${regularTeacher?.name ?? makeupDemand.teacherId} の代行を ${teacher.name} が担当 / ${subject} / ${targetText}`
+          const regularReference = formatRegularLessonReference(data, makeupDemand.teacherId, makeupDemand.makeupInfo)
+          const label = `通常講師代行案: ${slotLabel(slot, isMendan, mendanStart)} / ${regularTeacher?.name ?? makeupDemand.teacherId} の代行を ${teacher.name} が担当 / ${subject} / ${targetText} / ${regularReference}`
           substituteSuggestions.set(
             `${slot}|${teacher.id}|${student.id}|${subject}`,
             toStatusProposal(label, {
