@@ -1541,8 +1541,8 @@ const HomePage = () => {
   const [masterTableSorts, setMasterTableSorts] = useState<Record<MasterTableKey, MasterTableSortState | null>>({
     managers: null,
     teachers: null,
-    students: null,
-    regularLessons: null,
+    students: { column: 'grade', direction: 'asc' },
+    regularLessons: { column: 'day', direction: 'asc' },
     groupLessons: null,
     constraints: null,
   })
