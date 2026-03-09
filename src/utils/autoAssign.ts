@@ -565,10 +565,6 @@ export const buildIncrementalAutoAssignments = async (
       }
     }
   }
-
-  // Determine if this is the initial assignment or a re-run
-  const isInitialAssignment = !Object.values(data.assignments).some(a => a && a.some(b => hasMeaningfulManualAssignment(b)))
-
   // Phase 1.5: Remove excess special assignments from later non-recorded slots.
   // Recorded slots are not included in `slots`, so this only trims movable assignments.
   // Include seeded recorded slot load so we correctly detect over-allocation
@@ -650,8 +646,6 @@ export const buildIncrementalAutoAssignments = async (
       const assignment = slotAssignments[idx]
       if (assignment.isGroupLesson) continue
       if (assignment.studentIds.length >= 2) continue
-      // On re-assign, preserve existing non-regular assignments with students as-is
-      if (!isInitialAssignment && !assignment.isRegular && assignment.studentIds.length > 0) continue
       if (!assignment.teacherId) continue
 
       const teacher = data.teachers.find((t) => t.id === assignment.teacherId)
@@ -667,13 +661,8 @@ export const buildIncrementalAutoAssignments = async (
         if (assignment.studentIds.some((existingSid) => constraintFor(data.constraints, existingSid, student.id) === 'incompatible')) return false
         // Student must be able to learn at least one subject the teacher can teach (grade-aware), with remaining demand or makeup need
         const [slotDate] = slot.split('_')
-        // On re-assign for regular pairs with existing students, only allow makeup students (same teacher)
-        const requireMakeup = !isInitialAssignment && assignment.isRegular && assignment.studentIds.length > 0
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
-          if (requireMakeup) {
-            return hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
-          }
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
           return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)

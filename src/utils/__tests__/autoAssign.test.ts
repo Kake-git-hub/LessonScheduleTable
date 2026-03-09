@@ -214,6 +214,62 @@ describe('buildIncrementalAutoAssignments', () => {
     expect(slot2[0].regularSubstituteInfo?.s1).toEqual({ regularTeacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' })
   })
 
+  it('fills an existing special single-student pair on rerun', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 1, holidays: [], lastAutoAssignedAt: Date.now() },
+      teachers: [makeTeacher({ id: 't1', name: '田中先生', subjects: ['数'] })],
+      students: [
+        makeStudent({ id: 's1', name: 'A', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 1000 }),
+        makeStudent({ id: 's2', name: 'B', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 2000 }),
+      ],
+      assignments: {
+        '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', studentSubjects: { s1: '数' } }],
+      },
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'student:s1': ['2026-07-21_1'],
+        'student:s2': ['2026-07-21_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1'])
+    const slot1 = result.assignments['2026-07-21_1'] ?? []
+
+    expect(slot1).toHaveLength(1)
+    expect(slot1[0].teacherId).toBe('t1')
+    expect(slot1[0].studentIds.sort()).toEqual(['s1', 's2'])
+  })
+
+  it('fills a regular single-student slot with a special-demand student on rerun', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 1, holidays: [], lastAutoAssignedAt: Date.now() },
+      teachers: [makeTeacher({ id: 't1', name: '田中先生', subjects: ['数'] })],
+      students: [
+        makeStudent({ id: 's1', name: '通常生徒', subjects: [], subjectSlots: {}, submittedAt: 0 }),
+        makeStudent({ id: 's2', name: '特別生徒', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 2000 }),
+      ],
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      assignments: {
+        '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', studentSubjects: { s1: '数' }, isRegular: true }],
+      },
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'student:s1': [],
+        'student:s2': ['2026-07-21_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1'])
+    const slot1 = result.assignments['2026-07-21_1'] ?? []
+
+    expect(slot1).toHaveLength(1)
+    expect(slot1[0].teacherId).toBe('t1')
+    expect(slot1[0].studentIds.sort()).toEqual(['s1', 's2'])
+    expect(slot1[0].studentSubjects?.s2 ?? slot1[0].subject).toBe('数')
+  })
+
   it('assigns makeup for regular-lesson subjects even if the student special-subject list differs', async () => {
     const data = makeSessionData({
       settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-22', slotsPerDay: 2, holidays: [] },
