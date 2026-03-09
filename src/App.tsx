@@ -585,6 +585,45 @@ const formatAutoDiffTooltip = (kind: 'new' | 'changed', detail?: string): string
   return `${header}\n${normalized}`
 }
 
+const formatStatusDetailTooltip = (
+  report: StatusReport | null,
+  options?: {
+    header?: string
+    maxItemsPerSection?: number
+  },
+): string => {
+  if (!report || report.sections.length === 0) return options?.header ?? ''
+
+  const maxItemsPerSection = options?.maxItemsPerSection ?? 3
+  const lines = options?.header ? [options.header, ''] : []
+
+  for (const section of report.sections) {
+    if (section.items.length === 0) continue
+
+    lines.push(`${section.title} ${section.items.length}件`)
+    for (const item of section.items.slice(0, maxItemsPerSection)) {
+      const causes = mergeStringList(item.causes)
+      lines.push(`・${item.label}`)
+      if (causes.length > 0) {
+        lines.push(`  ${causes.join(' / ')}`)
+      }
+    }
+
+    const remainingCount = section.items.length - maxItemsPerSection
+    if (remainingCount > 0) {
+      lines.push(`・ほか${remainingCount}件`)
+    }
+
+    lines.push('')
+  }
+
+  while (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop()
+  }
+
+  return lines.join('\n')
+}
+
 const normalizeStringArray = (values: string[]): string[] => [...new Set(values)].sort()
 
 const areStringArraysEqual = (left: string[], right: string[]): boolean => {
@@ -5568,7 +5607,7 @@ const AdminPage = () => {
   )
 
   const unresolvedTooltip = useMemo(
-    () => activeStatusReport?.sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ') ?? '',
+    () => formatStatusDetailTooltip(activeStatusReport, { header: 'クリックして未割当を自動割当' }),
     [activeStatusReport],
   )
 
