@@ -257,7 +257,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     headRow2Height: clamp(Math.min(4.8, bodyRowHeight * 0.84), 3.5, 4.8),
   })
 
-  const fitBodyRowHeightToPage = (totalBodyRows: number, availableTableHeight: number): number => {
+  const fitBodyRowHeightToPage = (totalBodyRowUnits: number, availableTableHeight: number): number => {
     let low = 2.6
     let high = 8.5
     let best = low
@@ -266,7 +266,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     while (high - low > 0.01) {
       const mid = (low + high) / 2
       const { headRow1Height, headRow2Height } = resolveHeaderHeights(mid)
-      const totalHeight = totalBodyRows * mid + headRow1Height + headRow2Height
+      const totalHeight = totalBodyRowUnits * mid + headRow1Height + headRow2Height
       if (totalHeight <= safeHeight) {
         best = mid
         low = mid
@@ -335,14 +335,17 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const bodyRows: string[][] = []
     const rowSlotNum: number[] = []
     const rowDeskIdx: number[] = []
+    const rowHasAnyContent: boolean[] = []
     const teacherLinesForFit: string[] = []
     const studentLinesForFit: string[] = []
     for (let slotNumber = 1; slotNumber <= slotsPerDay; slotNumber++) {
       for (let deskIdx = 0; deskIdx < effectiveDeskCount; deskIdx++) {
         const row: string[] = [deskIdx === 0 ? formatSlotTimeLabel(slotNumber) : '']
+        let hasAnyContent = false
         for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
           const date = fullWeek[dayIdx]
           const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet, assignments)
+          if (deskCell.teacher || deskCell.student1.text || deskCell.student2.text) hasAnyContent = true
           if (deskCell.teacher) teacherLinesForFit.push(deskCell.teacher)
           studentLinesForFit.push(...deskCell.student1.text.split('\n').filter(Boolean))
           studentLinesForFit.push(...deskCell.student2.text.split('\n').filter(Boolean))
@@ -351,6 +354,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         bodyRows.push(row)
         rowSlotNum.push(slotNumber)
         rowDeskIdx.push(deskIdx)
+        rowHasAnyContent.push(hasAnyContent)
       }
     }
 
@@ -371,10 +375,12 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
-    const totalBodyRows = Math.max(1, slotsPerDay * effectiveDeskCount)
+    const emptyRowFactor = 0.76
+    const totalBodyRowUnits = Math.max(1, rowHasAnyContent.reduce((sum, hasContent) => sum + (hasContent ? 1 : emptyRowFactor), 0))
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
-    const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
+    const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRowUnits, availableTableHeight)
     const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
+    const rowMinHeights = rowHasAnyContent.map((hasContent) => hasContent ? targetBodyRowHeight : targetBodyRowHeight * emptyRowFactor)
     const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
     const headerCellPadding = clamp(cellPadding * 0.9, 0.08, 0.22)
     const bodyUsableHeight = Math.max(1.5, targetBodyRowHeight - cellPadding * 2)
@@ -470,7 +476,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const slotNumber = rowSlotNum[hookData.row.index] ?? 1
           const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
           const col = hookData.column.index
-          hookData.cell.styles.minCellHeight = targetBodyRowHeight
+          const rowMinHeight = rowMinHeights[hookData.row.index] ?? targetBodyRowHeight
+          hookData.cell.styles.minCellHeight = rowMinHeight
 
           if (col === 0) {
             hookData.cell.text = ['']
@@ -534,7 +541,9 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
         if (col === 0) {
           if (deskIdx !== 0) return
-          const groupHeight = hookData.cell.height * effectiveDeskCount
+          const groupHeight = rowMinHeights
+            .slice(hookData.row.index, hookData.row.index + effectiveDeskCount)
+            .reduce((sum, height) => sum + height, 0)
           const centerX = hookData.cell.x + hookData.cell.width / 2
           const centerY = hookData.cell.y + groupHeight / 2
           doc.setFont('NotoSansJP', 'bold')
