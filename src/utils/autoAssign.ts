@@ -28,6 +28,10 @@ export interface ChangeLogEntry {
 /** Yield helper — resolves on next macrotask so the UI stays responsive. */
 const yieldToMain = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
+const getRegularOccurrenceKey = (studentId: string, subject: string, makeupInfo: { dayOfWeek: number; slotNumber: number; date?: string }): string => (
+  `${studentId}|${subject}|${makeupInfo.dayOfWeek}|${makeupInfo.slotNumber}|${makeupInfo.date ?? ''}`
+)
+
 const hasTeacherAvailabilityForAutoAssign = (data: SessionData, teacherId: string, slot: string): boolean => {
   if (hasAvailability(data.availability, 'teacher', teacherId, slot)) return true
   if ((data.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
@@ -406,6 +410,79 @@ export const buildIncrementalAutoAssignments = async (
   }
 
   console.log('[AutoAssign] After Phase 1: result has', Object.keys(result).length, 'slots')
+
+  // Remove movable duplicate makeup coverage so the same original regular occurrence
+  // does not remain assigned in multiple future slots after a rerun.
+  const occurrenceSlotMap = new Map<string, string[]>()
+  for (const [slot, slotAssignments] of Object.entries(result)) {
+    for (const assignment of slotAssignments) {
+      if (!assignment.teacherId || !assignment.regularMakeupInfo) continue
+      for (const studentId of assignment.studentIds) {
+        const makeupInfo = assignment.regularMakeupInfo[studentId]
+        if (!makeupInfo) continue
+        const subject = assignment.studentSubjects?.[studentId] ?? assignment.subject
+        const key = getRegularOccurrenceKey(studentId, subject, makeupInfo)
+        const existing = occurrenceSlotMap.get(key) ?? []
+        if (!existing.includes(slot)) existing.push(slot)
+        occurrenceSlotMap.set(key, existing)
+      }
+    }
+  }
+
+  const duplicateCleanupBySlot = new Map<string, Set<string>>()
+  for (const [occurrenceKey, occurrenceSlots] of occurrenceSlotMap.entries()) {
+    if (occurrenceSlots.length <= 1) continue
+    const [studentId] = occurrenceKey.split('|')
+    const keepSlot = occurrenceSlots.slice().sort()[0]
+    for (const slot of occurrenceSlots) {
+      if (slot === keepSlot) continue
+      const pending = duplicateCleanupBySlot.get(slot) ?? new Set<string>()
+      pending.add(studentId)
+      duplicateCleanupBySlot.set(slot, pending)
+    }
+  }
+
+  for (const [slot, duplicateStudentIds] of duplicateCleanupBySlot.entries()) {
+    const slotAssignments = result[slot]
+    if (!slotAssignments?.length) continue
+    const cleanedAssignments: Assignment[] = []
+    for (const assignment of slotAssignments) {
+      const removableStudentIds = assignment.studentIds.filter((studentId) => duplicateStudentIds.has(studentId) && !!assignment.regularMakeupInfo?.[studentId])
+      if (removableStudentIds.length === 0) {
+        cleanedAssignments.push(assignment)
+        continue
+      }
+
+      const keepStudentIds = assignment.studentIds.filter((studentId) => !removableStudentIds.includes(studentId))
+      if (keepStudentIds.length === 0) {
+        changeLog.push({ slot, action: '振替重複整理', detail: `重複振替を削除: ${removableStudentIds.join(', ')}` })
+        continue
+      }
+
+      const nextAssignment = normalizeAssignment({
+        ...assignment,
+        studentIds: keepStudentIds,
+        studentSubjects: assignment.studentSubjects
+          ? Object.fromEntries(Object.entries(assignment.studentSubjects).filter(([studentId]) => keepStudentIds.includes(studentId)))
+          : undefined,
+        regularMakeupInfo: assignment.regularMakeupInfo
+          ? Object.fromEntries(Object.entries(assignment.regularMakeupInfo).filter(([studentId]) => keepStudentIds.includes(studentId)))
+          : undefined,
+        regularSubstituteInfo: assignment.regularSubstituteInfo
+          ? Object.fromEntries(Object.entries(assignment.regularSubstituteInfo).filter(([studentId]) => keepStudentIds.includes(studentId)))
+          : undefined,
+      })
+      cleanedAssignments.push(nextAssignment)
+      markChangedPair(slot, nextAssignment, '重複していた振替を自動整理')
+      changeLog.push({ slot, action: '振替重複整理', detail: `重複振替を削除: ${removableStudentIds.join(', ')}` })
+    }
+
+    if (cleanedAssignments.length > 0) {
+      result[slot] = cleanedAssignments
+    } else {
+      delete result[slot]
+    }
+  }
 
   // Consume makeup demand already satisfied by preserved assignments (actual results + Phase 1)
   // This prevents duplicate makeup assignments on re-assign

@@ -178,6 +178,40 @@ describe('buildIncrementalAutoAssignments', () => {
     expect(slot2[0].regularSubstituteInfo?.s1).toEqual({ regularTeacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' })
   })
 
+  it('removes duplicate makeup coverage for the same regular occurrence on rerun', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-22', slotsPerDay: 2, holidays: [], lastAutoAssignedAt: Date.now() },
+      regularLessons: [
+        { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+      ],
+      assignments: {
+        '2026-07-21_2': [{
+          teacherId: 't1',
+          studentIds: ['s1'],
+          subject: '数',
+          regularMakeupInfo: { s1: { dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' } },
+        }],
+        '2026-07-22_1': [{
+          teacherId: 't1',
+          studentIds: ['s1'],
+          subject: '数',
+          regularMakeupInfo: { s1: { dayOfWeek: 2, slotNumber: 1, date: '2026-07-21' } },
+        }],
+      },
+      availability: {
+        'teacher:t1': ['2026-07-21_1', '2026-07-21_2', '2026-07-22_1', '2026-07-22_2'],
+        'student:s1': ['2026-07-21_1', '2026-07-21_2', '2026-07-22_1', '2026-07-22_2'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, slots)
+    const remainingSlots = Object.entries(result.assignments)
+      .flatMap(([slot, assignments]) => assignments.filter((assignment) => assignment.regularMakeupInfo?.s1).map(() => slot))
+
+    expect(remainingSlots).toEqual(['2026-07-21_2'])
+    expect((result.assignments['2026-07-22_1'] ?? []).every((assignment) => !assignment.regularMakeupInfo?.s1)).toBe(true)
+  })
+
   it('prefers 2-student pairs', async () => {
     const data = makeSessionData({
       teachers: [makeTeacher()],
