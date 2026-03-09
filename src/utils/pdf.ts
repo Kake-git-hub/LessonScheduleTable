@@ -375,13 +375,14 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
-    const emptyRowFactor = 0.76
+    const emptyRowFactor = 0.58
     const totalBodyRowUnits = Math.max(1, rowHasAnyContent.reduce((sum, hasContent) => sum + (hasContent ? 1 : emptyRowFactor), 0))
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
     const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRowUnits, availableTableHeight)
     const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
     const rowMinHeights = rowHasAnyContent.map((hasContent) => hasContent ? targetBodyRowHeight : targetBodyRowHeight * emptyRowFactor)
     const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
+    const emptyRowPadding = clamp(cellPadding * 0.45, 0.04, 0.12)
     const headerCellPadding = clamp(cellPadding * 0.9, 0.08, 0.22)
     const bodyUsableHeight = Math.max(1.5, targetBodyRowHeight - cellPadding * 2)
     const teacherMaxByHeight = (bodyUsableHeight / (1 * pdfLineHeightFactor)) / mmPerPt
@@ -476,8 +477,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const slotNumber = rowSlotNum[hookData.row.index] ?? 1
           const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
           const col = hookData.column.index
+          const rowHasContent = rowHasAnyContent[hookData.row.index] ?? true
           const rowMinHeight = rowMinHeights[hookData.row.index] ?? targetBodyRowHeight
           hookData.cell.styles.minCellHeight = rowMinHeight
+          hookData.cell.styles.cellPadding = rowHasContent ? cellPadding : emptyRowPadding
 
           if (col === 0) {
             hookData.cell.text = ['']
