@@ -407,6 +407,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       startY: tableStartY,
       margin: { left: margin, right: margin },
       theme: 'grid',
+      pageBreak: 'avoid',
+      rowPageBreak: 'avoid',
       styles: {
         font: 'NotoSansJP',
         fontSize: baseFontSize,
@@ -473,15 +475,17 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           hookData.cell.styles.minCellHeight = targetBodyRowHeight
 
           if (col === 0) {
-            if (deskIdx === 0) {
-              hookData.cell.styles.fontStyle = 'bold'
-              hookData.cell.styles.halign = 'center'
-              hookData.cell.styles.valign = 'middle'
-              hookData.cell.styles.fillColor = [255, 255, 255]
-              hookData.cell.styles.textColor = [0, 0, 0]
-            } else {
-              hookData.cell.styles.textColor = [255, 255, 255]
-              hookData.cell.styles.fillColor = [255, 255, 255]
+            hookData.cell.text = ['']
+            hookData.cell.styles.fontStyle = 'bold'
+            hookData.cell.styles.halign = 'center'
+            hookData.cell.styles.valign = 'middle'
+            hookData.cell.styles.fillColor = [255, 255, 255]
+            hookData.cell.styles.textColor = [0, 0, 0]
+            hookData.cell.styles.lineWidth = {
+              top: deskIdx === 0 ? 0.2 : 0,
+              right: 0.2,
+              bottom: deskIdx === effectiveDeskCount - 1 ? 0.2 : 0,
+              left: 0.2,
             }
             hookData.cell.styles.fontSize = timeFontSize
             return
@@ -527,10 +531,21 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         if (hookData.section !== 'body') return
 
         const col = hookData.column.index
-        if (col === 0) return
-
         const slotNumber = rowSlotNum[hookData.row.index] ?? 1
         const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
+
+        if (col === 0) {
+          if (deskIdx !== 0) return
+          const groupHeight = hookData.cell.height * effectiveDeskCount
+          const centerX = hookData.cell.x + hookData.cell.width / 2
+          const centerY = hookData.cell.y + groupHeight / 2
+          doc.setFont('NotoSansJP', 'bold')
+          doc.setFontSize(timeFontSize)
+          doc.setTextColor(0, 0, 0)
+          doc.text(formatSlotTimeLabel(slotNumber), centerX, centerY, { align: 'center', baseline: 'middle' })
+          return
+        }
+
         const dayIdx = Math.floor((col - 1) / 4)
         const dayDate = fullWeek[dayIdx]
         const daySubCol = (col - 1) % 4
