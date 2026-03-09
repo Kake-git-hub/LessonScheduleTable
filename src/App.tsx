@@ -3809,8 +3809,10 @@ const AdminPage = () => {
   })
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
-  // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
+  // Track slots manually modified since the last auto-assign to decide whether rerunning is meaningful.
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
+  // Track slots that should stay protected from regular auto-fill even after auto-assign reruns.
+  const [protectedManualSlots, setProtectedManualSlots] = useState<Set<string>>(new Set())
   // --- Slot constraint editing ---
   const [constraintEditStudentId, setConstraintEditStudentId] = useState<string | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -3858,6 +3860,19 @@ const AdminPage = () => {
     })
     return () => unsub()
   }, [classroomId])
+
+  const markSlotsManual = useCallback((slots: string[]): void => {
+    setManuallyModifiedSlots((prev) => {
+      const next = new Set(prev)
+      for (const slot of slots) next.add(slot)
+      return next
+    })
+    setProtectedManualSlots((prev) => {
+      const next = new Set(prev)
+      for (const slot of slots) next.add(slot)
+      return next
+    })
+  }, [])
 
   const buildSessionDataFromMaster = useCallback((current: SessionData, master: MasterData): SessionData => {
     const mergedStudents = master.students.map((masterStudent) => {
@@ -4482,7 +4497,7 @@ const AdminPage = () => {
       }
 
       // Don't overwrite manual (non-regular) assignments or manually modified slots
-      if (manuallyModifiedSlots.has(slot)) continue
+      if (protectedManualSlots.has(slot)) continue
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
       // Don't overwrite slots where a regular lesson was manually adjusted.
       // regularMakeupInfo means a regular student was moved out.
@@ -4567,7 +4582,7 @@ const AdminPage = () => {
     if (changed) {
       void persist({ ...data, assignments: nextAssignments })
     }
-  }, [slotKeys, data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authorized, data, protectedManualSlots, slotKeys]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Actual result recording helpers ---
   let editingResultUid = 0
@@ -6647,8 +6662,7 @@ const AdminPage = () => {
 
   const shouldOpenStatusInsteadOfRerun = useMemo(() => {
     if (!activeStatusReport || isMendan) return false
-    const alreadyShowingLatestAutoAssign = activeStatusReport.title === '自動提案結果'
-    return unresolvedCount > 0 && alreadyShowingLatestAutoAssign && !shouldShowAutoAssignButton
+    return unresolvedCount > 0 && !shouldShowAutoAssignButton
   }, [activeStatusReport, isMendan, unresolvedCount, shouldShowAutoAssignButton])
 
   const canRunAutoAssignNow = useMemo(() => {
@@ -6874,7 +6888,7 @@ const AdminPage = () => {
         }
 
         success = true
-        setManuallyModifiedSlots((prev) => new Set(prev).add(proposal.slot))
+        markSlotsManual([proposal.slot])
         const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
         const nextChanged = { ...(currentHighlights.changed ?? {}) }
         const nextAdded = { ...(currentHighlights.added ?? {}) }
@@ -7007,12 +7021,7 @@ const AdminPage = () => {
       nextAssignments[proposal.targetSlot] = targetAssignments
 
       success = true
-      setManuallyModifiedSlots((prev) => {
-        const next = new Set(prev)
-        next.add(proposal.sourceSlot)
-        next.add(proposal.targetSlot)
-        return next
-      })
+      markSlotsManual([proposal.sourceSlot, proposal.targetSlot])
       const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
       const nextChanged = { ...(currentHighlights.changed ?? {}) }
       const nextAdded = { ...(currentHighlights.added ?? {}) }
@@ -7204,7 +7213,7 @@ const AdminPage = () => {
       if (nextAssignments[slot].length === 0) delete nextAssignments[slot]
     }
 
-    const protectedSlots = new Set<string>([...recordedSlots, ...manuallyModifiedSlots])
+    const protectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
     const mergedAssignments = { ...nextAssignments }
     for (const slot of protectedSlots) {
       mergedAssignments[slot] = data.assignments[slot] ?? []
@@ -7225,6 +7234,7 @@ const AdminPage = () => {
         settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
       }
     })
+    setManuallyModifiedSlots(new Set())
     const overRemovedEntries = changeLog.filter((item) => item.action === '過割当解除' || item.action === '希望減で解除')
     const overRemovedSection: StatusSection = {
       key: 'overRemoved',
@@ -7278,6 +7288,7 @@ const AdminPage = () => {
   const resetAssignments = async (): Promise<void> => {
     if (!window.confirm('コマ割りをリセットしますか？\n（手動割当・自動提案結果・実績記録を全てクリアします）')) return
     setManuallyModifiedSlots(new Set())
+    setProtectedManualSlots(new Set())
     await updateAssignments((current) => buildResetSchedulingState(current))
   }
 
@@ -7309,6 +7320,7 @@ const AdminPage = () => {
     if (!confirmed) return
 
     setManuallyModifiedSlots(new Set())
+    setProtectedManualSlots(new Set())
     closeStatusModal()
     setLatestStatusReport(null)
     await updateAssignments((current) => buildResetSchedulingState(current, nextSettings))
@@ -7414,7 +7426,7 @@ const AdminPage = () => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       if (!slotAssignments[idx]) return current
-      setManuallyModifiedSlots((prev) => new Set(prev).add(slot))
+      markSlotsManual([slot])
       slotAssignments.splice(idx, 1)
       const nextAssignments = { ...current.assignments }
       if (slotAssignments.length === 0) delete nextAssignments[slot]
@@ -7429,7 +7441,7 @@ const AdminPage = () => {
       const prev = slotAssignments[idx]
       if (!prev) return current
 
-      setManuallyModifiedSlots((prevSlots) => new Set(prevSlots).add(slot))
+      markSlotsManual([slot])
 
       if (!teacherId) {
         slotAssignments[idx] = {
@@ -7810,12 +7822,7 @@ const AdminPage = () => {
       }
 
       // Mark both source and target slots as manually modified
-      setManuallyModifiedSlots((prev) => {
-        const next = new Set(prev)
-        next.add(sourceSlot)
-        next.add(targetSlot)
-        return next
-      })
+      markSlotsManual([sourceSlot, targetSlot])
 
       const nextAssignments = { ...current.assignments }
       if (isSameSlotMove) {
