@@ -1,16 +1,20 @@
 /**
- * 3-level subject system for teachers.
+ * Teacher subject system.
  *
- * Teachers register subjects with a level prefix: 小英, 中英, 高英, etc.
- * The hierarchy is: 高 > 中 > 小.
- *   - 高英 means: can teach 英 to all grades (小/中/高)
+ * Teachers register subjects with a level prefix: 小英, 中英, 高1英, 高2英, 高3英, etc.
+ * The hierarchy is: 高3 > 高2 > 高1 > 中 > 小.
+ *   - 高3英 means: can teach 英 to all grades up to 高3
+ *   - 高2英 means: can teach 英 to all grades up to 高2
+ *   - 高1英 means: can teach 英 to all grades up to 高1
  *   - 中英 means: can teach 英 to 小 and 中 grades only
  *   - 小英 means: can teach 英 to 小 grades only
  *
  * Students continue to use base subjects: 英, 数, 国, etc.
  * Matching uses the student's grade to determine the required level.
  *
- * Legacy subjects without prefix (e.g. '英') are treated as 高-level for backward compatibility.
+ * Backward compatibility:
+ *   - Legacy 高英 / 高数 / ... are treated as the broadest high-school tier.
+ *   - Legacy non-prefixed subjects (e.g. '英') are treated the same as legacy 高英.
  */
 
 /** Base (non-leveled) subjects used by students. */
@@ -19,49 +23,81 @@ export const BASE_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as
 /** Combo subjects for elementary students (two subjects in one slot). */
 export const ELEMENTARY_COMBO_SUBJECTS = ['算英', '算国', '英国'] as const
 
-/** Level prefixes ordered from lowest to highest. */
-export const LEVEL_PREFIXES = ['小', '中', '高'] as const
+/** Selectable level prefixes ordered from lowest to highest. */
+export const LEVEL_PREFIXES = ['小', '中', '高1', '高2', '高3'] as const
+
+/** Legacy prefixes kept only for backward compatibility with existing data/imports. */
+const LEGACY_LEVEL_PREFIXES = ['高'] as const
+
+const RECOGNIZED_LEVEL_PREFIXES = [...LEVEL_PREFIXES, ...LEGACY_LEVEL_PREFIXES] as const
 
 /** 算 and 数 are equivalent (算数 = elementary math, 数学 = secondary math). */
 const EQUIVALENT_SUBJECTS: Record<string, string> = { '算': '数', '数': '算' }
 
 /** Ordered base subjects per level for TEACHER_SUBJECTS generation.
  *  小: 英, 算, 国, 理, 社, IT  (算 replaces 数)
- *  中/高: 英, 数, 国, 理, 社, IT */
+ *  中/高1/高2/高3: 英, 数, 国, 理, 社, IT */
 const subjectsForLevel = (lv: string): string[] => {
   if (lv === '小') return ['英', '算', '国', '理', '社', 'IT']
   return ['英', '数', '国', '理', '社', 'IT']
 }
 
-/** All leveled teacher subject options (小英, 小算, 小国, ... 中英, 中数, ... 高IT). */
+/** All selectable teacher subject options (小英, 中英, 高1英, 高2英, 高3英, ...). */
 export const TEACHER_SUBJECTS: string[] = LEVEL_PREFIXES.flatMap(lv =>
   subjectsForLevel(lv).map(s => `${lv}${s}`),
 )
 
-const LEVEL_ORDER: Record<string, number> = { '小': 0, '中': 1, '高': 2 }
+const LEGACY_TEACHER_SUBJECTS: string[] = LEGACY_LEVEL_PREFIXES.flatMap(lv =>
+  subjectsForLevel(lv).map(s => `${lv}${s}`),
+)
+
+const KNOWN_TEACHER_SUBJECTS = new Set<string>([
+  ...TEACHER_SUBJECTS,
+  ...LEGACY_TEACHER_SUBJECTS,
+])
+
+const LEVEL_ORDER: Record<string, number> = { '小': 0, '中': 1, '高1': 2, '高2': 3, '高3': 4, '高': 4 }
+
+const SORTED_LEVEL_PREFIXES = [...RECOGNIZED_LEVEL_PREFIXES].sort((a, b) => b.length - a.length)
+
+const parseTeacherSubject = (subj: string): { level: string; base: string } | null => {
+  for (const lv of SORTED_LEVEL_PREFIXES) {
+    if (subj.startsWith(lv)) {
+      return { level: lv, base: subj.slice(lv.length) }
+    }
+  }
+  return null
+}
+
+export const isKnownTeacherSubject = (subj: string): boolean => KNOWN_TEACHER_SUBJECTS.has(subj)
 
 /** Extract the base subject from a (possibly leveled) subject string.
- *  '高英' → '英', '中数' → '数', '英' → '英' (legacy). */
+ *  '高2英' → '英', '高英' → '英', '中数' → '数', '英' → '英' (legacy). */
 export const getSubjectBase = (subj: string): string => {
-  if (LEVEL_PREFIXES.some(lv => subj.startsWith(lv))) {
-    return subj.slice(1)
+  const parsed = parseTeacherSubject(subj)
+  if (parsed) {
+    return parsed.base
   }
   return subj // legacy: no prefix
 }
 
 /** Extract the level prefix from a (possibly leveled) subject string.
- *  '高英' → '高', '中数' → '中', '英' → '高' (legacy treated as highest). */
+ *  '高2英' → '高2', '高英' → '高', '中数' → '中', '英' → '高' (legacy treated as highest). */
 export const getSubjectLevel = (subj: string): string => {
-  for (const lv of LEVEL_PREFIXES) {
-    if (subj.startsWith(lv)) return lv
+  const parsed = parseTeacherSubject(subj)
+  if (parsed) {
+    return parsed.level
   }
   return '高' // legacy: treat as highest level
 }
 
 /** Map a student grade string to a level prefix.
- *  '高1' → '高', '中2' → '中', '小3' → '小'. */
+ *  '高1' → '高1', '高2' → '高2', '高3' → '高3', '中2' → '中', '小3' → '小'. */
 export const gradeToLevel = (grade: string): string => {
-  if (grade.startsWith('高')) return '高'
+  if (grade.startsWith('高3')) return '高3'
+  if (grade.startsWith('高2')) return '高2'
+  if (grade.startsWith('高1')) return '高1'
+  if (grade.startsWith('高')) return '高3'
   if (grade.startsWith('中')) return '中'
   return '小'
 }
@@ -72,8 +108,9 @@ export const gradeToLevel = (grade: string): string => {
  * For combo subjects (算英, 算国, 英国), the teacher must be able to teach
  * both component subjects at the student's grade level.
  *
- * Example: canTeachSubject(['高英', '中数'], '中2', '英') → true
- *          canTeachSubject(['中数'], '高1', '数') → false
+ * Example: canTeachSubject(['高2英', '中数'], '中2', '英') → true
+ *          canTeachSubject(['高2数'], '高3', '数') → false
+ *          canTeachSubject(['高2数'], '高1', '数') → true
  *          canTeachSubject(['小算', '小英'], '小3', '算英') → true
  */
 export const canTeachSubject = (
@@ -125,7 +162,7 @@ export const teachableBaseSubjects = (
  * For combo subjects, checks that the teacher has both component subjects.
  * Useful when grade context is not available.
  *
- * Example: teacherHasSubject(['高英', '中数'], '英') → true
+ * Example: teacherHasSubject(['高2英', '中数'], '英') → true
  *          teacherHasSubject(['小算', '小英'], '算英') → true
  */
 export const teacherHasSubject = (

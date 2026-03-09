@@ -23,7 +23,7 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase } from './utils/subjects'
+import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
@@ -1088,7 +1088,7 @@ const releaseUnavailableTeacherAssignments = (current: SessionData, teacherIds?:
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
 const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as readonly string[]
-/** Leveled teacher subjects (小英, 中英, 高英, ...). */
+/** Leveled teacher subjects (小英, 中英, 高1英, 高2英, 高3英, ...). */
 const ALL_TEACHER_SUBJECTS = TEACHER_SUBJECTS
 
 const createId = (): string => {
@@ -2208,7 +2208,7 @@ const HomePage = () => {
         const row = rows[i]
         const name = String(row?.[0] ?? '').trim()
         if (!name) continue
-        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => ALL_TEACHER_SUBJECTS.includes(s) || FIXED_SUBJECTS.includes(s))
+        const subjects = String(row?.[1] ?? '').split(/[、,]/).map((s) => s.trim()).filter((s) => isKnownTeacherSubject(s) || FIXED_SUBJECTS.includes(s))
         const memo = String(row?.[2] ?? '').trim()
         const email = String(row?.[3] ?? '').trim()
         if (md.teachers.some((t) => t.name === name)) continue
