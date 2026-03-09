@@ -8992,6 +8992,15 @@ const TeacherInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const sessionSlotKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const date of dates) {
+      for (let slotNumber = 1; slotNumber <= data.settings.slotsPerDay; slotNumber++) {
+        keys.add(`${date}_${slotNumber}`)
+      }
+    }
+    return keys
+  }, [dates, data.settings.slotsPerDay])
   const showDevRandom = true
   const formRef = useRef<HTMLDivElement>(null)
 
@@ -9012,7 +9021,7 @@ const TeacherInputPage = ({
 
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey(personKeyPrefix, teacher.id)
-    const savedAvailability = new Set(data.availability[key] ?? [])
+    const savedAvailability = new Set((data.availability[key] ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     const hasSubmitted = (data.teacherSubmittedAt?.[teacher.id] ?? 0) > 0
     if (personKeyPrefix === 'teacher' && !hasSubmitted) {
       for (const slotKey of regularSlotKeys) {
@@ -9072,8 +9081,8 @@ const TeacherInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey(personKeyPrefix, teacher.id)
-    const availabilityArray = normalizeStringArray(Array.from(localAvailability))
-    const previousAvailability = normalizeStringArray(data.availability[key] ?? [])
+    const availabilityArray = normalizeStringArray(Array.from(localAvailability).filter((slotKey) => sessionSlotKeys.has(slotKey)))
+    const previousAvailability = normalizeStringArray((data.availability[key] ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     const hasChanged = !areStringArraysEqual(availabilityArray, previousAvailability)
 
     // Determine if this is initial or update submission
@@ -9481,6 +9490,15 @@ const StudentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const sessionSlotKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const date of dates) {
+      for (let slotNumber = 1; slotNumber <= data.settings.slotsPerDay; slotNumber++) {
+        keys.add(`${date}_${slotNumber}`)
+      }
+    }
+    return keys
+  }, [dates, data.settings.slotsPerDay])
   const showDevRandom = true
   const formRef = useRef<HTMLDivElement>(null)
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
@@ -9505,24 +9523,28 @@ const StudentInputPage = ({
 
   // Initialize unavailable slots from existing data (migrate from legacy unavailableDates if needed)
   const [unavailableSlots, setUnavailableSlots] = useState<Set<string>>(() => {
-    const initial = new Set(student.unavailableSlots ?? [])
+    const initial = new Set((student.unavailableSlots ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     // Migrate legacy: if unavailableDates exist and unavailableSlots is empty, expand dates to all slots
     if (initial.size === 0 && (student.unavailableDates ?? []).length > 0) {
       for (const date of student.unavailableDates) {
         for (let s = 1; s <= data.settings.slotsPerDay; s++) {
-          initial.add(`${date}_${s}`)
+          const slotKey = `${date}_${s}`
+          if (sessionSlotKeys.has(slotKey)) initial.add(slotKey)
         }
       }
     }
     return initial
   })
   const [regularLessonStatuses, setRegularLessonStatuses] = useState<Record<string, RegularLessonAttendanceStatus>>(() => {
-    const initial = { ...(student.regularLessonStatuses ?? {}) }
-    const unavailable = new Set(student.unavailableSlots ?? [])
+    const initial = Object.fromEntries(
+      Object.entries(student.regularLessonStatuses ?? {}).filter(([slotKey]) => regularSlotKeys.has(slotKey)),
+    )
+    const unavailable = new Set((student.unavailableSlots ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     if (unavailable.size === 0 && (student.unavailableDates ?? []).length > 0) {
       for (const date of student.unavailableDates) {
         for (let s = 1; s <= data.settings.slotsPerDay; s++) {
-          unavailable.add(`${date}_${s}`)
+          const slotKey = `${date}_${s}`
+          if (sessionSlotKeys.has(slotKey)) unavailable.add(slotKey)
         }
       }
     }
@@ -9626,7 +9648,7 @@ const StudentInputPage = ({
   }
 
   const handleSubmit = () => {
-    const normalizedUnavailableSlots = normalizeStringArray(Array.from(unavailableSlots))
+    const normalizedUnavailableSlots = normalizeStringArray(Array.from(unavailableSlots).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     const normalizedRegularLessonStatuses = Object.fromEntries(
       Object.entries(regularLessonStatuses)
         .filter(([slotKey, status]) => regularSlotKeys.has(slotKey) && (status === 'absent' || status === 'completed'))
@@ -9648,9 +9670,9 @@ const StudentInputPage = ({
     // Determine if this is initial or update submission
     const previousSubjects = normalizeStringArray(student.subjects ?? [])
     const previousUnavailableDates = normalizeStringArray(student.unavailableDates ?? [])
-    const previousUnavailableSlots = normalizeStringArray(student.unavailableSlots ?? [])
+    const previousUnavailableSlots = normalizeStringArray((student.unavailableSlots ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     const previousRegularLessonStatuses = Object.fromEntries(
-      Object.entries(student.regularLessonStatuses ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+      Object.entries(student.regularLessonStatuses ?? {}).filter(([slotKey]) => regularSlotKeys.has(slotKey)).sort(([left], [right]) => left.localeCompare(right)),
     )
     const normalizedSubjects = normalizeStringArray(subjects)
     const normalizedDerivedUnavailDates = normalizeStringArray(derivedUnavailDates)
@@ -9934,6 +9956,15 @@ const MendanParentInputPage = ({
 }) => {
   const navigate = useNavigate()
   const dates = useMemo(() => getDatesInRange(data.settings), [data.settings])
+  const sessionSlotKeys = useMemo(() => {
+    const keys = new Set<string>()
+    for (const date of dates) {
+      for (let slotNumber = 1; slotNumber <= data.settings.slotsPerDay; slotNumber++) {
+        keys.add(`${date}_${slotNumber}`)
+      }
+    }
+    return keys
+  }, [dates, data.settings.slotsPerDay])
   const showDevRandom = true
   const formRef = useRef<HTMLDivElement>(null)
 
@@ -9943,15 +9974,15 @@ const MendanParentInputPage = ({
     for (const manager of (data.managers ?? [])) {
       const key = personKey('manager', manager.id)
       for (const sk of (data.availability[key] ?? [])) {
-        slots.add(sk)
+        if (sessionSlotKeys.has(sk)) slots.add(sk)
       }
     }
     return slots
-  }, [data])
+  }, [data, sessionSlotKeys])
 
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey('student', student.id)
-    return new Set(data.availability[key] ?? [])
+    return new Set((data.availability[key] ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
   })
 
   const toggleSlot = (date: string, slotNum: number) => {
@@ -10004,8 +10035,8 @@ const MendanParentInputPage = ({
 
   const handleSubmit = () => {
     const key = personKey('student', student.id)
-    const availabilityArray = normalizeStringArray(Array.from(localAvailability))
-    const previousAvailability = normalizeStringArray(data.availability[key] ?? [])
+    const availabilityArray = normalizeStringArray(Array.from(localAvailability).filter((slotKey) => sessionSlotKeys.has(slotKey)))
+    const previousAvailability = normalizeStringArray((data.availability[key] ?? []).filter((slotKey) => sessionSlotKeys.has(slotKey)))
     const hasChanged = !areStringArraysEqual(availabilityArray, previousAvailability)
 
     const isUpdate = !!(student.submittedAt)
