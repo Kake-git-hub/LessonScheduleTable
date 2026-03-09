@@ -1,6 +1,6 @@
 import type { Assignment, RegularMakeupInfo, SessionData } from '../types'
 import { personKey } from './schedule'
-import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable } from './constraints'
+import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
 import { evaluateConstraintCards, getDefaultConstraintCards } from './slotConstraints'
 import {
@@ -41,6 +41,15 @@ const selectPreferredMakeupInfo = (
   }
   if (next.absentDate) return next
   return current
+}
+
+const isStudentAvailableForAssignment = (student: SessionData['students'][number], assignment: Assignment, slot: string): boolean => {
+  const isRegularLikeAssignment = assignment.isRegular
+    || !!assignment.regularMakeupInfo?.[student.id]
+    || !!assignment.regularSubstituteInfo?.[student.id]
+  return isRegularLikeAssignment
+    ? isStudentAvailableForRegularLesson(student, slot)
+    : isStudentAvailable(student, slot)
 }
 
 export const dedupeMakeupInfosByOccurrence = <T extends {
@@ -424,7 +433,7 @@ export const buildIncrementalAutoAssignments = async (
         if (!studentIds.has(sid)) return false
         const student = data.students.find((s) => s.id === sid)
         if (!student) return false
-        return isStudentAvailable(student, slot)
+        return isStudentAvailableForAssignment(student, assignment, slot)
       })
       const removedStudentIds = assignment.studentIds.filter((sid) => !validStudentIds.includes(sid))
       for (const sid of removedStudentIds) {
