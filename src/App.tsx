@@ -8933,7 +8933,14 @@ const TeacherInputPage = ({
 
   const [localAvailability, setLocalAvailability] = useState<Set<string>>(() => {
     const key = personKey(personKeyPrefix, teacher.id)
-    return new Set(data.availability[key] ?? [])
+    const savedAvailability = new Set(data.availability[key] ?? [])
+    const hasSubmitted = (data.teacherSubmittedAt?.[teacher.id] ?? 0) > 0
+    if (personKeyPrefix === 'teacher' && !hasSubmitted) {
+      for (const slotKey of regularSlotKeys) {
+        savedAvailability.add(slotKey)
+      }
+    }
+    return savedAvailability
   })
   const toggleSlot = (date: string, slotNum: number) => {
     const slotKey = `${date}_${slotNum}`
