@@ -41,6 +41,7 @@ type ForceAssignAction = {
   subject: string
   assignmentStudentIds?: string[]
   assignmentStudentSubjects?: Record<string, string>
+  sourceTeacherId?: string
   mergeIntoExistingPair?: boolean
   makeupInfo?: RegularMakeupInfo
   substituteInfo?: { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }
@@ -337,7 +338,7 @@ const toStatusProposal = (label: string, action?: ProposalAction, choices?: Stat
 
 const proposalActionKey = (action: ProposalAction): string => {
   if (action.type === 'force-assign') {
-    return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}|${action.mergeIntoExistingPair ? 'merge' : 'replace'}|${action.makeupInfo?.dayOfWeek ?? ''}|${action.makeupInfo?.slotNumber ?? ''}|${action.makeupInfo?.date ?? ''}|${action.substituteInfo?.regularTeacherId ?? ''}|${action.substituteInfo?.dayOfWeek ?? ''}|${action.substituteInfo?.slotNumber ?? ''}|${action.substituteInfo?.date ?? ''}`
+    return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}|${action.sourceTeacherId ?? ''}|${action.mergeIntoExistingPair ? 'merge' : 'replace'}|${action.makeupInfo?.dayOfWeek ?? ''}|${action.makeupInfo?.slotNumber ?? ''}|${action.makeupInfo?.date ?? ''}|${action.substituteInfo?.regularTeacherId ?? ''}|${action.substituteInfo?.dayOfWeek ?? ''}|${action.substituteInfo?.slotNumber ?? ''}|${action.substituteInfo?.date ?? ''}`
   }
   if (action.type === 'move-teacher-shortage') {
     return `${action.type}|${action.sourceSlot}|${action.targetSlot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds.join(',')}`
@@ -904,6 +905,21 @@ const collectOverlappingStudentIds = (
   ))]
 }
 
+const findForceAssignSourceIndex = (
+  slotAssignments: Assignment[],
+  proposal: ForceAssignAction,
+): number => {
+  const targetStudentIds = proposal.assignmentStudentIds ?? []
+  const matchSourceTeacherExactly = proposal.sourceTeacherId != null
+
+  return slotAssignments.findIndex((assignment) => {
+    if (assignment.isGroupLesson) return false
+    if (!sameStudentSet(assignment.studentIds, targetStudentIds)) return false
+    if (!matchSourceTeacherExactly) return !assignment.teacherId
+    return (assignment.teacherId ?? '') === proposal.sourceTeacherId
+  })
+}
+
 const canExecuteProposalAction = (
   sessionData: SessionData,
   assignmentState: Record<string, Assignment[]>,
@@ -935,11 +951,7 @@ const canExecuteProposalAction = (
 
     const slotAssignments = assignmentState[proposal.slot] ?? []
     if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
-      const sourceIndex = slotAssignments.findIndex((assignment) =>
-        !assignment.teacherId
-        && !assignment.isGroupLesson
-        && sameStudentSet(assignment.studentIds, proposal.assignmentStudentIds ?? []),
-      )
+      const sourceIndex = findForceAssignSourceIndex(slotAssignments, proposal)
       if (sourceIndex < 0) return false
 
       const sourceAssignment = slotAssignments[sourceIndex]
@@ -6039,6 +6051,7 @@ const AdminPage = () => {
               studentId: item.assignment.studentIds[0] ?? '',
               subject: item.assignment.subject,
               assignmentStudentIds: [...item.assignment.studentIds],
+              sourceTeacherId: item.assignment.teacherId ?? '',
               ...(item.assignment.studentSubjects ? { assignmentStudentSubjects: { ...item.assignment.studentSubjects } } : {}),
               mergeIntoExistingPair: true,
               ...(originalTeacherId
@@ -6084,6 +6097,7 @@ const AdminPage = () => {
             studentId: item.assignment.studentIds[0] ?? '',
             subject: item.assignment.subject,
             assignmentStudentIds: [...item.assignment.studentIds],
+            sourceTeacherId: item.assignment.teacherId ?? '',
             ...(originalTeacherId
               ? {
                   substituteInfo: {
@@ -6670,9 +6684,9 @@ const AdminPage = () => {
         const slotAssignments = [...(workingAssignments[proposal.slot] ?? [])]
         if (proposal.assignmentStudentIds && proposal.assignmentStudentIds.length > 0) {
             const targetStudentIds = proposal.assignmentStudentIds
-            const sourceIndex = slotAssignments.findIndex((assignment) => !assignment.teacherId && !assignment.isGroupLesson && sameStudentSet(assignment.studentIds, targetStudentIds))
+            const sourceIndex = findForceAssignSourceIndex(slotAssignments, proposal)
             if (sourceIndex < 0) {
-            errorMessage = '講師未割当の対象ペアが見つからないため、代行割当できませんでした。'
+            errorMessage = '差し替え対象のペアが見つからないため、代行割当できませんでした。'
             return current
           }
             if (proposal.mergeIntoExistingPair) {
