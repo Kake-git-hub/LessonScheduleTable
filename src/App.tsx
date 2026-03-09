@@ -3794,6 +3794,7 @@ const AdminPage = () => {
   const [editSubmissionEndDate, setEditSubmissionEndDate] = useState('')
   const [editHolidays, setEditHolidays] = useState<string[]>([])
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
+  const [masterRefreshLoading, setMasterRefreshLoading] = useState(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
@@ -3857,6 +3858,83 @@ const AdminPage = () => {
     })
     return () => unsub()
   }, [classroomId])
+
+  const buildSessionDataFromMaster = useCallback((current: SessionData, master: MasterData): SessionData => {
+    const mergedStudents = master.students.map((masterStudent) => {
+      const existing = current.students.find((student) => student.id === masterStudent.id)
+      if (existing) {
+        return {
+          ...masterStudent,
+          regularOnly: existing.regularOnly ?? false,
+          subjects: existing.subjects,
+          subjectSlots: existing.subjectSlots,
+          unavailableDates: existing.unavailableDates,
+          preferredSlots: existing.preferredSlots ?? [],
+          unavailableSlots: existing.unavailableSlots ?? [],
+          regularLessonStatuses: existing.regularLessonStatuses ?? {},
+          submittedAt: existing.submittedAt,
+        }
+      }
+
+      return {
+        ...masterStudent,
+        regularOnly: false,
+        subjects: [],
+        subjectSlots: {},
+        unavailableDates: [],
+        preferredSlots: [],
+        unavailableSlots: [],
+        regularLessonStatuses: {},
+        submittedAt: 0,
+      }
+    })
+
+    return {
+      ...current,
+      managers: master.managers ?? [],
+      teachers: master.teachers,
+      students: mergedStudents,
+      constraints: master.constraints,
+      regularLessons: current.settings.sessionType === 'mendan' ? [] : master.regularLessons,
+      groupLessons: master.groupLessons ?? [],
+    }
+  }, [])
+
+  const hasSessionMasterChanges = useCallback((current: SessionData, next: SessionData): boolean => (
+    JSON.stringify(current.managers ?? []) !== JSON.stringify(next.managers)
+    || JSON.stringify(current.teachers) !== JSON.stringify(next.teachers)
+    || JSON.stringify(current.students.map((student) => ({ id: student.id, name: student.name, grade: student.grade, memo: student.memo }))) !== JSON.stringify(next.students.map((student) => ({ id: student.id, name: student.name, grade: student.grade, memo: student.memo })))
+    || JSON.stringify(current.constraints) !== JSON.stringify(next.constraints)
+    || JSON.stringify(current.regularLessons) !== JSON.stringify(next.regularLessons)
+    || JSON.stringify(current.groupLessons ?? []) !== JSON.stringify(next.groupLessons)
+  ), [])
+
+  const refreshSessionFromMaster = useCallback(async (): Promise<void> => {
+    const current = dataRef.current
+    if (!current) return
+
+    setMasterRefreshLoading(true)
+    try {
+      const master = await loadMasterData(classroomId)
+      if (!master) {
+        alert('管理データを読み込めませんでした。')
+        return
+      }
+
+      const next = buildSessionDataFromMaster(current, master)
+      if (!hasSessionMasterChanges(current, next)) {
+        alert('管理データとの差分はありません。')
+        return
+      }
+
+      await persist(next)
+      closeStatusModal()
+      setLatestStatusReport(null)
+      alert('管理データを再同期しました。講師不足モーダルは最新状態で再計算されます。')
+    } finally {
+      setMasterRefreshLoading(false)
+    }
+  }, [buildSessionDataFromMaster, classroomId, hasSessionMasterChanges])
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -4365,38 +4443,14 @@ const AdminPage = () => {
     void (async () => {
       const master = await loadMasterData(classroomId)
       if (!master) return
-      const mergedStudents = master.students.map((ms) => {
-        const existing = data.students.find((s) => s.id === ms.id)
-        if (existing) {
-          return { ...ms, regularOnly: existing.regularOnly ?? false, subjects: existing.subjects, subjectSlots: existing.subjectSlots, unavailableDates: existing.unavailableDates, preferredSlots: existing.preferredSlots ?? [], unavailableSlots: existing.unavailableSlots ?? [], regularLessonStatuses: existing.regularLessonStatuses ?? {}, submittedAt: existing.submittedAt }
-        }
-        return { ...ms, regularOnly: false, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], regularLessonStatuses: {}, submittedAt: 0 }
-      })
-      // Preserve settings, availability, and assignments — only update people/constraints/regularLessons
-      const next: SessionData = {
-        ...data,
-        managers: master.managers ?? [],
-        teachers: master.teachers,
-        students: mergedStudents,
-        constraints: master.constraints,
-        regularLessons: master.regularLessons,
-        groupLessons: master.groupLessons ?? [],
-      }
-      // Only save if something actually changed
-      const changed =
-        JSON.stringify(data.managers ?? []) !== JSON.stringify(next.managers) ||
-        JSON.stringify(data.teachers) !== JSON.stringify(next.teachers) ||
-        JSON.stringify(data.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) !==
-          JSON.stringify(next.students.map((s) => ({ id: s.id, name: s.name, grade: s.grade, memo: s.memo }))) ||
-        JSON.stringify(data.constraints) !== JSON.stringify(next.constraints) ||
-        JSON.stringify(data.regularLessons) !== JSON.stringify(next.regularLessons) ||
-        JSON.stringify(data.groupLessons ?? []) !== JSON.stringify(next.groupLessons)
+      const next = buildSessionDataFromMaster(data, master)
+      const changed = hasSessionMasterChanges(data, next)
       if (changed) {
         setData(next)
         await saveSession(classroomId, sessionId, next)
       }
     })()
-  }, [data, authorized]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authorized, buildSessionDataFromMaster, classroomId, data, hasSessionMasterChanges, sessionId])
 
   // Auto-fill regular lessons when date range or regular lessons change (skip for mendan)
   const regularFillSigRef = useRef('')
@@ -8256,6 +8310,15 @@ service cloud.firestore {
               </button>
               <button className="btn secondary" type="button" onClick={() => void resetAssignments()}>
                 コマ割りリセット
+              </button>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => void refreshSessionFromMaster()}
+                disabled={masterRefreshLoading}
+                title="管理データの修正内容を今のセッションへ再同期し、講師不足モーダルを最新状態に更新"
+              >
+                {masterRefreshLoading ? '管理データ再同期中...' : '管理データ再同期'}
               </button>
               <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>
                 デバッグコピー
