@@ -7087,7 +7087,7 @@ const AdminPage = () => {
         ? (current.managers ?? []).find((m) => m.id === teacherId)
         : current.teachers.find((item) => item.id === teacherId)
       const instructorSubjects = isMendan ? ['面談'] : ((currentInstructor && 'subjects' in currentInstructor) ? (currentInstructor as Teacher).subjects : [])
-      const preserveStudents = !prev.teacherId || prev.teacherId === teacherId
+      const preserveStudents = prev.studentIds.length > 0
       const nextStudentIds = preserveStudents ? [...prev.studentIds] : []
       const nextStudentSubjects = nextStudentIds.reduce<Record<string, string>>((acc, sid) => {
         const student = current.students.find((item) => item.id === sid)
