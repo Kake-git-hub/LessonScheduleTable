@@ -155,6 +155,59 @@ type MasterTableSortDirection = 'asc' | 'desc'
 type MasterTableSortState = { column: string; direction: MasterTableSortDirection }
 
 const DAY_NAME_OPTIONS = ['日', '月', '火', '水', '木', '金', '土'] as const
+const WEEKDAY_SORT_ORDER: Record<string, number> = {
+  月曜: 0,
+  火曜: 1,
+  水曜: 2,
+  木曜: 3,
+  金曜: 4,
+  土曜: 5,
+  日曜: 6,
+}
+
+const parseGradeSortValue = (value: string): number | null => {
+  const normalized = value.trim().replace(/\s+/g, '')
+  if (!normalized) return null
+
+  const matchers: Array<{ pattern: RegExp; base: number }> = [
+    { pattern: /^幼?(?:年長|年中|年少)$/, base: 0 },
+    { pattern: /^小(\d+)$/, base: 100 },
+    { pattern: /^中(\d+)$/, base: 200 },
+    { pattern: /^高(\d+)$/, base: 300 },
+  ]
+
+  for (const { pattern, base } of matchers) {
+    const match = normalized.match(pattern)
+    if (!match) continue
+    if (match[1]) return base + Number.parseInt(match[1], 10)
+    if (normalized.includes('年少')) return base + 1
+    if (normalized.includes('年中')) return base + 2
+    if (normalized.includes('年長')) return base + 3
+    return base
+  }
+
+  if (normalized === '既卒') return 400
+  if (normalized === '浪人') return 401
+  return null
+}
+
+const compareMasterTableValues = (leftValue: unknown, rightValue: unknown): number => {
+  const leftWeekday = WEEKDAY_SORT_ORDER[String(leftValue).trim()]
+  const rightWeekday = WEEKDAY_SORT_ORDER[String(rightValue).trim()]
+  if (leftWeekday != null && rightWeekday != null) {
+    return leftWeekday - rightWeekday
+  }
+
+  const leftGrade = parseGradeSortValue(String(leftValue))
+  const rightGrade = parseGradeSortValue(String(rightValue))
+  if (leftGrade != null && rightGrade != null) {
+    return leftGrade - rightGrade
+  }
+
+  const leftNormalized = normalizeTableValue(leftValue)
+  const rightNormalized = normalizeTableValue(rightValue)
+  return leftNormalized.localeCompare(rightNormalized, 'ja-JP', { numeric: true, sensitivity: 'base' })
+}
 
 const createEmptyRegularLessonDraft = (): RegularLessonDraft => ({
   teacherId: '',
@@ -256,9 +309,7 @@ const filterAndSortMasterRows = <T,>(
   if (!getter) return filteredRows
 
   return [...filteredRows].sort((left, right) => {
-    const leftValue = normalizeTableValue(getter(left))
-    const rightValue = normalizeTableValue(getter(right))
-    const compared = leftValue.localeCompare(rightValue, 'ja-JP', { numeric: true, sensitivity: 'base' })
+    const compared = compareMasterTableValues(getter(left), getter(right))
     return sortState.direction === 'asc' ? compared : -compared
   })
 }
@@ -1567,82 +1618,122 @@ const HomePage = () => {
     )
   }
 
+  const insertMasterRowByActiveSort = <T,>(
+    table: MasterTableKey,
+    rows: T[],
+    row: T,
+    getters: Record<string, (item: T) => unknown>,
+  ): T[] => {
+    const sortState = masterTableSorts[table]
+    if (!sortState) return [...rows, row]
+
+    const getter = getters[sortState.column]
+    if (!getter) return [...rows, row]
+
+    const nextRows = [...rows]
+    const rowValue = getter(row)
+    const insertionIndex = nextRows.findIndex((currentRow) => {
+      const compared = compareMasterTableValues(rowValue, getter(currentRow))
+      return sortState.direction === 'asc' ? compared < 0 : compared > 0
+    })
+
+    if (insertionIndex < 0) {
+      nextRows.push(row)
+      return nextRows
+    }
+
+    nextRows.splice(insertionIndex, 0, row)
+    return nextRows
+  }
+
+  const managerRowGetters = {
+    name: (manager: Manager) => manager.name,
+    email: (manager: Manager) => manager.email,
+  }
+
+  const teacherRowGetters = {
+    name: (teacher: Teacher) => teacher.name,
+    email: (teacher: Teacher) => teacher.email,
+    subjects: (teacher: Teacher) => teacher.subjects.join(', '),
+    memo: (teacher: Teacher) => teacher.memo,
+  }
+
+  const studentRowGetters = {
+    name: (student: Student) => student.name,
+    email: (student: Student) => student.email,
+    grade: (student: Student) => student.grade,
+  }
+
+  const regularLessonRowGetters = {
+    teacher: (lesson: RegularLesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
+    student1: (lesson: RegularLesson) => lesson.studentIds[0] ? (masterData?.students.find((student) => student.id === lesson.studentIds[0])?.name ?? '-') : '',
+    subject1: (lesson: RegularLesson) => lesson.studentIds[0] ? (lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject) : '',
+    student2: (lesson: RegularLesson) => lesson.studentIds[1] ? (masterData?.students.find((student) => student.id === lesson.studentIds[1])?.name ?? '-') : '',
+    subject2: (lesson: RegularLesson) => lesson.studentIds[1] ? (lesson.studentSubjects?.[lesson.studentIds[1]] ?? lesson.subject) : '',
+    day: (lesson: RegularLesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
+    slot: (lesson: RegularLesson) => lesson.slotNumber,
+  }
+
+  const groupLessonRowGetters = {
+    teacher: (lesson: GroupLesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
+    subject: (lesson: GroupLesson) => lesson.subject,
+    students: (lesson: GroupLesson) => lesson.studentIds.map((studentId) => masterData?.students.find((student) => student.id === studentId)?.name ?? '?').join(', '),
+    day: (lesson: GroupLesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
+    slot: () => '午前',
+  }
+
+  const constraintRowGetters = {
+    personA: (constraint: PairConstraint) => {
+      const people = constraint.personAType === 'teacher' ? masterData?.teachers : masterData?.students
+      const name = people?.find((person) => person.id === constraint.personAId)?.name ?? '-'
+      return `${name} (${constraint.personAType === 'teacher' ? '講師' : '生徒'})`
+    },
+    personB: (constraint: PairConstraint) => {
+      const people = constraint.personBType === 'teacher' ? masterData?.teachers : masterData?.students
+      const name = people?.find((person) => person.id === constraint.personBId)?.name ?? '-'
+      return `${name} (${constraint.personBType === 'teacher' ? '講師' : '生徒'})`
+    },
+    type: () => '不可',
+  }
+
   const managerRows = useMemo(() => filterAndSortMasterRows(
     masterData?.managers ?? [],
-    {
-      name: (manager) => manager.name,
-      email: (manager) => manager.email,
-    },
+    managerRowGetters,
     masterTableFilters.managers,
     masterTableSorts.managers,
   ), [masterData?.managers, masterTableFilters.managers, masterTableSorts.managers])
 
   const teacherRows = useMemo(() => filterAndSortMasterRows(
     masterData?.teachers ?? [],
-    {
-      name: (teacher) => teacher.name,
-      email: (teacher) => teacher.email,
-      subjects: (teacher) => teacher.subjects.join(', '),
-      memo: (teacher) => teacher.memo,
-    },
+    teacherRowGetters,
     masterTableFilters.teachers,
     masterTableSorts.teachers,
   ), [masterData?.teachers, masterTableFilters.teachers, masterTableSorts.teachers])
 
   const studentRows = useMemo(() => filterAndSortMasterRows(
     masterData?.students ?? [],
-    {
-      name: (student) => student.name,
-      email: (student) => student.email,
-      grade: (student) => student.grade,
-    },
+    studentRowGetters,
     masterTableFilters.students,
     masterTableSorts.students,
   ), [masterData?.students, masterTableFilters.students, masterTableSorts.students])
 
   const regularLessonRows = useMemo(() => filterAndSortMasterRows(
     masterData?.regularLessons ?? [],
-    {
-      teacher: (lesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
-      student1: (lesson) => lesson.studentIds[0] ? (masterData?.students.find((student) => student.id === lesson.studentIds[0])?.name ?? '-') : '',
-      subject1: (lesson) => lesson.studentIds[0] ? (lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject) : '',
-      student2: (lesson) => lesson.studentIds[1] ? (masterData?.students.find((student) => student.id === lesson.studentIds[1])?.name ?? '-') : '',
-      subject2: (lesson) => lesson.studentIds[1] ? (lesson.studentSubjects?.[lesson.studentIds[1]] ?? lesson.subject) : '',
-      day: (lesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
-      slot: (lesson) => lesson.slotNumber,
-    },
+    regularLessonRowGetters,
     masterTableFilters.regularLessons,
     masterTableSorts.regularLessons,
   ), [masterData, masterTableFilters.regularLessons, masterTableSorts.regularLessons])
 
   const groupLessonRows = useMemo(() => filterAndSortMasterRows(
     masterData?.groupLessons ?? [],
-    {
-      teacher: (lesson) => masterData?.teachers.find((teacher) => teacher.id === lesson.teacherId)?.name ?? '-',
-      subject: (lesson) => lesson.subject,
-      students: (lesson) => lesson.studentIds.map((studentId) => masterData?.students.find((student) => student.id === studentId)?.name ?? '?').join(', '),
-      day: (lesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
-      slot: () => '午前',
-    },
+    groupLessonRowGetters,
     masterTableFilters.groupLessons,
     masterTableSorts.groupLessons,
   ), [masterData, masterTableFilters.groupLessons, masterTableSorts.groupLessons])
 
   const constraintRows = useMemo(() => filterAndSortMasterRows(
     masterData?.constraints ?? [],
-    {
-      personA: (constraint) => {
-        const people = constraint.personAType === 'teacher' ? masterData?.teachers : masterData?.students
-        const name = people?.find((person) => person.id === constraint.personAId)?.name ?? '-'
-        return `${name} (${constraint.personAType === 'teacher' ? '講師' : '生徒'})`
-      },
-      personB: (constraint) => {
-        const people = constraint.personBType === 'teacher' ? masterData?.teachers : masterData?.students
-        const name = people?.find((person) => person.id === constraint.personBId)?.name ?? '-'
-        return `${name} (${constraint.personBType === 'teacher' ? '講師' : '生徒'})`
-      },
-      type: () => '不可',
-    },
+    constraintRowGetters,
     masterTableFilters.constraints,
     masterTableSorts.constraints,
   ), [masterData, masterTableFilters.constraints, masterTableSorts.constraints])
@@ -1713,7 +1804,7 @@ const HomePage = () => {
   const addManager = async (): Promise<void> => {
     if (!managerName.trim()) return
     const manager: Manager = { id: createId(), name: managerName.trim(), email: managerEmail.trim() }
-    await updateMaster((c) => ({ ...c, managers: [...(c.managers ?? []), manager] }))
+    await updateMaster((c) => ({ ...c, managers: insertMasterRowByActiveSort('managers', c.managers ?? [], manager, managerRowGetters) }))
     changeLogRef.current.add('マネージャー追加')
     setManagerName(''); setManagerEmail('')
   }
@@ -1721,7 +1812,7 @@ const HomePage = () => {
   const addTeacher = async (): Promise<void> => {
     if (!teacherName.trim()) return
     const teacher: Teacher = { id: createId(), name: teacherName.trim(), email: teacherEmail.trim(), subjects: teacherSubjects, memo: teacherMemo.trim() }
-    await updateMaster((c) => ({ ...c, teachers: [...c.teachers, teacher] }))
+    await updateMaster((c) => ({ ...c, teachers: insertMasterRowByActiveSort('teachers', c.teachers, teacher, teacherRowGetters) }))
     changeLogRef.current.add('講師追加')
     setTeacherName(''); setTeacherEmail(''); setTeacherSubjects([]); setTeacherMemo('')
   }
@@ -1732,7 +1823,7 @@ const HomePage = () => {
       id: createId(), name: studentName.trim(), email: studentEmail.trim(), grade: studentGrade.trim(),
       subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
     }
-    await updateMaster((c) => ({ ...c, students: [...c.students, student] }))
+    await updateMaster((c) => ({ ...c, students: insertMasterRowByActiveSort('students', c.students, student, studentRowGetters) }))
     changeLogRef.current.add('生徒追加')
     setStudentName(''); setStudentEmail(''); setStudentGrade('')
   }
@@ -1753,7 +1844,7 @@ const HomePage = () => {
         !((i.personAId === constraintPersonAId && i.personBId === constraintPersonBId) ||
           (i.personAId === constraintPersonBId && i.personBId === constraintPersonAId)),
       )
-      return { ...c, constraints: [...filtered, nc] }
+      return { ...c, constraints: insertMasterRowByActiveSort('constraints', filtered, nc, constraintRowGetters) }
     })
     changeLogRef.current.add('制約変更')
   }
@@ -1786,7 +1877,7 @@ const HomePage = () => {
   const addRegularLesson = async (): Promise<void> => {
     const nl = buildRegularLessonFromDraft(newRegularLessonDraft)
     if (!nl) return
-    await updateMaster((c) => ({ ...c, regularLessons: [...c.regularLessons, nl] }))
+    await updateMaster((c) => ({ ...c, regularLessons: insertMasterRowByActiveSort('regularLessons', c.regularLessons, nl, regularLessonRowGetters) }))
     changeLogRef.current.add('通常授業追加')
     setNewRegularLessonDraft(createEmptyRegularLessonDraft())
   }
@@ -1885,7 +1976,7 @@ const HomePage = () => {
       id: createId(), teacherId: groupTeacherId, studentIds: [...groupStudentIds], subject: groupSubject,
       dayOfWeek: Number.parseInt(groupDayOfWeek, 10), slotNumber: 0,
     }
-    await updateMaster((c) => ({ ...c, groupLessons: [...(c.groupLessons ?? []), nl] }))
+    await updateMaster((c) => ({ ...c, groupLessons: insertMasterRowByActiveSort('groupLessons', c.groupLessons ?? [], nl, groupLessonRowGetters) }))
     changeLogRef.current.add('集団授業追加')
     setGroupTeacherId(''); setGroupSubject(''); setGroupDayOfWeek(''); setGroupSlotNumber(''); setGroupStudentIds([])
   }
