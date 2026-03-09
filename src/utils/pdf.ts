@@ -376,9 +376,9 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     }
 
     const emptyRowFactor = 0.58
-    const totalBodyRowUnits = Math.max(1, rowHasAnyContent.reduce((sum, hasContent) => sum + (hasContent ? 1 : emptyRowFactor), 0))
+    const totalBodyRows = Math.max(1, rowHasAnyContent.length)
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
-    const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRowUnits, availableTableHeight)
+    const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
     const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
     const rowMinHeights = rowHasAnyContent.map((hasContent) => hasContent ? targetBodyRowHeight : targetBodyRowHeight * emptyRowFactor)
     const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
@@ -409,6 +409,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const subHeadFontSize = clamp(Math.max(baseFontSize - 0.05, 2.9), 2.9, 4.4)
     const diffBorderInset = clamp(targetBodyRowHeight * 0.06, 0.22, 0.45)
     const diffBorderWidth = clamp(targetBodyRowHeight * 0.055, 0.24, 0.45)
+
+    const timeGroupBounds = new Map<number, { top: number; height: number }>()
 
     autoTable(doc, {
       startY: tableStartY,
@@ -543,12 +545,20 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
 
         if (col === 0) {
-          if (deskIdx !== 0) return
-          const groupHeight = rowMinHeights
-            .slice(hookData.row.index, hookData.row.index + effectiveDeskCount)
-            .reduce((sum, height) => sum + height, 0)
+          const existingBounds = timeGroupBounds.get(slotNumber)
+          if (existingBounds) {
+            existingBounds.height += hookData.cell.height
+          } else {
+            timeGroupBounds.set(slotNumber, { top: hookData.cell.y, height: hookData.cell.height })
+          }
+
+          if (deskIdx !== effectiveDeskCount - 1) return
+
+          const bounds = timeGroupBounds.get(slotNumber)
+          if (!bounds) return
+
           const centerX = hookData.cell.x + hookData.cell.width / 2
-          const centerY = hookData.cell.y + groupHeight / 2
+          const centerY = bounds.top + bounds.height / 2
           doc.setFont('NotoSansJP', 'bold')
           doc.setFontSize(timeFontSize)
           doc.setTextColor(0, 0, 0)
