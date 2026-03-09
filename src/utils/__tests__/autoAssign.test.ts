@@ -1,4 +1,4 @@
-import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from '../autoAssign'
+import { buildIncrementalAutoAssignments, buildMendanAutoAssignments, dedupeMakeupInfosByOccurrence } from '../autoAssign'
 import type { SessionData, Student, Teacher } from '../../types'
 
 const makeTeacher = (overrides: Partial<Teacher> = {}): Teacher => ({
@@ -216,7 +216,7 @@ describe('buildIncrementalAutoAssignments', () => {
         id: 's1',
         subjects: ['英'],
         subjectSlots: { 英: 1 },
-        unavailableSlots: ['2026-07-21_1'],
+        unavailableSlots: ['2026-07-21_1', '2026-07-21_2'],
       })],
       regularLessons: [
         { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
@@ -269,6 +269,17 @@ describe('buildIncrementalAutoAssignments', () => {
 
     expect(remainingSlots).toEqual(['2026-07-21_2'])
     expect((result.assignments['2026-07-22_1'] ?? []).every((assignment) => !assignment.regularMakeupInfo?.s1)).toBe(true)
+  })
+
+  it('deduplicates a makeup demand recreated by actual absence', () => {
+    const deduped = dedupeMakeupInfosByOccurrence('s1', [
+      { teacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21', subject: '数' },
+      { teacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21', subject: '数', absentDate: '2026-07-21', reasonKind: 'actual-absence' as const },
+    ])
+
+    expect(deduped).toEqual([
+      { teacherId: 't1', dayOfWeek: 2, slotNumber: 1, date: '2026-07-21', subject: '数', absentDate: '2026-07-21', reasonKind: 'actual-absence' },
+    ])
   })
 
   it('prefers 2-student pairs', async () => {

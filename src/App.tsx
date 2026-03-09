@@ -7299,6 +7299,14 @@ service cloud.firestore {
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>制約</h4>
                       <p style={{ margin: 0, color: '#475569' }}>講師×生徒 / 講師×学年の不可制約（⚠マーク）。科目の共通性が必要。</p>
                     </section>
+                    <section>
+                      <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>自動割振りで対応しないケース</h4>
+                      <ul style={{ margin: 0, paddingLeft: '20px', color: '#475569', fontSize: '13px' }}>
+                        <li>同じ通常授業起点の振替が複数残った場合の最終整理</li>
+                        <li>複数の提案候補からどれを採用するか、人が選ぶ必要がある場合</li>
+                        <li>講師の出勤追加、生徒の出席緩和、制約違反の強制割当が必要な場合</li>
+                      </ul>
+                    </section>
                   </div>
                 )}
               </div>

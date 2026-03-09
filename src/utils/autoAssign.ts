@@ -32,6 +32,42 @@ const getRegularOccurrenceKey = (studentId: string, subject: string, makeupInfo:
   `${studentId}|${subject}|${makeupInfo.dayOfWeek}|${makeupInfo.slotNumber}|${makeupInfo.date ?? ''}`
 )
 
+const selectPreferredMakeupInfo = (
+  current: { absentDate?: string; reasonKind?: 'actual-absence' },
+  next: { absentDate?: string; reasonKind?: 'actual-absence' },
+): { absentDate?: string; reasonKind?: 'actual-absence' } => {
+  if (current.absentDate && next.absentDate) {
+    return next.absentDate > current.absentDate ? next : current
+  }
+  if (next.absentDate) return next
+  return current
+}
+
+export const dedupeMakeupInfosByOccurrence = <T extends {
+  subject: string
+  dayOfWeek: number
+  slotNumber: number
+  date: string
+  absentDate?: string
+  reasonKind?: 'actual-absence'
+}>(studentId: string, mkInfos: T[]): T[] => {
+  const deduped = new Map<string, T>()
+  for (const mkInfo of mkInfos) {
+    const occurrenceKey = getRegularOccurrenceKey(studentId, mkInfo.subject, mkInfo)
+    const existing = deduped.get(occurrenceKey)
+    if (!existing) {
+      deduped.set(occurrenceKey, mkInfo)
+      continue
+    }
+    const preferred = selectPreferredMakeupInfo(existing, mkInfo)
+    deduped.set(occurrenceKey, {
+      ...existing,
+      ...preferred,
+    })
+  }
+  return [...deduped.values()]
+}
+
 const hasTeacherAvailabilityForAutoAssign = (data: SessionData, teacherId: string, slot: string): boolean => {
   if (hasAvailability(data.availability, 'teacher', teacherId, slot)) return true
   if ((data.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
@@ -232,6 +268,10 @@ export const buildIncrementalAutoAssignments = async (
         }
       }
     }
+  }
+
+  for (const [studentId, mkInfos] of makeupStudentInfo.entries()) {
+    makeupStudentInfo.set(studentId, dedupeMakeupInfosByOccurrence(studentId, mkInfos))
   }
 
   // Helper: check if student has remaining makeup demand for a specific teacher and subject
