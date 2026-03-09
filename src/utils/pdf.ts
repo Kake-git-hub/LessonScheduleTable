@@ -474,10 +474,13 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
           if (col === 0) {
             if (deskIdx === 0) {
-              hookData.cell.rowSpan = effectiveDeskCount
               hookData.cell.styles.fontStyle = 'bold'
               hookData.cell.styles.halign = 'center'
               hookData.cell.styles.valign = 'middle'
+              hookData.cell.styles.fillColor = [255, 255, 255]
+              hookData.cell.styles.textColor = [0, 0, 0]
+            } else {
+              hookData.cell.styles.textColor = [255, 255, 255]
               hookData.cell.styles.fillColor = [255, 255, 255]
             }
             hookData.cell.styles.fontSize = timeFontSize
