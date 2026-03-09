@@ -166,6 +166,17 @@ const WEEKDAY_SORT_ORDER: Record<string, number> = {
   日曜: 6,
 }
 
+const parseWeekdaySlotSortValue = (value: string): number | null => {
+  const normalized = value.trim().replace(/\s+/g, '')
+  const match = normalized.match(/^(月曜|火曜|水曜|木曜|金曜|土曜|日曜)(?:(\d+)限)?$/)
+  if (!match) return null
+
+  const weekday = WEEKDAY_SORT_ORDER[match[1]]
+  if (weekday == null) return null
+  const slotNumber = match[2] ? Number.parseInt(match[2], 10) : 0
+  return weekday * 100 + slotNumber
+}
+
 const parseGradeSortValue = (value: string): number | null => {
   const normalized = value.trim().replace(/\s+/g, '')
   if (!normalized) return null
@@ -193,6 +204,12 @@ const parseGradeSortValue = (value: string): number | null => {
 }
 
 const compareMasterTableValues = (leftValue: unknown, rightValue: unknown): number => {
+  const leftWeekdaySlot = parseWeekdaySlotSortValue(String(leftValue))
+  const rightWeekdaySlot = parseWeekdaySlotSortValue(String(rightValue))
+  if (leftWeekdaySlot != null && rightWeekdaySlot != null) {
+    return leftWeekdaySlot - rightWeekdaySlot
+  }
+
   const leftWeekday = WEEKDAY_SORT_ORDER[String(leftValue).trim()]
   const rightWeekday = WEEKDAY_SORT_ORDER[String(rightValue).trim()]
   if (leftWeekday != null && rightWeekday != null) {
@@ -1708,7 +1725,7 @@ const HomePage = () => {
     subject1: (lesson: RegularLesson) => lesson.studentIds[0] ? (lesson.studentSubjects?.[lesson.studentIds[0]] ?? lesson.subject) : '',
     student2: (lesson: RegularLesson) => lesson.studentIds[1] ? (masterData?.students.find((student) => student.id === lesson.studentIds[1])?.name ?? '-') : '',
     subject2: (lesson: RegularLesson) => lesson.studentIds[1] ? (lesson.studentSubjects?.[lesson.studentIds[1]] ?? lesson.subject) : '',
-    day: (lesson: RegularLesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜`,
+    day: (lesson: RegularLesson) => `${DAY_NAME_OPTIONS[lesson.dayOfWeek]}曜${lesson.slotNumber}限`,
     slot: (lesson: RegularLesson) => lesson.slotNumber,
   }
 
