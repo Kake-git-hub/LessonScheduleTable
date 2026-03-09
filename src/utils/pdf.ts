@@ -67,6 +67,7 @@ export type SchedulePdfParams = {
   getStudentName: (id: string) => string
   getStudentGrade: (id: string) => string
   getStudentSubject: (a: Assignment, studentId: string) => string
+  isUnsupportedSubstituteStudent?: (assignment: Assignment, studentId: string) => boolean
   getIsoDayOfWeek: (date: string) => number
 }
 
@@ -87,7 +88,7 @@ type DeskPdfCell = {
 export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void> {
   const {
     classroomName, sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
-    assignments, baselineAssignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, getIsoDayOfWeek,
+    assignments, baselineAssignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, isUnsupportedSubstituteStudent, getIsoDayOfWeek,
   } = params
 
   if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
@@ -104,6 +105,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const colorNormal = { fill: [22, 163, 74] as [number, number, number], text: pdfTextBlack }
   const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: pdfTextBlack }
   const colorSubstitute = { fill: [251, 207, 232] as [number, number, number], text: pdfTextBlack }
+  const colorSubstituteUnsupported = { fill: [196, 181, 253] as [number, number, number], text: pdfTextBlack }
   const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
   const formatSlotTimeLabel = (slotNumber: number): string => {
@@ -123,11 +125,12 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
     if (assignment.regularSubstituteInfo?.[studentId]) {
       const info = assignment.regularSubstituteInfo[studentId]
+      const isUnsupported = isUnsupportedSubstituteStudent?.(assignment, studentId) ?? false
       return {
         text,
-        compareKey: `${studentId}|${studentSubject}|substitute|${info.regularTeacherId}|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
-        fillColor: colorSubstitute.fill,
-        textColor: colorSubstitute.text,
+        compareKey: `${studentId}|${studentSubject}|${isUnsupported ? 'substitute-unsupported' : 'substitute'}|${info.regularTeacherId}|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
+        fillColor: isUnsupported ? colorSubstituteUnsupported.fill : colorSubstitute.fill,
+        textColor: isUnsupported ? colorSubstituteUnsupported.text : colorSubstitute.text,
       }
     }
     if (assignment.regularMakeupInfo?.[studentId]) {

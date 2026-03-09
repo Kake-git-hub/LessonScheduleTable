@@ -7028,6 +7028,19 @@ const AdminPage = () => {
     return window.confirm(`${studentName} をこのペアから削除しますか？`)
   }
 
+  const isUnsupportedSubstituteStudent = (assignment: Assignment, studentId: string): boolean => {
+    if (isMendan || !assignment.teacherId || !assignment.regularSubstituteInfo?.[studentId]) {
+      return false
+    }
+    const teacher = data?.teachers.find((item) => item.id === assignment.teacherId)
+    const student = data?.students.find((item) => item.id === studentId)
+    if (!teacher || !student) {
+      return false
+    }
+    const subject = getStudentSubject(assignment, studentId)
+    return !canTeachSubject(teacher.subjects, student.grade, subject)
+  }
+
   const deleteSlotAssignment = async (slot: string, idx: number): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
@@ -7960,6 +7973,7 @@ service cloud.firestore {
                   getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
                   getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
                   getStudentSubject,
+                  isUnsupportedSubstituteStudent,
                   getIsoDayOfWeek,
                 })}
               >
@@ -7995,7 +8009,7 @@ service cloud.firestore {
               )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　赤★=通常講師代行　⚠=制約不可　クリックでペア/生徒を別コマへ移動可'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　薄桃★=通常講師代行　紫★=担当外科目の通常講師代行　⚠=制約不可　クリックでペア/生徒を別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
               const rates = data.tierRates ?? { ...defaultTierRates }
@@ -8085,7 +8099,7 @@ service cloud.firestore {
                   <div style={{ display: 'grid', gap: '10px' }}>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
-                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。青★=通常授業、黄★=振替、赤★=通常講師代行。■=集団授業。机数上限あり。</p>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。青★=通常授業、黄★=振替、薄桃★=通常講師代行、紫★=担当外科目の通常講師代行。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>共通ルール（自動提案スコアリング・優先順）</h4>
@@ -8646,10 +8660,11 @@ service cloud.firestore {
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
                                     const subInfo = assignment.regularSubstituteInfo?.[currentStudentId]
                                     if (subInfo) {
+                                      const isUnsupportedSubstitute = isUnsupportedSubstituteStudent(assignment, currentStudentId)
                                       const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
                                       const origLabel = subInfo.date ? `${fmtMkDate(subInfo.date)} ${subInfo.slotNumber}限` : `${DAY_NAMES_STAR[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限`
                                       const regularTeacherName = data.teachers.find((t) => t.id === subInfo.regularTeacherId)?.name ?? subInfo.regularTeacherId
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#fbcfe8', color: '#9d174d' }} title={`通常講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
+                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: isUnsupportedSubstitute ? '#c4b5fd' : '#fbcfe8', color: isUnsupportedSubstitute ? '#4c1d95' : '#9d174d' }} title={isUnsupportedSubstitute ? `通常講師代行（担当外科目: ${regularTeacherName} の ${origLabel} を代行）` : `通常講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
                                     }
                                     if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
                                     if (mkInfo) {
