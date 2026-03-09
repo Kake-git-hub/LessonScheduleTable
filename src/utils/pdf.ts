@@ -407,8 +407,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       startY: tableStartY,
       margin: { left: margin, right: margin },
       theme: 'grid',
-      pageBreak: 'avoid',
-      rowPageBreak: 'avoid',
       styles: {
         font: 'NotoSansJP',
         fontSize: baseFontSize,
