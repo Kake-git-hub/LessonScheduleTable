@@ -6976,7 +6976,6 @@ const AdminPage = () => {
     const studentName = actionStudentIds
       .map((sid) => data.students.find((s) => s.id === sid)?.name ?? sid)
       .join(' / ')
-    const teacherName = data.teachers.find((t) => t.id === proposal.teacherId)?.name ?? proposal.teacherId
 
     pendingProposalStatusRefreshRef.current = true
 
