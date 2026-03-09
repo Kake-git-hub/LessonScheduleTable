@@ -31,7 +31,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.36'
+const APP_VERSION = '1.3.37'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -349,8 +349,16 @@ const proposalActionKey = (action: ProposalAction): string => {
   return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}`
 }
 
+const coreProposalActionKey = (action: ProposalAction): string => {
+  if (action.type === 'force-assign') {
+    return `${action.type}|${action.slot}|${action.teacherId}|${action.studentId}|${action.subject}|${action.assignmentStudentIds?.join(',') ?? ''}|${action.sourceTeacherId ?? ''}|${action.mergeIntoExistingPair ? 'merge' : 'replace'}`
+  }
+  return proposalActionKey(action)
+}
+
 const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] => {
   const seen = new Set<string>()
+  const coreSeen = new Set<string>()
   const unique: StatusProposal[] = []
   for (const proposal of proposals) {
     const actionKey = proposal.action ? proposalActionKey(proposal.action) : ''
@@ -358,6 +366,13 @@ const dedupeStatusProposals = (proposals: StatusProposal[]): StatusProposal[] =>
     const key = `${proposal.label}|${actionKey}|${choiceKey}`
     if (seen.has(key)) continue
     seen.add(key)
+    // For single-action proposals, also deduplicate by core fields (slot/teacher/student/subject)
+    // so that the same assignment proposed via different paths (e.g. makeup vs regular) is not shown twice
+    if (proposal.action && !proposal.choices) {
+      const coreKey = coreProposalActionKey(proposal.action)
+      if (coreSeen.has(coreKey)) continue
+      coreSeen.add(coreKey)
+    }
     unique.push(proposal)
   }
   return unique
@@ -7005,7 +7020,6 @@ const AdminPage = () => {
             openStatusModal(nextStatusReport, 'full')
           }
         }
-        alert(`制約カード変更を実行しました。\n${studentName} / ${proposal.changeLabel}`)
       }
       return
     }
@@ -7327,13 +7341,7 @@ const AdminPage = () => {
           openStatusModal(nextStatusReport, 'full')
         }
       }
-      if (proposal.type === 'force-assign') {
-        alert(`${proposal.substituteInfo ? '通常講師代行' : proposal.makeupInfo ? '強制振替' : '強制割当'}を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
-      } else if (proposal.type === 'remove-student-assignment') {
-        alert(`過割当解消を実行しました。\n${slotLabel(proposal.slot, isMendan, mendanStart)} / ${teacherName} / ${studentName} / ${proposal.subject}`)
-      } else {
-        alert(`移動提案を実行しました。\n${slotLabel(proposal.sourceSlot, isMendan, mendanStart)} → ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} / ${teacherName} / ${studentName}`)
-      }
+
     }
   }
 

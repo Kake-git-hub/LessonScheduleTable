@@ -428,5 +428,19 @@ export const getRegularSubjectProgress = (
     }
   }
 
+  // Second pass: count remaining plain assignments (without makeupInfo/substituteInfo/isRegular)
+  // as covering unmatched regular occurrences, so that generic force-assigns reduce the remaining count
+  for (const entry of regularLikeAssignments) {
+    if (entry.used) continue
+    if (entry.assignment.isRegular) continue
+    if (entry.assignment.regularMakeupInfo?.[studentId]) continue
+    if (entry.assignment.regularSubstituteInfo?.[studentId]) continue
+    const current = assignedBySubject[entry.subject] ?? 0
+    const desired = desiredBySubject[entry.subject] ?? 0
+    if (current >= desired) continue
+    assignedBySubject[entry.subject] = current + 1
+    entry.used = true
+  }
+
   return { desiredBySubject, assignedBySubject }
 }
