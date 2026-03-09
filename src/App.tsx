@@ -3749,6 +3749,13 @@ const AdminPage = () => {
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
+  const [sessionTableSorts, setSessionTableSorts] = useState<{
+    instructors: MasterTableSortState | null
+    students: MasterTableSortState | null
+  }>({
+    instructors: null,
+    students: { column: 'grade', direction: 'asc' },
+  })
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
   // Track slots manually modified by user (student move, pair delete, etc.) so auto-fill doesn't overwrite
@@ -4005,6 +4012,67 @@ const AdminPage = () => {
   }, [data, isMendan])
   const instructorPersonType: PersonType = isMendan ? 'manager' : 'teacher'
   const instructorLabel = isMendan ? 'マネージャー' : '講師'
+
+  const toggleSessionTableSort = (table: 'instructors' | 'students', column: string): void => {
+    setSessionTableSorts((prev) => {
+      const current = prev[table]
+      if (!current || current.column !== column) {
+        return { ...prev, [table]: { column, direction: 'asc' } }
+      }
+      if (current.direction === 'asc') {
+        return { ...prev, [table]: { column, direction: 'desc' } }
+      }
+      return { ...prev, [table]: null }
+    })
+  }
+
+  const renderSessionTableHeader = (table: 'instructors' | 'students', column: string, label: string) => {
+    const sortState = sessionTableSorts[table]
+    const isActive = sortState?.column === column
+    const sortLabel = isActive ? (sortState.direction === 'asc' ? ' ▲' : ' ▼') : ''
+    return (
+      <th>
+        <button
+          type="button"
+          onClick={() => toggleSessionTableSort(table, column)}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            padding: 0,
+            cursor: 'pointer',
+            textAlign: 'left',
+            fontWeight: 700,
+            color: isActive ? '#0f766e' : 'inherit',
+          }}
+        >
+          {label}{sortLabel}
+        </button>
+      </th>
+    )
+  }
+
+  const sessionInstructorRows = useMemo(() => filterAndSortMasterRows(
+    instructors,
+    {
+      name: (instructor: Teacher) => instructor.name,
+      subjects: (instructor: Teacher) => instructor.subjects.join(', '),
+      submittedAt: (instructor: Teacher) => (data?.teacherSubmittedAt ?? {})[instructor.id] ?? 0,
+    },
+    {},
+    sessionTableSorts.instructors,
+  ), [data?.teacherSubmittedAt, instructors, sessionTableSorts.instructors])
+
+  const sessionStudentRows = useMemo(() => filterAndSortMasterRows(
+    data?.students ?? [],
+    {
+      name: (student: Student) => student.name,
+      grade: (student: Student) => student.grade,
+      constraints: (student: Student) => summarizeConstraintCards(student.constraintCards ?? getDefaultConstraintCards(student.grade)),
+      submittedAt: (student: Student) => student.submittedAt,
+    },
+    {},
+    sessionTableSorts.students,
+  ), [data?.students, sessionTableSorts.students])
 
   const persist = async (next: SessionData): Promise<void> => {
     const now = Date.now()
@@ -7710,9 +7778,9 @@ service cloud.firestore {
           <div className="panel">
             <h3>{instructorLabel}一覧</h3>
             <table className="table">
-              <thead><tr><th>名前</th>{!isMendan && <th>科目</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
+              <thead><tr>{renderSessionTableHeader('instructors', 'name', '名前')}{!isMendan && renderSessionTableHeader('instructors', 'subjects', '科目')}{renderSessionTableHeader('instructors', 'submittedAt', '提出データ')}<th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
-                {instructors.map((instructor) => {
+                {sessionInstructorRows.map((instructor) => {
                   const submittedAt = (data.teacherSubmittedAt ?? {})[instructor.id] ?? 0
                   return (
                   <tr key={instructor.id}>
@@ -7762,9 +7830,9 @@ service cloud.firestore {
             <h3>{isMendan ? '保護者一覧' : '生徒一覧'}</h3>
             <p className="muted">{isMendan ? '面談可能時間帯は保護者が希望URLから入力します。' : '希望コマ数・不可日は生徒本人が希望URLから入力します。'}</p>
             <table className="table">
-              <thead><tr><th>名前</th>{!isMendan && <th>学年</th>}{!isMendan && <th>コマ制約</th>}<th>提出データ</th><th>代行入力</th><th>共有</th></tr></thead>
+              <thead><tr>{renderSessionTableHeader('students', 'name', '名前')}{!isMendan && renderSessionTableHeader('students', 'grade', '学年')}{!isMendan && renderSessionTableHeader('students', 'constraints', 'コマ制約')}{renderSessionTableHeader('students', 'submittedAt', '提出データ')}<th>代行入力</th><th>共有</th></tr></thead>
               <tbody>
-                {data.students.map((student) => {
+                {sessionStudentRows.map((student) => {
                   const cards = student.constraintCards ?? getDefaultConstraintCards(student.grade)
                   const isEditing = constraintEditStudentId === student.id
                   return (
