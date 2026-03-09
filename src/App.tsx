@@ -969,7 +969,7 @@ const getProposalActionBlockReason = (
     if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return '同じ通常授業起点の振替が既に別コマへ割当済みです'
 
     if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.slot)) return `${teacher.name} がこのコマに出席不可です`
-    const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.slot))
+    const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.slot) && !isStudentAvailableForRegularLesson(student, proposal.slot))
     if (unavailableStudent) return `${unavailableStudent.name} がこのコマに出席不可です`
 
     const slotAssignments = assignmentState[proposal.slot] ?? []
@@ -1030,7 +1030,7 @@ const getProposalActionBlockReason = (
   const occurrenceRefs = buildProposalOccurrenceRefs(proposal, sourceAssignment, proposal.sourceSlot)
   if (occurrenceRefs.some((occurrenceRef) => hasAssignedRegularOccurrence(assignmentState, occurrenceRef))) return '同じ通常授業起点の振替が既に別コマへ割当済みです'
   if (!hasTeacherAvailabilityForSession(sessionData, proposal.teacherId, proposal.targetSlot)) return `${teacher.name} が移動先コマに出席不可です`
-  const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.targetSlot))
+  const unavailableStudent = students.find((student) => !isStudentAvailable(student, proposal.targetSlot) && !isStudentAvailableForRegularLesson(student, proposal.targetSlot))
   if (unavailableStudent) return `${unavailableStudent.name} が移動先コマに出席不可です`
 
   const targetAssignments = assignmentState[proposal.targetSlot] ?? []
@@ -1095,7 +1095,7 @@ const buildTeacherMoveChoices = (
 
     const studentsAvailable = studentIds.every((studentId) => {
       const student = data.students.find((entry) => entry.id === studentId)
-      return student ? isStudentAvailable(student, targetSlot) : false
+      return student ? (isStudentAvailable(student, targetSlot) || isStudentAvailableForRegularLesson(student, targetSlot)) : false
     })
     if (!studentsAvailable) continue
 
@@ -6744,7 +6744,7 @@ const AdminPage = () => {
       {
         key: 'shortage' as const,
         title: `${instructorLabel}不足`,
-        items: teacherShortages.map((item) => ({
+        items: [...teacherShortages].sort((a, b) => a.slot.localeCompare(b.slot)).map((item) => ({
           label: slotLabel(item.slot, isMendan, mendanStart),
           causes: [item.detail],
           proposals: buildTeacherShortageProposals(effectiveAssignments, item),
@@ -7035,7 +7035,7 @@ const AdminPage = () => {
           return current
         }
         for (const student of students) {
-          if (!isStudentAvailable(student, proposal.slot)) {
+          if (!isStudentAvailable(student, proposal.slot) && !isStudentAvailableForRegularLesson(student, proposal.slot)) {
             errorMessage = `${student.name} は現在 ${slotLabel(proposal.slot, isMendan, mendanStart)} に出席不可です。`
             return current
           }
@@ -7220,7 +7220,7 @@ const AdminPage = () => {
         return current
       }
       for (const student of students) {
-        if (!isStudentAvailable(student, proposal.targetSlot)) {
+        if (!isStudentAvailable(student, proposal.targetSlot) && !isStudentAvailableForRegularLesson(student, proposal.targetSlot)) {
           errorMessage = `${student.name} は現在 ${slotLabel(proposal.targetSlot, isMendan, mendanStart)} に出席不可です。`
           return current
         }
