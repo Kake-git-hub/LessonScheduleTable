@@ -24,7 +24,7 @@ import type {
   Teacher,
 } from './types'
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
-import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject, normalizeTeacherSubject } from './utils/subjects'
+import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject, normalizeTeacherSubject, normalizeTeacherSubjects } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
 import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
@@ -1097,6 +1097,37 @@ const FIXED_SUBJECTS = ['英', '数', '国', '理', '社', 'IT', '算'] as reado
 /** Leveled teacher subjects (小英, 中英, 高1英, 高2英, 高3英, ...). */
 const ALL_TEACHER_SUBJECTS = TEACHER_SUBJECTS
 
+const TeacherSubjectChecklist = ({
+  selectedSubjects,
+  onChange,
+}: {
+  selectedSubjects: string[]
+  onChange: (subjects: string[]) => void
+}) => {
+  const selectedSet = new Set(selectedSubjects)
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 12px', alignItems: 'center' }}>
+      {ALL_TEACHER_SUBJECTS.map((subject) => (
+        <label key={subject} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '13px', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={selectedSet.has(subject)}
+            onChange={(event) => {
+              if (event.target.checked) {
+                onChange([...selectedSubjects, subject])
+                return
+              }
+              onChange(selectedSubjects.filter((item) => item !== subject))
+            }}
+          />
+          <span>{subject}</span>
+        </label>
+      ))}
+    </div>
+  )
+}
+
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID().slice(0, 8)
@@ -1817,7 +1848,7 @@ const HomePage = () => {
 
   const addTeacher = async (): Promise<void> => {
     if (!teacherName.trim()) return
-    const teacher: Teacher = { id: createId(), name: teacherName.trim(), email: teacherEmail.trim(), subjects: teacherSubjects, memo: teacherMemo.trim() }
+    const teacher: Teacher = { id: createId(), name: teacherName.trim(), email: teacherEmail.trim(), subjects: normalizeTeacherSubjects(teacherSubjects), memo: teacherMemo.trim() }
     await updateMaster((c) => ({ ...c, teachers: insertMasterRowByActiveSort('teachers', c.teachers, teacher, teacherRowGetters) }))
     changeLogRef.current.add('講師追加')
     setTeacherName(''); setTeacherEmail(''); setTeacherSubjects([]); setTeacherMemo('')
@@ -1900,11 +1931,11 @@ const HomePage = () => {
 
   const startEditTeacher = (t: Teacher): void => {
     setEditingTeacherId(t.id); setEditTeacherName(t.name); setEditTeacherEmail(t.email || '')
-    setEditTeacherSubjects([...t.subjects]); setEditTeacherMemo(t.memo || '')
+    setEditTeacherSubjects(normalizeTeacherSubjects([...t.subjects])); setEditTeacherMemo(t.memo || '')
   }
   const saveEditTeacher = async (): Promise<void> => {
     if (!editingTeacherId || !editTeacherName.trim()) return
-    await updateMaster((c) => ({ ...c, teachers: c.teachers.map((t) => t.id === editingTeacherId ? { ...t, name: editTeacherName.trim(), email: editTeacherEmail.trim(), subjects: editTeacherSubjects, memo: editTeacherMemo.trim() } : t) }))
+    await updateMaster((c) => ({ ...c, teachers: c.teachers.map((t) => t.id === editingTeacherId ? { ...t, name: editTeacherName.trim(), email: editTeacherEmail.trim(), subjects: normalizeTeacherSubjects(editTeacherSubjects), memo: editTeacherMemo.trim() } : t) }))
     changeLogRef.current.add('講師編集')
     setEditingTeacherId(null)
   }
@@ -2674,16 +2705,18 @@ const HomePage = () => {
                   <div className="row">
                     <input value={teacherName} onChange={(e) => setTeacherName(e.target.value)} placeholder="講師名" />
                     <input value={teacherEmail} onChange={(e) => setTeacherEmail(e.target.value)} placeholder="メールアドレス" type="email" />
-                    <select onChange={(e) => { const v = e.target.value; if (v && !teacherSubjects.includes(v)) setTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
-                      <option value="">担当科目を追加</option>
-                      {ALL_TEACHER_SUBJECTS.filter((s) => !teacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
-                    </select>
                     <input value={teacherMemo} onChange={(e) => setTeacherMemo(e.target.value)} placeholder="メモ" />
                     <button className="btn" type="button" onClick={() => void addTeacher()}>追加</button>
                   </div>
-                  <div className="row">
-                    {teacherSubjects.map((s) => (
-                      <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setTeacherSubjects((p) => p.filter((x) => x !== s))}>{s} ×</span>
+                  <div style={{ marginTop: '10px' }}>
+                    <TeacherSubjectChecklist
+                      selectedSubjects={teacherSubjects}
+                      onChange={setTeacherSubjects}
+                    />
+                  </div>
+                  <div className="row" style={{ marginTop: '8px' }}>
+                    {normalizeTeacherSubjects(teacherSubjects).map((s) => (
+                      <span key={s} className="badge ok">登録時: {s}</span>
                     ))}
                   </div>
                   <table className="table">
@@ -2695,12 +2728,12 @@ const HomePage = () => {
                             <td>{t.name}</td>
                             <td><input value={editTeacherEmail} onChange={(e) => setEditTeacherEmail(e.target.value)} type="email" /></td>
                             <td>
-                              <select onChange={(e) => { const v = e.target.value; if (v && !editTeacherSubjects.includes(v)) setEditTeacherSubjects((p) => [...p, v]); e.target.value = '' }}>
-                                <option value="">科目追加</option>
-                                {ALL_TEACHER_SUBJECTS.filter((s) => !editTeacherSubjects.includes(s)).map((s) => (<option key={s} value={s}>{s}</option>))}
-                              </select>
-                              <div>{editTeacherSubjects.map((s) => (
-                                <span key={s} className="badge ok" style={{ cursor: 'pointer' }} onClick={() => setEditTeacherSubjects((p) => p.filter((x) => x !== s))}>{s} ×</span>
+                              <TeacherSubjectChecklist
+                                selectedSubjects={editTeacherSubjects}
+                                onChange={setEditTeacherSubjects}
+                              />
+                              <div style={{ marginTop: '8px' }}>{normalizeTeacherSubjects(editTeacherSubjects).map((s) => (
+                                <span key={s} className="badge ok">保存時: {s}</span>
                               ))}</div>
                             </td>
                             <td><input value={editTeacherMemo} onChange={(e) => setEditTeacherMemo(e.target.value)} /></td>

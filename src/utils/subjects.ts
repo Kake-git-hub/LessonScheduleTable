@@ -96,7 +96,36 @@ export const normalizeTeacherSubjects = (subjects: string[]): string[] => {
   const normalized = subjects
     .map((subject) => normalizeTeacherSubject(subject))
     .filter(Boolean)
-  return [...new Set(normalized)]
+  const deduped = [...new Set(normalized)]
+  const highestByBase = new Map<string, string>()
+
+  for (const subject of deduped) {
+    const parsed = parseTeacherSubject(subject)
+    if (!parsed) {
+      highestByBase.set(subject, subject)
+      continue
+    }
+
+    const canonicalBase = (parsed.base === '算' || parsed.base === '数') ? '数' : parsed.base
+    const existing = highestByBase.get(canonicalBase)
+    if (!existing) {
+      highestByBase.set(canonicalBase, subject)
+      continue
+    }
+
+    const existingLevel = LEVEL_ORDER[getSubjectLevel(existing)] ?? 0
+    const nextLevel = LEVEL_ORDER[parsed.level] ?? 0
+    if (nextLevel > existingLevel) {
+      highestByBase.set(canonicalBase, subject)
+    }
+  }
+
+  return [...highestByBase.values()].sort((left, right) => {
+    const leftLevel = LEVEL_ORDER[getSubjectLevel(left)] ?? 0
+    const rightLevel = LEVEL_ORDER[getSubjectLevel(right)] ?? 0
+    if (leftLevel !== rightLevel) return leftLevel - rightLevel
+    return left.localeCompare(right, 'ja')
+  })
 }
 
 /** Extract the base subject from a (possibly leveled) subject string.
