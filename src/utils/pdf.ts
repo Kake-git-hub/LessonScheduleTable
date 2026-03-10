@@ -278,7 +278,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     let low = 2.6
     let high = 8.5
     let best = low
-    const safeHeight = Math.max(40, availableTableHeight - 6)
+    const safeHeight = Math.max(40, availableTableHeight - 2)
 
     while (high - low > 0.01) {
       const mid = (low + high) / 2
@@ -438,7 +438,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         lineColor: [0, 0, 0],
         textColor: [0, 0, 0],
         valign: 'middle',
-        overflow: 'linebreak',
+        overflow: 'ellipsize',
         minCellHeight: targetBodyRowHeight,
       },
       headStyles: {
