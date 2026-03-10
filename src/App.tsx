@@ -3211,6 +3211,7 @@ const AdminPage = () => {
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; regularTeacherId?: string } | null>(null)
   const [, setTransferSlot] = useState<string | null>(null)
   const [showRules, setShowRules] = useState(false)
+  const [gridFilter, setGridFilter] = useState('')
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
   const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
   // --- Actual result recording ---
@@ -8688,6 +8689,22 @@ service cloud.firestore {
                 )}
               </div>
             )}
+            {/* Filter bar */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+              <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  placeholder="🔍 講師・生徒名で絞り込み"
+                  value={gridFilter}
+                  onChange={(e) => setGridFilter(e.target.value)}
+                  style={{ width: '200px', padding: '4px 28px 4px 8px', fontSize: '0.85em', border: '1px solid #cbd5e1', borderRadius: '6px' }}
+                />
+                {gridFilter && (
+                  <button type="button" onClick={() => setGridFilter('')}
+                    style={{ position: 'absolute', right: '4px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1em', color: '#94a3b8', padding: '0 4px', lineHeight: 1 }}>×</button>
+                )}
+              </div>
+            </div>
             <div style={{ position: 'relative' }}>
             {autoAssignLoading && (
               <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18px', borderRadius: '8px' }}>
@@ -8792,8 +8809,18 @@ service cloud.firestore {
                   return false
                 })()
 
+                const slotMatchesFilter = !gridFilter.trim() || (() => {
+                  const ft = gridFilter.trim().toLowerCase()
+                  return displayAssignments.some((a) => {
+                    const tn = instructors.find((t) => t.id === a.teacherId)?.name?.toLowerCase() ?? ''
+                    const sn = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
+                    return tn.includes(ft) || sn.some((n) => n.includes(ft))
+                  })
+                })()
+
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
+                    style={!slotMatchesFilter ? { opacity: 0.25 } : undefined}
                   >
                     <div className="slot-title">
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
@@ -9072,6 +9099,14 @@ service cloud.firestore {
                         const isStudentDropValid = isStudentDropCandidate && !isSameAssignment && !isStudentAlreadyInSlot && !hasUnavailableStudent && isTeacherCompatibleForDrag
                         const isStudentDropInvalid = isDragActive && isStudentDrag && !isStudentDropValid && !isSameAssignment
 
+                        // Filter match check
+                        const filterTerm = gridFilter.trim().toLowerCase()
+                        const matchesFilter = !filterTerm || (() => {
+                          const teacherName = selectedTeacher?.name?.toLowerCase() ?? ''
+                          const studentNames = assignment.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
+                          return teacherName.includes(filterTerm) || studentNames.some((n) => n.includes(filterTerm))
+                        })()
+
                         // Group lesson: show compact non-editable block with ■ marker
                         if (assignment.isGroupLesson) {
                           const tName = selectedTeacher?.name ?? '?'
@@ -9079,7 +9114,7 @@ service cloud.firestore {
                             .map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?')
                           return (
                             <div key={idx} className="assignment-block assignment-block-regular"
-                              style={{ position: 'relative', background: '#e0e7ff', borderColor: '#818cf8' }}>
+                              style={{ position: 'relative', background: '#e0e7ff', borderColor: '#818cf8', ...(!matchesFilter ? { opacity: 0.15 } : {}) }}>
                               <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.72em', padding: '2px 7px', marginBottom: '4px' }} title="集団授業">■</span>
                               <div style={{ fontWeight: 600, fontSize: '0.9em' }}>{tName}</div>
                               <div style={{ fontSize: '0.8em', color: '#4338ca' }}>{assignment.subject}</div>
@@ -9096,7 +9131,10 @@ service cloud.firestore {
                           <div
                             key={idx}
                             className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${hasManualConstraintWarning || hasTeacherUnassignedWarning ? ' assignment-block-manual-warning' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
-                            style={isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : undefined}
+                            style={{
+                              ...(isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : {}),
+                              ...(!matchesFilter ? { opacity: 0.15 } : {}),
+                            }}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
                             {isStudentDropValid && (
