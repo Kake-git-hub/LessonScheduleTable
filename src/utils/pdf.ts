@@ -278,7 +278,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     let low = 2.6
     let high = 8.5
     let best = low
-    const safeHeight = Math.max(40, availableTableHeight - 2.2)
+    const safeHeight = Math.max(40, availableTableHeight - 6)
 
     while (high - low > 0.01) {
       const mid = (low + high) / 2
@@ -429,6 +429,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     autoTable(doc, {
       startY: tableStartY,
       margin: { left: margin, right: margin },
+      pageBreak: 'avoid',
       theme: 'grid',
       styles: {
         font: 'NotoSansJP',
