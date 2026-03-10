@@ -3,6 +3,20 @@ import autoTable from 'jspdf-autotable'
 import html2canvas from 'html2canvas'
 import type { Assignment } from '../types'
 
+const PDF_TEXT_FALLBACK_MAP: Record<string, string> = {
+  '﨑': '崎',
+  '髙': '高',
+  '濵': '浜',
+  '神': '神',
+  '塚': '塚',
+  '羽': '羽',
+}
+
+const normalizePdfDisplayText = (value: string): string => {
+  const normalized = value.normalize('NFKC')
+  return [...normalized].map((char) => PDF_TEXT_FALLBACK_MAP[char] ?? char).join('')
+}
+
 // ---------- Japanese font loading ----------
 
 let cachedFontBase64: string | null = null
@@ -102,10 +116,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const startMinute = 0
   const slotIntervalMinutes = 100
   const pdfTextBlack = [0, 0, 0] as [number, number, number]
-  const colorNormal = { fill: [22, 163, 74] as [number, number, number], text: pdfTextBlack }
-  const colorMakeup = { fill: [234, 179, 8] as [number, number, number], text: pdfTextBlack }
-  const colorSubstitute = { fill: [251, 207, 232] as [number, number, number], text: pdfTextBlack }
-  const colorSubstituteUnsupported = { fill: [196, 181, 253] as [number, number, number], text: pdfTextBlack }
+  const colorNormal = { fill: [229, 244, 234] as [number, number, number], text: pdfTextBlack }
+  const colorMakeup = { fill: [254, 243, 199] as [number, number, number], text: pdfTextBlack }
+  const colorSubstitute = { fill: [252, 231, 243] as [number, number, number], text: pdfTextBlack }
+  const colorSubstituteUnsupported = { fill: [237, 233, 254] as [number, number, number], text: pdfTextBlack }
   const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
   const formatSlotTimeLabel = (slotNumber: number): string => {
@@ -118,9 +132,9 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const buildStudentPdfCell = (assignment: Assignment | undefined, studentId: string | undefined): StudentPdfCell => {
     if (!assignment || !studentId) return { text: '', compareKey: '' }
 
-    const studentName = getStudentName(studentId)
-    const studentGrade = getStudentGrade(studentId)
-    const studentSubject = getStudentSubject(assignment, studentId)
+    const studentName = normalizePdfDisplayText(getStudentName(studentId))
+    const studentGrade = normalizePdfDisplayText(getStudentGrade(studentId))
+    const studentSubject = normalizePdfDisplayText(getStudentSubject(assignment, studentId))
     const text = `${studentName}\n${studentGrade}${studentSubject}`
 
     if (assignment.regularSubstituteInfo?.[studentId]) {
@@ -171,7 +185,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
 
     const assignment = sourceAssignments[`${date}_${slotNumber}`]?.[deskIndex]
     return {
-      teacher: assignment?.teacherId ? getTeacherName(assignment.teacherId) : '',
+      teacher: assignment?.teacherId ? normalizePdfDisplayText(getTeacherName(assignment.teacherId)) : '',
       teacherCompareKey: assignment?.teacherId ?? '',
       student1: buildStudentPdfCell(assignment, assignment?.studentIds[0]),
       student2: buildStudentPdfCell(assignment, assignment?.studentIds[1]),
@@ -313,7 +327,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const [, fm, fd] = firstDate.split('-')
     const lastDate = weekDates[weekDates.length - 1]
     const [, lm, ld] = lastDate.split('-')
-    const titleText = `${titlePrefix}${sessionName}  ${Number(fm)}/${Number(fd)} - ${Number(lm)}/${Number(ld)}`
+    const titleText = normalizePdfDisplayText(`${titlePrefix}${sessionName}  ${Number(fm)}/${Number(fd)} - ${Number(lm)}/${Number(ld)}`)
     const titleTop = 7
     const titleGap = 2.5
     const titleFontSize = fitFontSizeToWidth([titleText], pageWidth - margin * 2, 14, 8, 'bold')
@@ -378,14 +392,11 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       columnStyles[baseCol + 3] = { cellWidth: studentColWidth, halign: 'center' }
     }
 
-    const emptyRowFactor = 0.68
     const totalBodyRows = Math.max(1, rowHasAnyContent.length)
     const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
     const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
     const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
-    const rowMinHeights = rowHasAnyContent.map((hasContent) => hasContent ? targetBodyRowHeight : targetBodyRowHeight * emptyRowFactor)
-    const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.28)
-    const emptyRowPadding = clamp(cellPadding * 0.45, 0.04, 0.12)
+    const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.24)
     const headerCellPadding = clamp(cellPadding * 0.9, 0.08, 0.22)
     const bodyUsableHeight = Math.max(1.5, targetBodyRowHeight - cellPadding * 2)
     const teacherMaxByHeight = (bodyUsableHeight / (1 * pdfLineHeightFactor)) / mmPerPt
@@ -424,7 +435,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         fontSize: baseFontSize,
         cellPadding,
         lineWidth: 0.2,
-        lineColor: [80, 80, 80],
+        lineColor: [0, 0, 0],
+        textColor: [0, 0, 0],
         valign: 'middle',
         overflow: 'linebreak',
         minCellHeight: targetBodyRowHeight,
@@ -435,7 +447,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         fontStyle: 'bold',
         halign: 'center',
         lineWidth: 0.3,
-        lineColor: [40, 40, 40],
+        lineColor: [0, 0, 0],
         minCellHeight: headRow1Height,
         cellPadding: headerCellPadding,
       },
@@ -453,14 +465,11 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             hookData.cell.styles.fontStyle = 'bold'
             const dayIdx = Math.floor((col - 1) / 4)
             const date = fullWeek[dayIdx]
-            const isSunday = getIsoDayOfWeek(date) === 0
             const isHolidayColumn = holidaySet.has(date) || !lectureDateSet.has(date)
             if (isHolidayColumn) {
-              hookData.cell.styles.fillColor = [229, 231, 235]
+              hookData.cell.styles.fillColor = [243, 244, 246]
             }
-            if (isSunday || holidaySet.has(date)) {
-              hookData.cell.styles.textColor = [220, 38, 38]
-            }
+            hookData.cell.styles.textColor = [0, 0, 0]
           }
         }
 
@@ -472,20 +481,29 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             const dayIdx = Math.floor((col - 1) / 4)
             const date = fullWeek[dayIdx]
             const isHolidayColumn = holidaySet.has(date) || !lectureDateSet.has(date)
-            hookData.cell.styles.fillColor = isHolidayColumn ? [229, 231, 235] : [245, 245, 245]
+            hookData.cell.styles.fillColor = isHolidayColumn ? [243, 244, 246] : [249, 250, 251]
           } else {
             hookData.cell.styles.fillColor = [255, 255, 255]
           }
+          hookData.cell.styles.textColor = [0, 0, 0]
         }
 
         if (hookData.section === 'body') {
           const slotNumber = rowSlotNum[hookData.row.index] ?? 1
           const deskIdx = rowDeskIdx[hookData.row.index] ?? 0
           const col = hookData.column.index
-          const rowHasContent = rowHasAnyContent[hookData.row.index] ?? true
-          const rowMinHeight = rowMinHeights[hookData.row.index] ?? targetBodyRowHeight
-          hookData.cell.styles.minCellHeight = rowMinHeight
-          hookData.cell.styles.cellPadding = rowHasContent ? cellPadding : emptyRowPadding
+          hookData.cell.styles.minCellHeight = targetBodyRowHeight
+          hookData.cell.styles.cellPadding = cellPadding
+          hookData.cell.styles.textColor = [0, 0, 0]
+          if (deskIdx === 0) {
+            hookData.cell.styles.lineWidth = {
+              top: 0.75,
+              right: 0.2,
+              bottom: 0.2,
+              left: 0.2,
+            }
+            hookData.cell.styles.lineColor = [0, 0, 0]
+          }
 
           if (col === 0) {
             hookData.cell.text = ['']
@@ -495,7 +513,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             hookData.cell.styles.fillColor = [255, 255, 255]
             hookData.cell.styles.textColor = [0, 0, 0]
             hookData.cell.styles.lineWidth = {
-              top: deskIdx === 0 ? 0.2 : 0,
+              top: deskIdx === 0 ? 0.75 : 0,
               right: 0.2,
               bottom: deskIdx === effectiveDeskCount - 1 ? 0.2 : 0,
               left: 0.2,
@@ -511,14 +529,14 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           const isHolidayColumn = holidaySet.has(dayDate) || !lectureDateSet.has(dayDate)
 
           if (isHolidayColumn) {
-            hookData.cell.styles.fillColor = [229, 231, 235]
+            hookData.cell.styles.fillColor = [243, 244, 246]
           }
 
           if (daySubCol === 0) {
             hookData.cell.styles.halign = 'center'
             hookData.cell.styles.fontStyle = 'bold'
             if (!lectureDateSet.has(dayDate) || holidaySet.has(dayDate)) {
-              hookData.cell.styles.textColor = [148, 163, 184]
+              hookData.cell.styles.textColor = [0, 0, 0]
             }
           }
 
@@ -526,16 +544,17 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             hookData.cell.styles.fontSize = teacherFontSize
             hookData.cell.styles.halign = 'center'
             hookData.cell.styles.valign = 'middle'
+            hookData.cell.styles.fontStyle = 'normal'
           }
 
           if (daySubCol === 2 || daySubCol === 3) {
             const studentCell = daySubCol === 2 ? deskCell.student1 : deskCell.student2
             hookData.cell.styles.fontSize = studentFontSize
             hookData.cell.styles.halign = 'center'
+            hookData.cell.styles.fontStyle = 'normal'
             if (studentCell.fillColor) {
               hookData.cell.styles.fillColor = studentCell.fillColor
               hookData.cell.styles.textColor = studentCell.textColor ?? [0, 0, 0]
-              hookData.cell.styles.fontStyle = 'bold'
             }
           }
         }
