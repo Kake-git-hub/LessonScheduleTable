@@ -30,7 +30,6 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
-import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
 const APP_VERSION = '1.3.46'
 
@@ -285,7 +284,7 @@ const normalizeImportedSubjectName = (value: unknown): string => {
   const normalized = String(value ?? '').trim().normalize('NFKC').replace(/\s+/g, '')
   if (!normalized) return ''
 
-  const compact = normalized.replace(/[・･/／,、]/g, '')
+  const compact = normalized.replace(/[・／/、]/g, '')
   const aliasMap: Record<string, string> = {
     英語: '英',
     数学: '数',
@@ -3201,617 +3200,6 @@ const HomePage = () => {
   )
 }
 
-// --- Data Analytics Panel ---
-type AnalyticsTab = 'teacher' | 'student' | 'day' | 'subject'
-
-const AnalyticsPanel = ({ data, slotKeys }: { data: SessionData; slotKeys: string[] }) => {
-  const [tab, setTab] = useState<AnalyticsTab>('teacher')
-  const dayNames = ['日', '月', '火', '水', '木', '金', '土']
-  const sessionDates = useMemo(() => getDatesInRange(data.settings), [data.settings])
-
-  // Precompute helpers (use effective assignments: actual results override planned)
-  const effectiveAssignmentsMap = useMemo(
-    () => buildEffectiveAssignments(data.assignments, data.actualResults),
-    [data.assignments, data.actualResults],
-  )
-  const allSlotAssignments = useMemo(() => {
-    const entries: { slot: string; assignment: Assignment }[] = []
-    for (const slot of slotKeys) {
-      for (const a of effectiveAssignmentsMap[slot] ?? []) {
-        entries.push({ slot, assignment: a })
-      }
-    }
-    return entries
-  }, [effectiveAssignmentsMap, slotKeys])
-
-  const dateSet = useMemo(() => {
-    const s = new Set<string>()
-    for (const sk of slotKeys) s.add(sk.split('_')[0])
-    return s
-  }, [slotKeys])
-
-  const unresolvedMissingByStudent = useMemo(() => {
-    const actualResults = data.actualResults ?? {}
-    const recordedSlotSet = new Set(Object.keys(actualResults))
-    const result = new Map<string, number>()
-
-    for (const student of data.students.filter((entry) => entry.submittedAt > 0)) {
-      const groupSubjectSet = new Set(
-        (data.groupLessons ?? [])
-          .filter((lesson) => lesson.studentIds.includes(student.id))
-          .map((lesson) => lesson.subject),
-      )
-
-      type AbsenceEntry = { key: string; subject: string }
-      const absences = new Map<string, AbsenceEntry>()
-      for (const slot of slotKeys) {
-        if (!(slot in actualResults)) continue
-        const planned = data.assignments[slot] ?? []
-        const wasPlanned = planned.some((assignment) => assignment.studentIds.includes(student.id))
-        const [slotDate] = slot.split('_')
-        const slotDow = getIsoDayOfWeek(slotDate)
-        const slotNum = getSlotNumber(slot)
-        const wasRegularLesson = data.regularLessons.some((lesson) =>
-          lesson.studentIds.includes(student.id) && lesson.dayOfWeek === slotDow && lesson.slotNumber === slotNum,
-        )
-        if (!wasPlanned && !wasRegularLesson) continue
-
-        const isInActual = actualResults[slot].some((actual) => actual.studentIds.includes(student.id))
-        if (isInActual) continue
-
-        const origAssignment = planned.find((assignment) => assignment.studentIds.includes(student.id))
-        const isRegularAbsence = origAssignment?.isRegular || (!origAssignment && wasRegularLesson)
-        const isMakeupAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularMakeupInfo?.[student.id]
-        const isSubstituteAbsence = origAssignment && !origAssignment.isRegular && !!origAssignment.regularSubstituteInfo?.[student.id]
-        if (!isRegularAbsence && !isMakeupAbsence && !isSubstituteAbsence) continue
-
-        let absentSubj = ''
-        if (origAssignment) {
-          absentSubj = getStudentSubject(origAssignment, student.id)
-        } else {
-          const lesson = data.regularLessons.find((entry) =>
-            entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
-          )
-          if (!lesson) continue
-          absentSubj = lesson.studentSubjects?.[student.id] ?? lesson.subject
-        }
-        if (groupSubjectSet.has(absentSubj)) continue
-
-        const occurrenceRef: RegularOccurrenceRef = (() => {
-          const makeupInfo = origAssignment?.regularMakeupInfo?.[student.id]
-          if (makeupInfo) {
-            return {
-              studentId: student.id,
-              teacherId: origAssignment.teacherId,
-              subject: absentSubj,
-              makeupInfo,
-            }
-          }
-          const substituteInfo = origAssignment?.regularSubstituteInfo?.[student.id]
-          if (substituteInfo) {
-            return {
-              studentId: student.id,
-              teacherId: substituteInfo.regularTeacherId,
-              subject: absentSubj,
-              makeupInfo: { dayOfWeek: substituteInfo.dayOfWeek, slotNumber: substituteInfo.slotNumber, date: substituteInfo.date },
-            }
-          }
-          const lesson = data.regularLessons.find((entry) =>
-            entry.studentIds.includes(student.id) && entry.dayOfWeek === slotDow && entry.slotNumber === slotNum,
-          )
-          return {
-            studentId: student.id,
-            teacherId: lesson?.teacherId ?? origAssignment?.teacherId ?? '',
-            subject: absentSubj,
-            makeupInfo: { dayOfWeek: slotDow, slotNumber: slotNum, date: slotDate, ...(isInActual ? { reasonKind: 'actual-absence' as const } : {}) },
-          }
-        })()
-        const absenceKey = getRegularOccurrenceKey(occurrenceRef)
-        if (!absences.has(absenceKey)) absences.set(absenceKey, { key: absenceKey, subject: absentSubj })
-      }
-
-      const makeupPlacedBySubj: Record<string, number> = {}
-      for (const slot of slotKeys) {
-        if (recordedSlotSet.has(slot)) continue
-        const slotAssignments = effectiveAssignmentsMap[slot] ?? []
-        for (const assignment of slotAssignments) {
-          if (assignment.regularMakeupInfo?.[student.id] || assignment.regularSubstituteInfo?.[student.id]) {
-            const subject = getStudentSubject(assignment, student.id)
-            if (groupSubjectSet.has(subject)) continue
-            makeupPlacedBySubj[subject] = (makeupPlacedBySubj[subject] ?? 0) + 1
-          }
-        }
-      }
-
-      const coveredRemaining = { ...makeupPlacedBySubj }
-      const missingBySubj: Record<string, number> = {}
-      for (const absence of absences.values()) {
-        if ((coveredRemaining[absence.subject] ?? 0) > 0) {
-          coveredRemaining[absence.subject]--
-          continue
-        }
-        missingBySubj[absence.subject] = (missingBySubj[absence.subject] ?? 0) + 1
-      }
-
-      const { desiredBySubject: regularDesiredBySubject, assignedBySubject: regularAssignedBySubject } = getRegularSubjectProgress(data, effectiveAssignmentsMap, student.id)
-      for (const subject of new Set([...Object.keys(regularDesiredBySubject), ...Object.keys(regularAssignedBySubject)])) {
-        const desired = regularDesiredBySubject[subject] ?? 0
-        const assigned = regularAssignedBySubject[subject] ?? 0
-        if (desired > assigned) {
-          missingBySubj[subject] = Math.max(missingBySubj[subject] ?? 0, desired - assigned)
-        }
-      }
-
-      const unplacedForStudent = (data.autoAssignHighlights?.unplacedMakeup ?? []).filter((item) => item.studentId === student.id)
-      for (const item of unplacedForStudent) {
-        missingBySubj[item.subject] = Math.max(missingBySubj[item.subject] ?? 0, unplacedForStudent.filter((entry) => entry.subject === item.subject).length)
-      }
-
-      result.set(student.id, Object.values(missingBySubj).reduce((sum, count) => sum + count, 0))
-    }
-
-    return result
-  }, [data, slotKeys, effectiveAssignmentsMap])
-
-  // --- Teacher Analytics ---
-  const teacherStats = useMemo(() => {
-    return data.teachers.map((teacher) => {
-      const myAssignments = allSlotAssignments.filter((e) => e.assignment.teacherId === teacher.id)
-      const totalSlots = myAssignments.length
-      const regularSlots = myAssignments.filter((e) =>
-        e.assignment.isRegular || e.assignment.studentIds.some((sid) => !!e.assignment.regularSubstituteInfo?.[sid]),
-      ).length
-      const specialSlots = totalSlots - regularSlots
-      const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
-      const attendanceDays = dates.size
-
-      // Available slots
-      const availableSlots = slotKeys.filter((sk) =>
-        hasAvailability(data.availability, 'teacher', teacher.id, sk),
-      ).length
-
-      // Subject breakdown (count per-student subjects)
-      const subjectMap: Record<string, number> = {}
-      for (const e of myAssignments) {
-        if (!e.assignment.isRegular) {
-          for (const sid of e.assignment.studentIds) {
-            if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
-            const subj = getStudentSubject(e.assignment, sid)
-            subjectMap[subj] = (subjectMap[subj] ?? 0) + 1
-          }
-        }
-      }
-
-      // Student count (unique special students)
-      const studentIds = new Set<string>()
-      for (const e of myAssignments) {
-        if (!e.assignment.isRegular) {
-          for (const sid of e.assignment.studentIds) {
-            if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
-            studentIds.add(sid)
-          }
-        }
-      }
-
-      return {
-        teacher,
-        totalSlots,
-        regularSlots,
-        specialSlots,
-        attendanceDays,
-        availableSlots,
-        utilization: availableSlots > 0 ? Math.round((totalSlots / availableSlots) * 100) : 0,
-        subjectMap,
-        uniqueStudentCount: studentIds.size,
-      }
-    })
-  }, [data, allSlotAssignments, slotKeys])
-
-  // --- Student Analytics ---
-  const studentStats = useMemo(() => {
-    return data.students.filter((s) => s.submittedAt > 0).map((student) => {
-      const myAssignments = allSlotAssignments.filter((e) =>
-        e.assignment.studentIds.includes(student.id),
-      )
-      const groupSubjectSet = new Set(
-        (data.groupLessons ?? [])
-          .filter((lesson) => lesson.studentIds.includes(student.id))
-          .map((lesson) => lesson.subject),
-      )
-      const totalSlots = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]).length
-      const regularSlots = myAssignments.filter((e) => {
-        if (e.assignment.isGroupLesson) return false
-        if (!e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]) return false
-        const subject = getStudentSubject(e.assignment, student.id)
-        return !groupSubjectSet.has(subject)
-      }).length
-      const dates = new Set(myAssignments.map((e) => e.slot.split('_')[0]))
-
-      const unsatisfiedSlots = unresolvedMissingByStudent.get(student.id) ?? 0
-
-      // Per-subject desired vs assigned (using per-student subjects, excluding makeup)
-      const subjectDetails = Object.entries(student.subjectSlots).map(([subj, desired]) => {
-        const assigned = myAssignments.filter((e) => !e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id] && getStudentSubject(e.assignment, student.id) === subj).length
-        return { subject: subj, desired, assigned, diff: assigned - desired }
-      })
-
-      const { desiredBySubject: regularDesiredBySubject, assignedBySubject: regularAssignedBySubject } = getRegularSubjectProgress(data, effectiveAssignmentsMap, student.id)
-
-      const regularSubjectNames = [...new Set([...Object.keys(regularDesiredBySubject), ...Object.keys(regularAssignedBySubject)])].sort((a, b) => a.localeCompare(b, 'ja'))
-      const regularSubjectDetails = regularSubjectNames.map((subject) => {
-        const desired = regularDesiredBySubject[subject] ?? 0
-        const assigned = regularAssignedBySubject[subject] ?? 0
-        return { subject, desired, assigned, diff: assigned - desired }
-      })
-
-      const regularDesiredTotal = Object.values(regularDesiredBySubject).reduce((sum, count) => sum + count, 0)
-      const regularAssignedTotal = Object.values(regularAssignedBySubject).reduce((sum, count) => sum + count, 0)
-
-      const totalDesired = Object.values(student.subjectSlots).reduce((s, c) => s + c, 0)
-      const totalAssigned = totalSlots
-
-      // Unique teachers
-      const teacherIds = new Set<string>()
-      for (const e of myAssignments) {
-        if (!e.assignment.isRegular && !e.assignment.regularMakeupInfo?.[student.id] && !e.assignment.regularSubstituteInfo?.[student.id]) {
-          teacherIds.add(e.assignment.teacherId)
-        }
-      }
-
-      return {
-        student,
-        totalSlots,
-        regularSlots,
-        regularDesiredTotal,
-        regularAssignedTotal,
-        totalDesired,
-        totalAssigned,
-        fulfillment: totalDesired > 0 ? Math.round((totalAssigned / totalDesired) * 100) : 0,
-        regularFulfillment: regularDesiredTotal > 0 ? Math.round((regularAssignedTotal / regularDesiredTotal) * 100) : 0,
-        attendanceDays: dates.size,
-        subjectDetails,
-        regularSubjectDetails,
-        uniqueTeacherCount: teacherIds.size,
-        unsatisfiedSlots,
-      }
-    })
-  }, [data, allSlotAssignments, slotKeys, sessionDates, unresolvedMissingByStudent, effectiveAssignmentsMap])
-
-  // --- Day of Week Analytics ---
-  const dayStats = useMemo(() => {
-    const daysUsed = new Map<number, { dates: Set<string>; totalPairs: number; regularPairs: number; specialPairs: number; teacherIds: Set<string>; studentIds: Set<string> }>()
-    for (let d = 0; d < 7; d++) daysUsed.set(d, { dates: new Set(), totalPairs: 0, regularPairs: 0, specialPairs: 0, teacherIds: new Set(), studentIds: new Set() })
-    for (const e of allSlotAssignments) {
-      const date = e.slot.split('_')[0]
-      const dow = getIsoDayOfWeek(date)
-      const entry = daysUsed.get(dow)!
-      entry.dates.add(date)
-      entry.totalPairs++
-      if (e.assignment.isRegular || e.assignment.studentIds.some((sid) => !!e.assignment.regularSubstituteInfo?.[sid])) entry.regularPairs++
-      else entry.specialPairs++
-      if (e.assignment.teacherId) entry.teacherIds.add(e.assignment.teacherId)
-      for (const sid of e.assignment.studentIds) entry.studentIds.add(sid)
-    }
-    return [1, 2, 3, 4, 5, 6, 0].map((d) => ({ dayOfWeek: d, dayName: dayNames[d], ...daysUsed.get(d)! }))
-      .filter((d) => d.dates.size > 0)
-  }, [allSlotAssignments])
-
-  // --- Subject Analytics ---
-  const subjectStats = useMemo(() => {
-    const subjectMap = new Map<string, { totalPairs: number; studentIds: Set<string>; teacherIds: Set<string>; totalDesired: number; totalAssigned: number }>()
-    for (const subj of FIXED_SUBJECTS) {
-      subjectMap.set(subj, { totalPairs: 0, studentIds: new Set(), teacherIds: new Set(), totalDesired: 0, totalAssigned: 0 })
-    }
-    for (const e of allSlotAssignments) {
-      if (e.assignment.isRegular) continue
-      // Count per-student subjects (exclude makeup assignments)
-      for (const sid of e.assignment.studentIds) {
-        if (e.assignment.regularMakeupInfo?.[sid] || e.assignment.regularSubstituteInfo?.[sid]) continue
-        const subj = getStudentSubject(e.assignment, sid)
-        const entry = subjectMap.get(subj)
-        if (!entry) continue
-        entry.totalAssigned++
-        entry.studentIds.add(sid)
-        if (e.assignment.teacherId) entry.teacherIds.add(e.assignment.teacherId)
-      }
-      // Count unique pairs per primary subject
-      const primaryEntry = subjectMap.get(e.assignment.subject)
-      if (primaryEntry) primaryEntry.totalPairs++
-    }
-    for (const student of data.students) {
-      for (const [subj, desired] of Object.entries(student.subjectSlots)) {
-        const entry = subjectMap.get(subj)
-        if (entry) entry.totalDesired += desired
-      }
-    }
-    return FIXED_SUBJECTS.map((subj) => {
-      const entry = subjectMap.get(subj)!
-      return { subject: subj, ...entry }
-    }).filter((s) => s.totalPairs > 0 || s.totalDesired > 0)
-  }, [data, allSlotAssignments])
-
-  // --- Date-level detail ---
-  const dateStats = useMemo(() => {
-    const result: { date: string; dayName: string; totalPairs: number; regularPairs: number; specialPairs: number; maxSlotPairs: number }[] = []
-    for (const date of [...dateSet].sort()) {
-      const dow = getIsoDayOfWeek(date)
-      let totalPairs = 0; let regularPairs = 0; let specialPairs = 0; let maxSlotPairs = 0
-      for (let s = 1; s <= data.settings.slotsPerDay; s++) {
-        const pairs = data.assignments[`${date}_${s}`] ?? []
-        const cnt = pairs.length
-        totalPairs += cnt
-        regularPairs += pairs.filter((a) => a.isRegular || a.studentIds.some((sid) => !!a.regularSubstituteInfo?.[sid])).length
-        specialPairs += pairs.filter((a) => !a.isRegular && !a.studentIds.some((sid) => !!a.regularSubstituteInfo?.[sid])).length
-        if (cnt > maxSlotPairs) maxSlotPairs = cnt
-      }
-      result.push({ date, dayName: dayNames[dow], totalPairs, regularPairs, specialPairs, maxSlotPairs })
-    }
-    return result
-  }, [data, dateSet])
-
-  const tabs: { key: AnalyticsTab; label: string }[] = [
-    { key: 'teacher', label: '講師別' },
-    { key: 'student', label: '生徒別' },
-    { key: 'day', label: '曜日・日別' },
-    { key: 'subject', label: '科目別' },
-  ]
-
-  return (
-    <div className="panel analytics-panel">
-      <div className="row" style={{ marginBottom: '12px', gap: '4px' }}>
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            className={`btn${tab === t.key ? '' : ' secondary'}`}
-            type="button"
-            onClick={() => setTab(t.key)}
-            style={{ fontSize: '0.85em', padding: '5px 12px' }}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'teacher' && (
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>講師名</th>
-                <th>出勤日数</th>
-                <th>出席可能コマ</th>
-                <th>通常授業</th>
-                <th>特別講習</th>
-                <th>合計コマ</th>
-                <th>稼働率</th>
-                <th>担当科目内訳</th>
-                <th>担当生徒数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {teacherStats.map((ts) => (
-                <tr key={ts.teacher.id}>
-                  <td style={{ fontWeight: 500 }}>{ts.teacher.name}</td>
-                  <td>{ts.attendanceDays}日</td>
-                  <td>{ts.availableSlots}</td>
-                  <td>{ts.regularSlots}</td>
-                  <td>{ts.specialSlots}</td>
-                  <td style={{ fontWeight: 600 }}>{ts.totalSlots}</td>
-                  <td>
-                    <span style={{
-                      color: ts.utilization >= 80 ? '#16a34a' : ts.utilization >= 50 ? '#d97706' : '#dc2626',
-                      fontWeight: 600,
-                    }}>
-                      {ts.utilization}%
-                    </span>
-                  </td>
-                  <td style={{ fontSize: '0.85em' }}>
-                    {Object.entries(ts.subjectMap).map(([subj, cnt]) => `${subj}:${cnt}`).join(' ') || '-'}
-                  </td>
-                  <td>{ts.uniqueStudentCount}名</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tab === 'student' && (
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>生徒名</th>
-                <th>学年</th>
-                <th>希望計</th>
-                <th>割当計</th>
-                <th>充足率</th>
-                <th>不充足</th>
-                <th>科目別（割当/希望）</th>
-                <th>通常計（割当/必要）</th>
-                <th>通常充足率</th>
-                <th>通常科目別（割当/必要）</th>
-                <th>出席日数</th>
-                <th>担当講師数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {studentStats.map((ss) => (
-                <tr key={ss.student.id}>
-                  <td style={{ fontWeight: 500 }}>{ss.student.name}</td>
-                  <td>{ss.student.grade}</td>
-                  <td>{ss.totalDesired}</td>
-                  <td style={{ fontWeight: 600 }}>{ss.totalAssigned}</td>
-                  <td>
-                    <span style={{
-                      color: ss.fulfillment >= 100 ? '#16a34a' : ss.fulfillment >= 70 ? '#d97706' : '#dc2626',
-                      fontWeight: 600,
-                    }}>
-                      {ss.fulfillment}%
-                    </span>
-                  </td>
-                  <td>
-                    {ss.unsatisfiedSlots > 0 ? (
-                      <span style={{ color: '#dc2626', fontWeight: 600 }}>{ss.unsatisfiedSlots}コマ</span>
-                    ) : (
-                      <span style={{ color: '#6b7280' }}>-</span>
-                    )}
-                  </td>
-                  <td style={{ fontSize: '0.85em' }}>
-                    {ss.subjectDetails.map((sd) => {
-                      const color = sd.diff > 0 ? '#dc2626' : sd.diff < 0 ? '#d97706' : '#16a34a'
-                      return (
-                        <span key={sd.subject} style={{ marginRight: '8px' }}>
-                          {sd.subject}:<span style={{ color, fontWeight: 500 }}>{sd.assigned}/{sd.desired}</span>
-                        </span>
-                      )
-                    })}
-                    {ss.subjectDetails.length === 0 && '-'}
-                  </td>
-                  <td>{ss.regularAssignedTotal}/{ss.regularDesiredTotal}</td>
-                  <td>
-                    {ss.regularDesiredTotal > 0 ? (
-                      <span style={{
-                        color: ss.regularFulfillment >= 100 ? '#16a34a' : ss.regularFulfillment >= 70 ? '#d97706' : '#dc2626',
-                        fontWeight: 600,
-                      }}>
-                        {ss.regularFulfillment}%
-                      </span>
-                    ) : (
-                      <span style={{ color: '#6b7280' }}>-</span>
-                    )}
-                  </td>
-                  <td style={{ fontSize: '0.85em' }}>
-                    {ss.regularSubjectDetails.map((sd) => {
-                      const color = sd.diff > 0 ? '#dc2626' : sd.diff < 0 ? '#d97706' : '#16a34a'
-                      return (
-                        <span key={sd.subject} style={{ marginRight: '8px' }}>
-                          {sd.subject}:<span style={{ color, fontWeight: 500 }}>{sd.assigned}/{sd.desired}</span>
-                        </span>
-                      )
-                    })}
-                    {ss.regularSubjectDetails.length === 0 && '-'}
-                  </td>
-                  <td>{ss.attendanceDays}日</td>
-                  <td>{ss.uniqueTeacherCount}名</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tab === 'day' && (
-        <>
-          <h4 style={{ margin: '0 0 8px' }}>曜日別サマリー</h4>
-          <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>曜日</th>
-                  <th>日数</th>
-                  <th>通常</th>
-                  <th>特別</th>
-                  <th>合計ペア</th>
-                  <th>講師数</th>
-                  <th>生徒数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dayStats.map((ds) => (
-                  <tr key={ds.dayOfWeek}>
-                    <td style={{ fontWeight: 500 }}>{ds.dayName}曜</td>
-                    <td>{ds.dates.size}日</td>
-                    <td>{ds.regularPairs}</td>
-                    <td>{ds.specialPairs}</td>
-                    <td style={{ fontWeight: 600 }}>{ds.totalPairs}</td>
-                    <td>{ds.teacherIds.size}名</td>
-                    <td>{ds.studentIds.size}名</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <h4 style={{ margin: '0 0 8px' }}>日別詳細</h4>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>日付</th>
-                  <th>曜日</th>
-                  <th>通常</th>
-                  <th>特別</th>
-                  <th>合計ペア</th>
-                  <th>最大同時ペア</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dateStats.map((ds) => (
-                  <tr key={ds.date}>
-                    <td style={{ fontWeight: 500 }}>{formatShortDate(ds.date)}</td>
-                    <td>{ds.dayName}</td>
-                    <td>{ds.regularPairs}</td>
-                    <td>{ds.specialPairs}</td>
-                    <td style={{ fontWeight: 600 }}>{ds.totalPairs}</td>
-                    <td>
-                      {ds.maxSlotPairs}
-                      {(data.settings.deskCount ?? 0) > 0 && (
-                        <span style={{ color: ds.maxSlotPairs >= (data.settings.deskCount ?? 0) ? '#dc2626' : '#64748b', fontSize: '0.85em' }}>
-                          /{data.settings.deskCount}
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      {tab === 'subject' && (
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>科目</th>
-                <th>全生徒希望計</th>
-                <th>割当済ペア</th>
-                <th>充足率</th>
-                <th>担当講師数</th>
-                <th>受講生徒数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {subjectStats.map((ss) => {
-                const fulfillment = ss.totalDesired > 0 ? Math.round((ss.totalAssigned / ss.totalDesired) * 100) : 0
-                return (
-                  <tr key={ss.subject}>
-                    <td style={{ fontWeight: 600, fontSize: '1.1em' }}>{ss.subject}</td>
-                    <td>{ss.totalDesired}コマ</td>
-                    <td>{ss.totalPairs}ペア（{ss.totalAssigned}人回）</td>
-                    <td>
-                      <span style={{
-                        color: fulfillment >= 100 ? '#16a34a' : fulfillment >= 70 ? '#d97706' : '#dc2626',
-                        fontWeight: 600,
-                      }}>
-                        {fulfillment}%
-                      </span>
-                    </td>
-                    <td>{ss.teacherIds.size}名</td>
-                    <td>{ss.studentIds.size}名</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  )
-}
-
 const AdminPage = () => {
   const { classroomId = '', sessionId = 'main' } = useParams()
   const navigate = useNavigate()
@@ -3822,7 +3210,6 @@ const AdminPage = () => {
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; regularTeacherId?: string } | null>(null)
   const [, setTransferSlot] = useState<string | null>(null)
-  const [showAnalytics, setShowAnalytics] = useState(false)
   const [showRules, setShowRules] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
   const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
@@ -3838,12 +3225,10 @@ const AdminPage = () => {
   const [editSubmissionEndDate, setEditSubmissionEndDate] = useState('')
   const [editHolidays, setEditHolidays] = useState<string[]>([])
   const [autoAssignLoading, setAutoAssignLoading] = useState(false)
-  const [masterRefreshLoading, setMasterRefreshLoading] = useState(false)
   const [autoAssignProgress, setAutoAssignProgress] = useState(0)
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
-  const [autoAssignDiagnostics, setAutoAssignDiagnostics] = useState<StudentDiagnostic[]>([])
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const [sessionTableSorts, setSessionTableSorts] = useState<{
     instructors: MasterTableSortState | null
@@ -3968,33 +3353,6 @@ const AdminPage = () => {
     || JSON.stringify(current.regularLessons) !== JSON.stringify(next.regularLessons)
     || JSON.stringify(current.groupLessons ?? []) !== JSON.stringify(next.groupLessons)
   ), [])
-
-  const refreshSessionFromMaster = useCallback(async (): Promise<void> => {
-    const current = dataRef.current
-    if (!current) return
-
-    setMasterRefreshLoading(true)
-    try {
-      const master = await loadMasterData(classroomId)
-      if (!master) {
-        alert('管理データを読み込めませんでした。')
-        return
-      }
-
-      const next = buildSessionDataFromMaster(current, master)
-      if (!hasSessionMasterChanges(current, next)) {
-        alert('管理データとの差分はありません。')
-        return
-      }
-
-      await persist(next)
-      closeStatusModal()
-      setLatestStatusReport(null)
-      alert('管理データを再同期しました。講師不足モーダルは最新状態で再計算されます。')
-    } finally {
-      setMasterRefreshLoading(false)
-    }
-  }, [buildSessionDataFromMaster, classroomId, hasSessionMasterChanges])
 
   // Track real-time changes to show "just updated" indicators for teachers/students
   useEffect(() => {
@@ -6810,7 +6168,6 @@ const AdminPage = () => {
   const closeStatusModal = (): void => {
     setStatusModal(null)
     setStatusModalMode(null)
-    setModalDiagnostics([])
   }
 
   const currentStatusReport = useMemo(() => {
@@ -6829,18 +6186,6 @@ const AdminPage = () => {
     [activeStatusReport],
   )
 
-  const currentAutoAssignBlockerCount = useMemo(
-    () => countStatusItems(currentAutoAssignBlockingSections),
-    [currentAutoAssignBlockingSections],
-  )
-
-  const currentAutoAssignBlockerLabel = useMemo(() => {
-    if (currentAutoAssignBlockerCount === 0) return ''
-    return currentAutoAssignBlockingSections
-      .map((section) => `${section.title} ${section.items.length}件`)
-      .join(' / ')
-  }, [currentAutoAssignBlockerCount, currentAutoAssignBlockingSections])
-
   const currentNonShortageBlockerCount = useMemo(
     () => countStatusItems(currentAutoAssignBlockingSections.filter((s) => s.key !== 'shortage')),
     [currentAutoAssignBlockingSections],
@@ -6851,87 +6196,6 @@ const AdminPage = () => {
     if (countStatusItems(sections) === 0) return ''
     return sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ')
   }, [currentAutoAssignBlockingSections])
-
-  const summarizeDuplicateConflicts = (assignmentState: Record<string, Assignment[]>) => {
-    const currentData = data
-    if (!currentData) return []
-
-    return Object.entries(assignmentState).flatMap(([slot, slotAssignments]) => {
-      const seen = new Set<string>()
-      const duplicates: string[] = []
-      for (const assignment of slotAssignments) {
-        for (const studentId of assignment.studentIds) {
-          if (seen.has(studentId) && !duplicates.includes(studentId)) duplicates.push(studentId)
-          seen.add(studentId)
-        }
-      }
-
-      return duplicates.map((studentId) => ({
-        slot,
-        label: slotLabel(slot, isMendan, mendanStart),
-        studentId,
-        studentName: currentData.students.find((student) => student.id === studentId)?.name ?? studentId,
-        assignments: slotAssignments
-          .filter((assignment) => assignment.studentIds.includes(studentId))
-          .map((assignment) => ({
-            teacherId: assignment.teacherId,
-            teacherName: currentData.teachers.find((teacher) => teacher.id === assignment.teacherId)?.name ?? assignment.teacherId,
-            studentIds: [...assignment.studentIds],
-            studentNames: assignment.studentIds.map((id) => currentData.students.find((student) => student.id === id)?.name ?? id),
-            subject: assignment.subject,
-            isRegular: !!assignment.isRegular,
-            ...(assignment.teacherUnassignedReason ? { teacherUnassignedReason: assignment.teacherUnassignedReason } : {}),
-          })),
-      }))
-    })
-  }
-
-  const copyChatDebugData = async (): Promise<void> => {
-    if (!data) return
-
-    const normalizedAssignments = materializeUnavailableRegularShortages(data.assignments)
-    const debugPayload = {
-      type: 'LessonScheduleTableDebug',
-      appVersion: APP_VERSION,
-      copiedAt: new Date().toISOString(),
-      locationHash: window.location.hash,
-      classroomId,
-      sessionId,
-      statusModalMode,
-      unresolvedCount,
-      currentAutoAssignBlockerLabel,
-      manuallyModifiedSlots: [...manuallyModifiedSlots].sort(),
-      duplicateConflicts: summarizeDuplicateConflicts(data.assignments),
-      normalizedDuplicateConflicts: summarizeDuplicateConflicts(normalizedAssignments),
-      statusModal,
-      activeStatusReport,
-      session: {
-        ...data,
-        settings: {
-          ...data.settings,
-          adminPassword: '[redacted]',
-        },
-      },
-    }
-    const text = JSON.stringify(debugPayload, null, 2)
-    try {
-      await navigator.clipboard.writeText(text)
-      alert('デバッグ情報をコピーしました')
-    } catch {
-      window.prompt('デバッグ情報をコピーしてください:', text)
-    }
-  }
-
-  const [modalDiagnostics, setModalDiagnostics] = useState<StudentDiagnostic[]>([])
-
-  const runModalDiagnostics = (): void => {
-    if (!data) return
-    const recordedSlots = new Set(Object.keys(data.actualResults ?? {}))
-    const availableSlots = slotKeys.filter((s) => !recordedSlots.has(s))
-    const result = buildEffectiveAssignments(data.assignments, data.actualResults)
-    const diagnostics = diagnoseUnassignedStudents(data, result, availableSlots)
-    setModalDiagnostics(diagnostics)
-  }
 
   const shouldShowAutoAssignButton = useMemo(() => {
     if (!data) return false
@@ -7458,8 +6722,7 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup, diagnostics } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
-    setAutoAssignDiagnostics(diagnostics)
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
 
     // Phase 6: Auto-assign teacher shortages (runs before Phase 5 so shortages
     // are resolved before remaining-student proposals are generated)
@@ -8138,19 +7401,6 @@ const AdminPage = () => {
     setLatestStatusReport(null)
     await updateAssignments((current) => buildResetSchedulingState(current, nextSettings))
     setShowScheduleSettingsEditor(false)
-  }
-
-  const savePdfComparisonBaseline = async (): Promise<void> => {
-    const current = dataRef.current
-    if (!current) return
-    await update((session) => ({
-      ...session,
-      pdfComparisonBaseline: {
-        savedAt: Date.now(),
-        assignments: cloneAssignmentsForPdfComparison(session.assignments),
-      },
-    }))
-    alert('PDF比較基準を保存しました。以後のPDF出力では、この基準から変わったセルを赤枠で表示します。')
   }
 
   const getManualConstraintWarnings = (slot: string, assignment: Assignment, assignmentIdx: number): string[] => {
@@ -9318,7 +8568,6 @@ service cloud.firestore {
                 )}
               </div>
             )}
-            {showAnalytics && <AnalyticsPanel data={data} slotKeys={isMendan ? effectiveSlotKeys : slotKeys} />}
             <div style={{ position: 'relative' }}>
             {autoAssignLoading && (
               <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', zIndex: 20, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '18px', borderRadius: '8px' }}>
@@ -10103,6 +9352,7 @@ service cloud.firestore {
                       ))}
                     </section>
                   ))}
+                </div>
                 </div>
             </div>
           )}
