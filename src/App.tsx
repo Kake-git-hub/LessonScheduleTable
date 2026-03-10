@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.38'
+const APP_VERSION = '1.3.39'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7483,7 +7483,7 @@ const AdminPage = () => {
         if (underAssigned.length === 0) break
 
         let appliedInRound = false
-        let skipReasons: string[] = []
+        const skipReasons: string[] = []
 
         for (const summary of underAssigned) {
           const student = data.students.find((s) => s.id === summary.studentId)
@@ -7514,19 +7514,20 @@ const AdminPage = () => {
               return true
             })
 
-            if (proposalRound === 1 && validForce.length === 0) {
+            if (validForce.length === 0) {
               const allForce = analysis.force.length
               const constraintOnly = analysis.force.filter((p) => p.label.startsWith('制約違反')).length
-              skipReasons.push(`${student.name}/${subj}: force=${allForce}(制約${constraintOnly})`)
+              const protectedOnly = analysis.force.filter((p) => p.action?.type === 'force-assign' && phase5ProtectedSlots.has((p.action as ForceAssignAction).slot)).length
+              skipReasons.push(`${student.name}/${subj}: total=${allForce}(制約違反${constraintOnly},保護${protectedOnly})`)
+              continue
             }
 
-            if (validForce.length === 0) continue
-
             const action = validForce[0].action as ForceAssignAction
-            const slotAssignments = [...(nextAssignments[action.slot] ?? [])]
+            // Apply against merged state (not raw nextAssignments) for consistency
+            const slotAssignments = [...(mergedForEval[action.slot] ?? [])]
 
             if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) {
-              if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: already in slot ${action.slot}`)
+              skipReasons.push(`${student.name}/${subj}: already in slot ${action.slot}`)
               continue
             }
 
@@ -7535,7 +7536,7 @@ const AdminPage = () => {
             if (existingPairIndex >= 0) {
               const existing = slotAssignments[existingPairIndex]
               if (existing.studentIds.length >= 2) {
-                if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: pair full for ${action.teacherId}`)
+                skipReasons.push(`${student.name}/${subj}: pair full for teacher at ${action.slot}`)
                 continue
               }
               slotAssignments[existingPairIndex] = {
@@ -7561,7 +7562,7 @@ const AdminPage = () => {
             } else {
               const deskLimit = data.settings.deskCount ?? 0
               if (deskLimit > 0 && slotAssignments.length >= deskLimit) {
-                if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: desk limit ${slotAssignments.length}/${deskLimit} at ${action.slot}`)
+                skipReasons.push(`${student.name}/${subj}: desk limit ${slotAssignments.length}/${deskLimit} at ${action.slot}`)
                 continue
               }
               slotAssignments.push({
@@ -7594,6 +7595,7 @@ const AdminPage = () => {
             }
 
             totalProposalsApplied++
+            console.log(`[AutoAssign] Phase 5 round ${proposalRound}: applied ${student.name}/${subj} → ${action.slot}`)
             changeLog.push({
               slot: action.slot,
               action: '割当案自動適用',
@@ -7606,11 +7608,10 @@ const AdminPage = () => {
           if (appliedInRound) break
         }
 
-        if (proposalRound === 1 && !appliedInRound && skipReasons.length > 0) {
-          console.log('[AutoAssign] Phase 5: no proposals applied in round 1. Skip reasons:', skipReasons.join(' | '))
+        if (!appliedInRound) {
+          console.log(`[AutoAssign] Phase 5: stopped at round ${proposalRound}. Remaining: ${underAssigned.length} students. Skip reasons:`, skipReasons.join(' | '))
+          break
         }
-
-        if (!appliedInRound) break
       }
 
       console.log(`[AutoAssign] Phase 5: completed after ${proposalRound} rounds, applied ${totalProposalsApplied} proposals`)
