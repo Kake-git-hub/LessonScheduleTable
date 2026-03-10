@@ -924,8 +924,8 @@ export const buildIncrementalAutoAssignments = async (
         for (const plan of subjectPlans) {
         // ── Shared rule scoring (priority order) ──
 
-        // 1. 2人ペアボーナス → 講師稼働率の最大化
-        const pairBonus = combo.length === 2 ? 1000 : 0
+        // 1. 2人ペアボーナス → 講師稼働率の最大化（出席可能の次に最重要）
+        const pairBonus = combo.length === 2 ? 5000 : 0
 
         // 2. 既出勤日に追加 → 講師の出勤日数を最小化
         // NOTE: Teacher pre-sort already strongly prefers existing dates,
@@ -1081,6 +1081,197 @@ export const buildIncrementalAutoAssignments = async (
           markAddedPair(slot, a, fullDetail)
         }
         changeLog.push({ slot, action: '新規割当', detail: fullDetail })
+      }
+    }
+  }
+
+  // Phase 4: Supplementary assignment — place students that lost Phase 3 competitions
+  // Only assigns to slots with NO constraint card violations.
+  // Constraint-violating options remain for manual resolution via the modal.
+  {
+    const phase4Students = data.students
+      .map((s) => {
+        const remEntries = Object.entries(s.subjectSlots)
+          .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj) }))
+          .filter((x) => x.rem > 0)
+        return { student: s, remaining: remEntries }
+      })
+      .filter((x) => x.remaining.length > 0)
+      .sort((a, b) => {
+        const aTotal = a.remaining.reduce((sum, r) => sum + r.rem, 0)
+        const bTotal = b.remaining.reduce((sum, r) => sum + r.rem, 0)
+        if (aTotal !== bTotal) return bTotal - aTotal
+        const aRank = submissionOrderMap.get(a.student.id) ?? maxRank
+        const bRank = submissionOrderMap.get(b.student.id) ?? maxRank
+        return aRank - bRank
+      })
+
+    if (phase4Students.length > 0) {
+      console.log('[AutoAssign] Phase 4: supplementary assignment for', phase4Students.length, 'students with remaining demand')
+    }
+
+    for (const { student, remaining } of phase4Students) {
+      for (const { subj } of remaining) {
+        let currentRem = (student.subjectSlots[subj] ?? 0) - countStudentSubjectLoad(result, student.id, subj)
+        while (currentRem > 0) {
+          await yieldToMain()
+
+          type Phase4Candidate = {
+            slot: string
+            teacherId: string
+            mergeInto: Assignment | null
+            score: number
+          }
+
+          let bestCandidate: Phase4Candidate | null = null
+
+          for (const slot of slots) {
+            const currentSlotNum = getSlotNumber(slot)
+            if (currentSlotNum === 0) continue
+            const [currentDate] = slot.split('_')
+
+            if (!isStudentAvailable(student, slot)) continue
+
+            const slotAssignments = result[slot] ?? []
+            if (slotAssignments.some((a) => a.studentIds.includes(student.id))) continue
+
+            const currentDayOfWeek = getIsoDayOfWeek(currentDate)
+            const groupLessonsOnDate = (data.groupLessons ?? []).filter((gl) => gl.dayOfWeek === currentDayOfWeek)
+
+            type TeacherOption = { teacherId: string; mergeInto: Assignment | null }
+            const teacherOptions: TeacherOption[] = []
+
+            // Option A: Merge into existing pair with < 2 students (strongly preferred)
+            for (const a of slotAssignments) {
+              if (a.isGroupLesson || a.studentIds.length >= 2) continue
+              const t = data.teachers.find((t) => t.id === a.teacherId)
+              if (!t) continue
+              if (!canTeachSubject(t.subjects, student.grade, subj)) continue
+              if (constraintFor(data.constraints, a.teacherId, student.id) === 'incompatible') continue
+              if (a.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) continue
+              teacherOptions.push({ teacherId: a.teacherId, mergeInto: a })
+            }
+
+            // Option B: New pair (if desk limit allows)
+            if (deskCountLimit === 0 || slotAssignments.length < deskCountLimit) {
+              const usedTeacherIdsInSlot = new Set(slotAssignments.map((a) => a.teacherId))
+              for (const teacher of data.teachers) {
+                if (usedTeacherIdsInSlot.has(teacher.id)) continue
+                if (!hasTeacherAvailabilityForAutoAssign(data, teacher.id, slot)) continue
+                if (!canTeachSubject(teacher.subjects, student.grade, subj)) continue
+                if (constraintFor(data.constraints, teacher.id, student.id) === 'incompatible') continue
+                teacherOptions.push({ teacherId: teacher.id, mergeInto: null })
+              }
+            }
+
+            for (const { teacherId, mergeInto } of teacherOptions) {
+              // Hard filter: constraint cards must NOT block
+              const evalResult = evaluateConstraintCards(
+                student, slot, result, data.settings.slotsPerDay,
+                data.regularLessons, groupLessonsOnDate, teacherId,
+              )
+              if (evalResult.blocked) continue
+
+              // Avoid same student in teacher's consecutive slot
+              const prevSlotStudentIds = new Set(getTeacherPrevSlotStudentIds(result, teacherId, currentDate, currentSlotNum))
+              if (prevSlotStudentIds.has(student.id)) continue
+
+              // Score: merge into existing solo pair is overwhelmingly preferred
+              const teacherDates = getTeacherAssignedDates(result, teacherId)
+              const isExistingDate = teacherDates.has(currentDate)
+              const mergeBonus = mergeInto ? 5000 : 0
+              const attendanceBonus = isExistingDate ? 80 : -30
+              const teacherSlotsOnDate = getTeacherSlotNumbersOnDate(result, teacherId, currentDate)
+              const teacherConsecBonus = teacherSlotsOnDate.some((n) => Math.abs(n - currentSlotNum) === 1) ? 12 : 0
+              const preferredBonus = (student.preferredSlots ?? []).includes(slot) ? 120 : 0
+
+              const mkInfos = makeupStudentInfo.get(student.id)
+              const makeupBonus = mkInfos && mkInfos.some(mk => mk.teacherId === teacherId && mk.subject === subj && (!mk.absentDate || currentDate > mk.absentDate)) ? 200 : 0
+
+              const score = evalResult.score + mergeBonus + attendanceBonus + teacherConsecBonus + preferredBonus + makeupBonus
+
+              if (!bestCandidate || score > bestCandidate.score) {
+                bestCandidate = { slot, teacherId, mergeInto, score }
+              }
+            }
+          }
+
+          if (!bestCandidate) break
+
+          const { slot, teacherId, mergeInto } = bestCandidate
+          const teacher = data.teachers.find((t) => t.id === teacherId)
+          const tName = teacher?.name ?? '?'
+          const [placedDate] = slot.split('_')
+
+          if (mergeInto) {
+            const studentSubjects: Record<string, string> = {}
+            for (const sid of mergeInto.studentIds) {
+              studentSubjects[sid] = getStudentSubject(mergeInto, sid)
+            }
+            studentSubjects[student.id] = subj
+            mergeInto.studentIds = [...mergeInto.studentIds, student.id]
+            mergeInto.studentSubjects = studentSubjects
+
+            const mkInfos = makeupStudentInfo.get(student.id)
+            const mkMatch = mkInfos?.find(mk => mk.teacherId === teacherId && mk.subject === subj && (!mk.absentDate || placedDate > mk.absentDate))
+            if (mkMatch) {
+              mergeInto.regularMakeupInfo = {
+                ...(mergeInto.regularMakeupInfo ?? {}),
+                [student.id]: {
+                  dayOfWeek: mkMatch.dayOfWeek,
+                  slotNumber: mkMatch.slotNumber,
+                  date: mkMatch.date,
+                  ...(mkMatch.reasonKind ? { reasonKind: mkMatch.reasonKind } : {}),
+                },
+              }
+              const mkIdx = mkInfos!.indexOf(mkMatch)
+              if (mkIdx >= 0) mkInfos!.splice(mkIdx, 1)
+              const fmtDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
+              const makeupDetail = `補充割当(既存ペア振替): ${tName} × ${student.name}(${subj}) — ${fmtDate(mkMatch.date)} ${mkMatch.slotNumber}限 → ${fmtDate(placedDate)} ${getSlotNumber(slot)}限`
+              markMakeupPair(slot, mergeInto, makeupDetail)
+              changeLog.push({ slot, action: '補充割当', detail: makeupDetail })
+            } else {
+              const detail = `補充割当(既存ペア追加): ${tName} × ${student.name}(${subj})`
+              markAddedPair(slot, mergeInto, detail)
+              changeLog.push({ slot, action: '補充割当', detail })
+            }
+          } else {
+            const newAssignment: Assignment = {
+              teacherId,
+              studentIds: [student.id],
+              subject: subj,
+              studentSubjects: { [student.id]: subj },
+            }
+
+            const mkInfos = makeupStudentInfo.get(student.id)
+            const mkMatch = mkInfos?.find(mk => mk.teacherId === teacherId && mk.subject === subj && (!mk.absentDate || placedDate > mk.absentDate))
+            if (mkMatch) {
+              newAssignment.regularMakeupInfo = {
+                [student.id]: {
+                  dayOfWeek: mkMatch.dayOfWeek,
+                  slotNumber: mkMatch.slotNumber,
+                  date: mkMatch.date,
+                  ...(mkMatch.reasonKind ? { reasonKind: mkMatch.reasonKind } : {}),
+                },
+              }
+              const mkIdx = mkInfos!.indexOf(mkMatch)
+              if (mkIdx >= 0) mkInfos!.splice(mkIdx, 1)
+              const fmtDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
+              const makeupDetail = `補充割当(新規ペア振替): ${tName} × ${student.name}(${subj}) — ${fmtDate(mkMatch.date)} ${mkMatch.slotNumber}限 → ${fmtDate(placedDate)} ${getSlotNumber(slot)}限`
+              markMakeupPair(slot, newAssignment, makeupDetail)
+              changeLog.push({ slot, action: '補充割当', detail: makeupDetail })
+            } else {
+              const detail = `補充割当(新規ペア): ${tName} × ${student.name}(${subj})`
+              markAddedPair(slot, newAssignment, detail)
+              changeLog.push({ slot, action: '補充割当', detail })
+            }
+
+            if (!result[slot]) result[slot] = []
+            result[slot].push(newAssignment)
+          }
+
+          currentRem--
+        }
       }
     }
   }
