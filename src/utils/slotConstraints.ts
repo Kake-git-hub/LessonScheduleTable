@@ -28,19 +28,23 @@ export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
   regularLink: '通常授業連結',
   preferRegularTeacher: '通常講師優先',
   lateSlotNonExam: '受験生以外の後半コマ優先',
+  earlySlotPreference: '小学生は2限寄り',
+  lateSlotPreference: '中高生は5限寄り',
 }
 
 /** Short descriptions for each card type. */
 export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = {
-  oneSlotOnly: '生徒を1日1コマに限定する。集団授業はこの上限に含めない',
-  twoSlotLimit: '生徒を1日2コマまでに制限する（デフォルト）。集団授業はこの上限に含めない',
-  threeSlotLimit: '生徒を1日3コマまでに制限する。集団授業はこの上限に含めない',
-  twoConsecutive: '生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
-  twoWithGap: '生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
-  groupContinuous: '集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
-  regularLink: '通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
-  preferRegularTeacher: '通常授業の講師を優先して配置',
-  lateSlotNonExam: '高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
+  oneSlotOnly: '[絶対] 生徒を1日1コマに限定する。集団授業はこの上限に含めない',
+  twoSlotLimit: '[絶対] 生徒を1日2コマまでに制限する（デフォルト）。集団授業はこの上限に含めない',
+  threeSlotLimit: '[絶対] 生徒を1日3コマまでに制限する。集団授業はこの上限に含めない',
+  twoConsecutive: '[絶対] 生徒を2コマ連続で配置する（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  twoWithGap: '[絶対] 生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  groupContinuous: '[絶対] 集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
+  regularLink: '[絶対] 通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
+  preferRegularTeacher: '[推奨] 通常授業の講師を優先して配置',
+  lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
+  earlySlotPreference: '[推奨] 小学生を2限寄り（早いコマ）に配置しやすくする',
+  lateSlotPreference: '[推奨] 中高生を5限寄り（遅いコマ）に配置しやすくする',
 }
 
 /** Get default constraint cards for a student based on grade.
@@ -55,11 +59,17 @@ export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] =
   if (grade === '中3') {
     cards.push('groupContinuous')
   }
+  // Slot preference defaults
+  if (grade.startsWith('小')) {
+    cards.push('earlySlotPreference')
+  } else {
+    cards.push('lateSlotPreference')
+  }
   return cards
 }
 
 /** Static fallback (used when grade is unknown). */
-export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous']
+export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous', 'lateSlotPreference']
 
 /** All constraint card types in display order. */
 export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
@@ -72,6 +82,8 @@ export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
   'regularLink',
   'preferRegularTeacher',
   'lateSlotNonExam',
+  'earlySlotPreference',
+  'lateSlotPreference',
 ]
 
 /** Conflict group: scheduling pattern cards are mutually exclusive for a single student. */
@@ -89,10 +101,16 @@ export const ONE_SLOT_CONFLICT_GROUP: ConstraintCardType[] = [
   'oneSlotOnly', 'twoConsecutive', 'twoWithGap', 'groupContinuous', 'regularLink',
 ]
 
+/** Slot preference conflict group: early vs late preference are mutually exclusive. */
+export const SLOT_PREFERENCE_CONFLICT_GROUP: ConstraintCardType[] = [
+  'earlySlotPreference', 'lateSlotPreference',
+]
+
 export const CONSTRAINT_CARD_CONFLICT_GROUPS: ConstraintCardType[][] = [
   CONSTRAINT_CARD_CONFLICT_GROUP,
   DAILY_LIMIT_CONFLICT_GROUP,
   ONE_SLOT_CONFLICT_GROUP,
+  SLOT_PREFERENCE_CONFLICT_GROUP,
 ]
 
 /** Check if a grade is "exam grade" (受験生): 高3 or 中3 */
@@ -317,6 +335,30 @@ export const evaluateConstraintCards = (
           if (adjSubjects.length > 0) score += 200
         } else {
           score -= 2000 // Not adjacent to regular → strong penalty
+        }
+        break
+      }
+
+      case 'earlySlotPreference': {
+        // 小学生は2限寄り（推奨）: early slots get bonus, late slots get penalty
+        if (slotNum <= 2) {
+          score += 600
+        } else if (slotNum === 3) {
+          score += 200
+        } else {
+          score -= 300 * (slotNum - 3)
+        }
+        break
+      }
+
+      case 'lateSlotPreference': {
+        // 中高生は5限寄り（推奨）: late slots get bonus, early slots get penalty
+        if (slotNum >= 5) {
+          score += 600
+        } else if (slotNum === 4) {
+          score += 200
+        } else {
+          score -= 300 * (4 - slotNum)
         }
         break
       }

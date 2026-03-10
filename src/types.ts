@@ -17,6 +17,8 @@ export type ConstraintCardType =
   | 'twoSlotLimit'          // 2コマ上限 (default)
   | 'threeSlotLimit'        // 3コマ上限
   | 'regularLink'           // 通常授業連結
+  | 'earlySlotPreference'   // 小学生は2限寄り優先 (default)
+  | 'lateSlotPreference'    // 中高生は5限寄り優先 (default)
 
 export type Manager = {
   id: string
