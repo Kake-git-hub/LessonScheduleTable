@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.37'
+const APP_VERSION = '1.3.38'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7445,13 +7445,22 @@ const AdminPage = () => {
     // Phase 5: Auto-apply top 割当案 proposals for remaining students
     {
       const liveActual = data.actualResults ?? {}
+      const phase5ProtectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
       let proposalRound = 0
       const MAX_ROUNDS = 200
       let totalProposalsApplied = 0
 
+      console.log('[AutoAssign] Phase 5: starting proposal auto-apply, protectedSlots:', phase5ProtectedSlots.size)
+
       while (proposalRound < MAX_ROUNDS) {
         proposalRound++
-        const statusAssignments = materializeUnavailableRegularShortages(nextAssignments)
+
+        // Build merged state for proposal generation (consistent with final modal)
+        const mergedForEval: Record<string, Assignment[]> = { ...nextAssignments }
+        for (const slot of phase5ProtectedSlots) {
+          mergedForEval[slot] = data.assignments[slot] ?? []
+        }
+        const statusAssignments = materializeUnavailableRegularShortages(mergedForEval)
         const effectiveForProposals = buildEffectiveAssignments(statusAssignments, liveActual)
         const { studentsWithRemaining } = buildStudentsWithRemaining(
           statusAssignments, effectiveForProposals, liveActual, [],
@@ -7460,9 +7469,21 @@ const AdminPage = () => {
         const underAssigned = studentsWithRemaining.filter((s) =>
           s.remaining.some((e) => e.rem > 0) || Object.values(s.missingBySubj).some((c) => c > 0),
         )
+
+        if (proposalRound === 1) {
+          console.log('[AutoAssign] Phase 5: underAssigned students:', underAssigned.length,
+            underAssigned.map((s) => {
+              const rem = s.remaining.filter((e) => e.rem > 0).map((e) => `${e.subj}残${e.rem}`).join('+')
+              const miss = Object.entries(s.missingBySubj).filter(([, c]) => c > 0).map(([subj, c]) => `${subj}振${c}`).join('+')
+              return `${s.name}(${[rem, miss].filter(Boolean).join(',')})`
+            }).join(', '),
+          )
+        }
+
         if (underAssigned.length === 0) break
 
         let appliedInRound = false
+        let skipReasons: string[] = []
 
         for (const summary of underAssigned) {
           const student = data.students.find((s) => s.id === summary.studentId)
@@ -7475,26 +7496,48 @@ const AdminPage = () => {
           const uniqueSubjects = [...new Set(subjects)]
 
           for (const subj of uniqueSubjects) {
-            const latestStatus = materializeUnavailableRegularShortages(nextAssignments)
+            // Use merged state for proposal generation
+            const latestMerged: Record<string, Assignment[]> = { ...nextAssignments }
+            for (const slot of phase5ProtectedSlots) {
+              latestMerged[slot] = data.assignments[slot] ?? []
+            }
+            const latestStatus = materializeUnavailableRegularShortages(latestMerged)
             const latestEffective = buildEffectiveAssignments(latestStatus, liveActual)
             const analysis = buildRemainingSuggestions(latestStatus, latestEffective, availableSlotKeys, student, subj)
 
-            // Only non-constraint-violating force proposals
-            const validForce = analysis.force.filter((p) =>
-              p.action?.type === 'force-assign' && !p.label.startsWith('制約違反'),
-            )
+            // Only non-constraint-violating force proposals, excluding protected slots
+            const validForce = analysis.force.filter((p) => {
+              if (p.action?.type !== 'force-assign') return false
+              if (p.label.startsWith('制約違反')) return false
+              const fa = p.action as ForceAssignAction
+              if (phase5ProtectedSlots.has(fa.slot)) return false
+              return true
+            })
+
+            if (proposalRound === 1 && validForce.length === 0) {
+              const allForce = analysis.force.length
+              const constraintOnly = analysis.force.filter((p) => p.label.startsWith('制約違反')).length
+              skipReasons.push(`${student.name}/${subj}: force=${allForce}(制約${constraintOnly})`)
+            }
+
             if (validForce.length === 0) continue
 
             const action = validForce[0].action as ForceAssignAction
             const slotAssignments = [...(nextAssignments[action.slot] ?? [])]
 
-            if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) continue
+            if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) {
+              if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: already in slot ${action.slot}`)
+              continue
+            }
 
             const existingPairIndex = slotAssignments.findIndex((a) => a.teacherId === action.teacherId && !a.isGroupLesson)
 
             if (existingPairIndex >= 0) {
               const existing = slotAssignments[existingPairIndex]
-              if (existing.studentIds.length >= 2) continue
+              if (existing.studentIds.length >= 2) {
+                if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: pair full for ${action.teacherId}`)
+                continue
+              }
               slotAssignments[existingPairIndex] = {
                 ...existing,
                 studentIds: [...existing.studentIds, action.studentId],
@@ -7517,7 +7560,10 @@ const AdminPage = () => {
               }
             } else {
               const deskLimit = data.settings.deskCount ?? 0
-              if (deskLimit > 0 && slotAssignments.length >= deskLimit) continue
+              if (deskLimit > 0 && slotAssignments.length >= deskLimit) {
+                if (proposalRound === 1) skipReasons.push(`${student.name}/${subj}: desk limit ${slotAssignments.length}/${deskLimit} at ${action.slot}`)
+                continue
+              }
               slotAssignments.push({
                 teacherId: action.teacherId,
                 studentIds: [action.studentId],
@@ -7560,12 +7606,14 @@ const AdminPage = () => {
           if (appliedInRound) break
         }
 
+        if (proposalRound === 1 && !appliedInRound && skipReasons.length > 0) {
+          console.log('[AutoAssign] Phase 5: no proposals applied in round 1. Skip reasons:', skipReasons.join(' | '))
+        }
+
         if (!appliedInRound) break
       }
 
-      if (totalProposalsApplied > 0) {
-        console.log(`[AutoAssign] Auto-applied ${totalProposalsApplied} top proposals`)
-      }
+      console.log(`[AutoAssign] Phase 5: completed after ${proposalRound} rounds, applied ${totalProposalsApplied} proposals`)
     }
 
     const highlightAdded: Record<string, string[]> = {}
