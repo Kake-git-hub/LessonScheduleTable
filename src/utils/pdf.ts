@@ -496,6 +496,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           hookData.cell.styles.cellPadding = cellPadding
           hookData.cell.styles.textColor = [0, 0, 0]
           if (deskIdx === 0) {
+            hookData.cell.styles.cellPadding = { top: cellPadding + 0.4, right: cellPadding, bottom: cellPadding, left: cellPadding }
             hookData.cell.styles.lineWidth = {
               top: 0.75,
               right: 0.2,
