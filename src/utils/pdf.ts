@@ -429,7 +429,6 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     autoTable(doc, {
       startY: tableStartY,
       margin: { left: margin, right: margin },
-      pageBreak: 'avoid',
       theme: 'grid',
       styles: {
         font: 'NotoSansJP',
