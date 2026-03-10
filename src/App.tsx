@@ -31,7 +31,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.49'
+const APP_VERSION = '1.3.50'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7368,6 +7368,122 @@ const AdminPage = () => {
     await updateAssignments((current) => buildResetSchedulingState(current))
   }
 
+  /** 割振り解析データをクリップボードにコピー */
+  const copyAssignmentAnalysis = (): void => {
+    if (!data) return
+
+    const assignments = data.assignments
+    const groupLessons = data.groupLessons ?? []
+
+    // ── 1. 限別の生徒配置数集計 ──
+    const slotDistribution: Record<number, { total: number; elementary: number; secondary: number }> = {}
+    for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
+      const slotNum = getSlotNumber(slotKey)
+      if (!slotDistribution[slotNum]) slotDistribution[slotNum] = { total: 0, elementary: 0, secondary: 0 }
+      for (const a of slotAssigns) {
+        for (const sid of a.studentIds) {
+          const st = data.students.find((s) => s.id === sid)
+          if (!st) continue
+          slotDistribution[slotNum].total++
+          if (st.grade.startsWith('小')) slotDistribution[slotNum].elementary++
+          else slotDistribution[slotNum].secondary++
+        }
+      }
+    }
+
+    // ── 2. 生徒ごとの詳細 ──
+    const studentDetails = data.students.map((st) => {
+      const cards = st.constraintCards ?? getDefaultConstraintCards(st.grade)
+      // この生徒が割り当てられている全コマを収集
+      const assignedSlots: { slotKey: string; slotNum: number; date: string; teacherId: string; teacherName: string; subject: string; isRegular: boolean; constraintScore: number; scoreBreakdown: Record<string, number> }[] = []
+
+      for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
+        for (const a of slotAssigns) {
+          if (!a.studentIds.includes(st.id)) continue
+          const slotNum = getSlotNumber(slotKey)
+          const date = slotKey.split('_')[0]
+          const teacher = instructors.find((t) => t.id === a.teacherId)
+          const subject = getStudentSubject(a, st.id)
+
+          // 制約カードの再評価（各カードの個別スコアも取得）
+          const fullEval = evaluateConstraintCards(
+            st, slotKey, assignments, data.settings.slotsPerDay,
+            data.regularLessons, groupLessons, a.teacherId,
+          )
+
+          // 個別カードのスコアを算出
+          const breakdown: Record<string, number> = {}
+          for (const card of cards) {
+            const singleCardStudent = { ...st, constraintCards: [card] as ConstraintCardType[] }
+            const singleEval = evaluateConstraintCards(
+              singleCardStudent, slotKey, assignments, data.settings.slotsPerDay,
+              data.regularLessons, groupLessons, a.teacherId,
+            )
+            if (singleEval.score !== 0 || singleEval.blocked) {
+              breakdown[card] = singleEval.blocked ? -99999 : singleEval.score
+            }
+          }
+
+          assignedSlots.push({
+            slotKey,
+            slotNum,
+            date,
+            teacherId: a.teacherId,
+            teacherName: teacher?.name ?? a.teacherId,
+            subject,
+            isRegular: !!a.isRegular,
+            constraintScore: fullEval.score,
+            scoreBreakdown: breakdown,
+          })
+        }
+      }
+      assignedSlots.sort((a, b) => a.slotKey.localeCompare(b.slotKey))
+
+      // 限別の配置回数
+      const slotNumCounts: Record<number, number> = {}
+      for (const s of assignedSlots) {
+        if (!s.isRegular) slotNumCounts[s.slotNum] = (slotNumCounts[s.slotNum] ?? 0) + 1
+      }
+
+      return {
+        name: st.name,
+        grade: st.grade,
+        constraintCards: cards.map((c) => CONSTRAINT_CARD_LABELS[c]),
+        subjectSlots: st.subjectSlots,
+        totalRequested: Object.values(st.subjectSlots).reduce((s, c) => s + c, 0),
+        totalAssigned: assignedSlots.filter((s) => !s.isRegular).length,
+        slotNumCounts,
+        assignments: assignedSlots,
+      }
+    })
+
+    // ── 3. 講師ごとの稼働集計 ──
+    const teacherSummary = instructors.map((t) => {
+      const slots: string[] = []
+      for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
+        if (slotAssigns.some((a) => a.teacherId === t.id)) slots.push(slotKey)
+      }
+      return { name: t.name, totalSlots: slots.length, subjects: t.subjects }
+    })
+
+    const analysis = {
+      exportedAt: new Date().toISOString(),
+      sessionName: data.settings.name,
+      slotsPerDay: data.settings.slotsPerDay,
+      deskCount: data.settings.deskCount,
+      period: { start: data.settings.startDate, end: data.settings.endDate },
+      slotDistribution,
+      teacherSummary,
+      studentDetails,
+    }
+
+    const json = JSON.stringify(analysis, null, 2)
+    void navigator.clipboard.writeText(json).then(
+      () => alert('解析データをクリップボードにコピーしました'),
+      () => window.prompt('解析データ（手動コピー）:', json),
+    )
+  }
+
   const saveScheduleSettings = async (): Promise<void> => {
     if (!data) return
     if (!editSessionStartDate || !editSessionEndDate) {
@@ -8405,6 +8521,9 @@ service cloud.firestore {
                 })}
               >
                 PDF出力
+              </button>
+              <button className="btn secondary" type="button" onClick={copyAssignmentAnalysis}>
+                📊 解析データ
               </button>
               <button className="btn secondary" type="button" onClick={() => setShowRules((prev) => !prev)}>
                 {showRules ? '📕 ルール説明を閉じる' : '📖 ルール説明'}
