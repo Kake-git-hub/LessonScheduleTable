@@ -1,9 +1,8 @@
 /**
- * Auto-assign diagnostics: analyse why students remain unassigned after Phase 3.
+ * 自動割当の残コマ診断: Phase 3 完了後に未割当の生徒がいる原因を分析する。
  *
- * Intentionally avoids importing from autoAssign.ts to prevent circular dependencies.
- * The teacher-availability check is reproduced locally (same logic as
- * hasTeacherAvailabilityForAutoAssign in autoAssign.ts).
+ * autoAssign.ts からのインポートは循環依存を避けるため行わない。
+ * 講師出勤判定は autoAssign.ts の hasTeacherAvailabilityForAutoAssign と同じロジックをローカルで再現。
  */
 
 import type { Assignment, SessionData } from '../types'
@@ -196,7 +195,7 @@ export const diagnoseUnassignedStudents = (
         continue
       }
 
-      // Check if all suitable teachers are already occupied in this slot
+      // 適合する全講師がこのコマで他の生徒に割当済かチェック
       const usedTeacherIdsInSlot = new Set(slotAssignments.map((a) => a.teacherId))
       const freeTeachers = notCardBlocked.filter((t) => !usedTeacherIdsInSlot.has(t.id))
       if (freeTeachers.length === 0) {
@@ -211,7 +210,7 @@ export const diagnoseUnassignedStudents = (
         continue
       }
 
-      // Check if any free teacher can teach a subject with remaining demand
+      // 空き講師が残需要科目を教えられるかチェック
       const remainingSubjects = Object.entries(subjectDemand)
         .filter(([, v]) => v.remaining > 0)
         .map(([subj]) => subj)
