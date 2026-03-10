@@ -46,7 +46,7 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
   earlySlotPreference: '[推奨] 小学生を2限優先で配置しやすくする（2限 > 3限 > 4限 > 5限、1限はなるべく避ける）',
   lateSlotPreference: '[推奨] 中高生を5限以降優先で配置しやすくする（5限以降 > 4限 > 3限 > 2限 > 1限）',
-  avoidSlot1: '[推奨] 1限へのペア形成・マージを抑制し、1限配置を強く回避する（ペアボーナスを相殺）',
+  avoidSlot1: '[推奨] 1限へのペア形成を抑制する（マージは低優先で許容）',
 }
 
 /** Get default constraint cards for a student based on grade.
@@ -376,12 +376,11 @@ export const evaluateConstraintCards = (
       }
 
       case 'avoidSlot1': {
-        // 1限回避: ペアボーナス(+5000)を相殺する強いペナルティ
-        // Phase3 2人ペア: 5000 + 2×(-5500) = -6000 → 1限ペア②強く回避
-        // Phase4 マージ: 5000 + (-5500) = -500 → 1限マージも回避
-        // ソロ: -5500 → 最後の手段以外回避
+        // 1限回避: ペアボーナス(+5000)を相殺しペア形成を抑制
+        // Phase3 2人ペア: 5000 + 2×(-2600) = -200 → 1限ペア回避
+        // Phase4 マージ: 5000 + (-2600) = +2400 → 1限マージは許容（低優先）
         if (slotNum === 1) {
-          score -= 5500
+          score -= 2600
         }
         break;
       }

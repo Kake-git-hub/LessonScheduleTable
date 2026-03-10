@@ -3211,7 +3211,6 @@ const AdminPage = () => {
   const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; regularTeacherId?: string } | null>(null)
   const [, setTransferSlot] = useState<string | null>(null)
   const [showRules, setShowRules] = useState(false)
-  const [showAnalysis, setShowAnalysis] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
   const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
   // --- Actual result recording ---
@@ -7369,86 +7368,6 @@ const AdminPage = () => {
     await updateAssignments((current) => buildResetSchedulingState(current))
   }
 
-  /** 割振り解析データを構築 */
-  type AnalysisData = {
-    slotDistribution: Record<number, { total: number; elementary: number; secondary: number }>
-    studentDetails: {
-      name: string; grade: string; constraintCards: string[]
-      subjectSlots: Record<string, number>; totalRequested: number; totalAssigned: number
-      slotNumCounts: Record<number, number>
-      assignments: { slotKey: string; slotNum: number; date: string; teacherName: string; subject: string; isRegular: boolean; constraintScore: number; scoreBreakdown: Record<string, number> }[]
-    }[]
-  }
-
-  const buildAnalysisData = (): AnalysisData | null => {
-    if (!data) return null
-    const assignments = data.assignments
-    const groupLessons = data.groupLessons ?? []
-
-    const slotDistribution: Record<number, { total: number; elementary: number; secondary: number }> = {}
-    for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
-      const slotNum = getSlotNumber(slotKey)
-      if (!slotDistribution[slotNum]) slotDistribution[slotNum] = { total: 0, elementary: 0, secondary: 0 }
-      for (const a of slotAssigns) {
-        for (const sid of a.studentIds) {
-          const st = data.students.find((s) => s.id === sid)
-          if (!st) continue
-          slotDistribution[slotNum].total++
-          if (st.grade.startsWith('小')) slotDistribution[slotNum].elementary++
-          else slotDistribution[slotNum].secondary++
-        }
-      }
-    }
-
-    const studentDetails = data.students.map((st) => {
-      const cards = st.constraintCards ?? getDefaultConstraintCards(st.grade)
-      const assignedSlots: AnalysisData['studentDetails'][number]['assignments'] = []
-
-      for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
-        for (const a of slotAssigns) {
-          if (!a.studentIds.includes(st.id)) continue
-          const slotNum = getSlotNumber(slotKey)
-          const date = slotKey.split('_')[0]
-          const teacher = instructors.find((t) => t.id === a.teacherId)
-          const subject = getStudentSubject(a, st.id)
-          const fullEval = evaluateConstraintCards(
-            st, slotKey, assignments, data.settings.slotsPerDay,
-            data.regularLessons, groupLessons, a.teacherId,
-          )
-          const breakdown: Record<string, number> = {}
-          for (const card of cards) {
-            const singleCardStudent = { ...st, constraintCards: [card] as ConstraintCardType[] }
-            const singleEval = evaluateConstraintCards(
-              singleCardStudent, slotKey, assignments, data.settings.slotsPerDay,
-              data.regularLessons, groupLessons, a.teacherId,
-            )
-            if (singleEval.score !== 0 || singleEval.blocked) {
-              breakdown[card] = singleEval.blocked ? -99999 : singleEval.score
-            }
-          }
-          assignedSlots.push({ slotKey, slotNum, date, teacherName: teacher?.name ?? a.teacherId, subject, isRegular: !!a.isRegular, constraintScore: fullEval.score, scoreBreakdown: breakdown })
-        }
-      }
-      assignedSlots.sort((a, b) => a.slotKey.localeCompare(b.slotKey))
-
-      const slotNumCounts: Record<number, number> = {}
-      for (const s of assignedSlots) {
-        if (!s.isRegular) slotNumCounts[s.slotNum] = (slotNumCounts[s.slotNum] ?? 0) + 1
-      }
-
-      return {
-        name: st.name, grade: st.grade,
-        constraintCards: cards.map((c) => CONSTRAINT_CARD_LABELS[c]),
-        subjectSlots: st.subjectSlots,
-        totalRequested: Object.values(st.subjectSlots).reduce((s, c) => s + c, 0),
-        totalAssigned: assignedSlots.filter((s) => !s.isRegular).length,
-        slotNumCounts, assignments: assignedSlots,
-      }
-    })
-
-    return { slotDistribution, studentDetails }
-  }
-
   const copyAssignmentAnalysis = (): void => {
     if (!data) return
 
@@ -7558,9 +7477,31 @@ const AdminPage = () => {
     }
 
     const json = JSON.stringify(analysis, null, 2)
-    void navigator.clipboard.writeText(json).then(
-      () => alert('解析データをクリップボードにコピーしました'),
-      () => window.prompt('解析データ（手動コピー）:', json),
+    const prompt = [
+      '以下は塾の講習スケジュール自動割り当ての解析データ（JSON）です。',
+      '',
+      '【データ構造】',
+      '- slotDistribution: 限（コマ）別の生徒配置数（小学生/中高生の内訳あり）',
+      '- teacherSummary: 講師ごとの担当コマ数と対応科目',
+      '- studentDetails: 生徒ごとの割り当て詳細（申請コマ数・配置コマ数・制約スコア・限別配置数）',
+      '  - constraintScore: 制約評価の合計スコア（負の値＝制約違反の度合い）',
+      '  - scoreBreakdown: 各制約カードの個別スコア',
+      '',
+      'このデータを分析して、以下の観点でレポートしてください:',
+      '1. 配置の偏りや問題点（1限配置、特定限への集中など）',
+      '2. 申請と配置の過不足がある生徒',
+      '3. 制約スコアが低い（問題のある）配置',
+      '4. 改善提案',
+      '',
+      '追加の分析要望: ',
+      '',
+      '---',
+      '',
+    ].join('\n')
+    const clipText = prompt + json
+    void navigator.clipboard.writeText(clipText).then(
+      () => alert('AIプロンプト付き解析データをクリップボードにコピーしました。\nAIチャットに貼り付けて分析してください。'),
+      () => window.prompt('解析データ（手動コピー）:', clipText),
     )
   }
 
@@ -8603,10 +8544,7 @@ service cloud.firestore {
                 PDF出力
               </button>
               <button className="btn secondary" type="button" onClick={copyAssignmentAnalysis}>
-                � 解析コピー
-              </button>
-              <button className="btn secondary" type="button" onClick={() => setShowAnalysis(true)}>
-                📊 解析パネル
+                📊 解析データ
               </button>
               <button className="btn secondary" type="button" onClick={() => setShowRules((prev) => !prev)}>
                 {showRules ? '📕 ルール説明を閉じる' : '📖 ルール説明'}
@@ -9558,158 +9496,6 @@ service cloud.firestore {
                 </div>
             </div>
           )}
-          {showAnalysis && (() => {
-            const ad = buildAnalysisData()
-            if (!ad) return null
-            const slotsPerDay = data?.settings.slotsPerDay ?? 5
-            const slotNums = Array.from({ length: slotsPerDay }, (_, i) => i + 1)
-            // Students with non-regular assignments only (have subjectSlots)
-            const studentsWithExtra = ad.studentDetails.filter((s) => s.totalRequested > 0 || s.assignments.some((a) => !a.isRegular))
-            // Problematic: students with slot 1 assignments
-            const slot1Students = studentsWithExtra.filter((s) => s.slotNumCounts[1])
-            const totalSlot1 = ad.slotDistribution[1]?.total ?? 0
-            return (
-              <div className="status-modal-backdrop" onClick={() => setShowAnalysis(false)}>
-                <div className="status-modal" style={{ width: 'min(1200px, 100%)' }} onClick={(e) => e.stopPropagation()}>
-                  <div className="status-modal-header">
-                    <div>
-                      <h3>📊 配置解析</h3>
-                      <p>限別配置数・生徒ごとの制約スコアと配置理由</p>
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <button className="btn secondary" type="button" onClick={copyAssignmentAnalysis}>📋 JSONコピー</button>
-                      <button className="btn secondary" type="button" onClick={() => setShowAnalysis(false)}>閉じる</button>
-                    </div>
-                  </div>
-                  <div className="status-modal-body">
-                    {/* ── 限別配置サマリー ── */}
-                    <section className="analysis-section">
-                      <h4>限別配置数</h4>
-                      <table className="analysis-table">
-                        <thead>
-                          <tr>
-                            <th>限</th>
-                            {slotNums.map((n) => <th key={n}>{n}限</th>)}
-                            <th>合計</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>合計</td>
-                            {slotNums.map((n) => <td key={n} style={n === 1 && totalSlot1 > 0 ? { background: '#fef2f2', color: '#dc2626', fontWeight: 'bold' } : {}}>{ad.slotDistribution[n]?.total ?? 0}</td>)}
-                            <td style={{ fontWeight: 'bold' }}>{slotNums.reduce((s, n) => s + (ad.slotDistribution[n]?.total ?? 0), 0)}</td>
-                          </tr>
-                          <tr>
-                            <td>小学生</td>
-                            {slotNums.map((n) => <td key={n}>{ad.slotDistribution[n]?.elementary ?? 0}</td>)}
-                            <td>{slotNums.reduce((s, n) => s + (ad.slotDistribution[n]?.elementary ?? 0), 0)}</td>
-                          </tr>
-                          <tr>
-                            <td>中高生</td>
-                            {slotNums.map((n) => <td key={n}>{ad.slotDistribution[n]?.secondary ?? 0}</td>)}
-                            <td>{slotNums.reduce((s, n) => s + (ad.slotDistribution[n]?.secondary ?? 0), 0)}</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </section>
-
-                    {/* ── 1限配置の生徒（問題ケース） ── */}
-                    {slot1Students.length > 0 && (
-                      <section className="analysis-section">
-                        <h4 style={{ color: '#dc2626' }}>⚠ 1限に配置された生徒（{slot1Students.length}名）</h4>
-                        <p style={{ fontSize: '0.88em', color: '#64748b', margin: '0 0 8px' }}>
-                          avoidSlot1ペナルティ(-5500)にもかかわらず、他のコマに空きがなく1限に配置されたケース
-                        </p>
-                        {slot1Students.map((st) => {
-                          const slot1Assigns = st.assignments.filter((a) => a.slotNum === 1 && !a.isRegular)
-                          return (
-                            <div key={st.name} className="analysis-student-card" style={{ borderLeft: '3px solid #dc2626' }}>
-                              <div className="analysis-student-header">
-                                <strong>{st.name}</strong>
-                                <span className="analysis-badge">{st.grade}</span>
-                                <span style={{ fontSize: '0.85em', color: '#64748b' }}>
-                                  申請: {st.totalRequested}コマ / 配置: {st.totalAssigned}コマ / 1限: {st.slotNumCounts[1] ?? 0}回
-                                </span>
-                              </div>
-                              <div className="analysis-slot-bar">
-                                {slotNums.map((n) => {
-                                  const cnt = st.slotNumCounts[n] ?? 0
-                                  return cnt > 0 ? <span key={n} className={`analysis-slot-chip${n === 1 ? ' danger' : ''}`}>{n}限×{cnt}</span> : null
-                                })}
-                              </div>
-                              <table className="analysis-table compact">
-                                <thead>
-                                  <tr><th>日付</th><th>限</th><th>講師</th><th>科目</th><th>スコア</th><th>内訳</th></tr>
-                                </thead>
-                                <tbody>
-                                  {slot1Assigns.map((a) => (
-                                    <tr key={a.slotKey} style={{ background: '#fef2f2' }}>
-                                      <td>{a.date.slice(5)}</td>
-                                      <td>{a.slotNum}限</td>
-                                      <td>{a.teacherName}</td>
-                                      <td>{a.subject}</td>
-                                      <td style={{ color: a.constraintScore < 0 ? '#dc2626' : '#16a34a', fontWeight: 'bold' }}>{a.constraintScore}</td>
-                                      <td style={{ fontSize: '0.82em' }}>{Object.entries(a.scoreBreakdown).map(([k, v]) => `${CONSTRAINT_CARD_LABELS[k as ConstraintCardType] ?? k}:${v}`).join(', ')}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )
-                        })}
-                      </section>
-                    )}
-
-                    {/* ── 追加コマのある全生徒一覧 ── */}
-                    <section className="analysis-section">
-                      <h4>追加コマ配置の全生徒（{studentsWithExtra.length}名）</h4>
-                      {studentsWithExtra.map((st) => {
-                        const nonRegular = st.assignments.filter((a) => !a.isRegular)
-                        if (nonRegular.length === 0) return null
-                        const hasSlot1 = (st.slotNumCounts[1] ?? 0) > 0
-                        return (
-                          <details key={st.name} className="analysis-student-card" style={hasSlot1 ? { borderLeft: '3px solid #f59e0b' } : {}}>
-                            <summary className="analysis-student-header" style={{ cursor: 'pointer' }}>
-                              <strong>{st.name}</strong>
-                              <span className="analysis-badge">{st.grade}</span>
-                              <span style={{ fontSize: '0.85em', color: '#64748b' }}>
-                                申請: {st.totalRequested} / 配置: {st.totalAssigned}
-                                {st.totalAssigned > st.totalRequested && <span style={{ color: '#dc2626', marginLeft: '4px' }}>超過+{st.totalAssigned - st.totalRequested}</span>}
-                                {st.totalAssigned < st.totalRequested && <span style={{ color: '#f59e0b', marginLeft: '4px' }}>不足{st.totalAssigned - st.totalRequested}</span>}
-                              </span>
-                              <span className="analysis-slot-bar" style={{ marginLeft: 'auto' }}>
-                                {slotNums.map((n) => {
-                                  const cnt = st.slotNumCounts[n] ?? 0
-                                  return cnt > 0 ? <span key={n} className={`analysis-slot-chip${n === 1 ? ' danger' : ''}`}>{n}限×{cnt}</span> : null
-                                })}
-                              </span>
-                            </summary>
-                            <table className="analysis-table compact">
-                              <thead>
-                                <tr><th>日付</th><th>限</th><th>講師</th><th>科目</th><th>スコア</th><th>内訳</th></tr>
-                              </thead>
-                              <tbody>
-                                {nonRegular.map((a) => (
-                                  <tr key={a.slotKey} style={a.slotNum === 1 ? { background: '#fef2f2' } : a.constraintScore < -90000 ? { background: '#fffbeb' } : {}}>
-                                    <td>{a.date.slice(5)}</td>
-                                    <td>{a.slotNum}限</td>
-                                    <td>{a.teacherName}</td>
-                                    <td>{a.subject}</td>
-                                    <td style={{ color: a.constraintScore < 0 ? '#dc2626' : '#16a34a', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{a.constraintScore === -99999 ? '-∞' : a.constraintScore}</td>
-                                    <td style={{ fontSize: '0.82em' }}>{Object.entries(a.scoreBreakdown).map(([k, v]) => `${CONSTRAINT_CARD_LABELS[k as ConstraintCardType] ?? k}:${v === -99999 ? '-∞' : v}`).join(', ')}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </details>
-                        )
-                      })}
-                    </section>
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
         </>
       )}
 
