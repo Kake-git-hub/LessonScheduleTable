@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.45'
+const APP_VERSION = '1.3.46'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -125,11 +125,15 @@ type RegularOccurrenceRef = {
   makeupInfo: RegularMakeupInfo
 }
 
+type AttendanceSuggestionItem = { teacherName: string; subject: string; slots: string[] }
+
 type PlacementAnalysis = {
   force: StatusProposal[]
   substitute: StatusProposal[]
   teacher: StatusProposal[]
   student: StatusProposal[]
+  rawTeacher: AttendanceSuggestionItem[]
+  rawStudent: AttendanceSuggestionItem[]
   cards: StatusProposal[]
   blockers: string[]
 }
@@ -5128,30 +5132,30 @@ const AdminPage = () => {
 
   const buildAttendanceAdjustmentProposals = (
     kind: 'teacher' | 'student',
-    items: Array<{ teacherName: string; subject: string; slots: string[] }>,
+    items: AttendanceSuggestionItem[],
   ): StatusProposal[] => {
-    const grouped = new Map<string, { teacherNames: string[]; subject: string; slots: string[] }>()
-
+    // Group by teacher name, merging subjects and slots
+    const grouped = new Map<string, { subjects: Set<string>; slots: Set<string> }>()
     for (const item of items) {
-      const limitedSlots = [...new Set(item.slots)].slice(0, 5)
-      const key = `${item.subject}|${limitedSlots.join('|')}`
-      const existing = grouped.get(key)
+      const existing = grouped.get(item.teacherName)
       if (existing) {
-        existing.teacherNames.push(item.teacherName)
+        existing.subjects.add(item.subject)
+        for (const s of item.slots) existing.slots.add(s)
       } else {
-        grouped.set(key, { teacherNames: [item.teacherName], subject: item.subject, slots: limitedSlots })
+        grouped.set(item.teacherName, { subjects: new Set([item.subject]), slots: new Set(item.slots) })
       }
     }
-
-    return [...grouped.values()]
-      .map((item) => {
-        const nameSummary = summarizeProposalNames(item.teacherNames)
-        const slotSummary = summarizeProposalSlots(item.slots)
-        return kind === 'teacher'
-          ? toStatusProposal(`講師追加案: ${nameSummary} / ${slotSummary} / ${item.subject}`)
-          : toStatusProposal(`出席緩和案: ${slotSummary} / ${nameSummary} / ${item.subject}`)
-      })
-      .slice(0, 5)
+    // Merge into one line per kind
+    const allTeachers = [...grouped.keys()]
+    const allSubjects = [...new Set(items.map((i) => i.subject))]
+    const allSlots = [...new Set(items.flatMap((i) => i.slots))]
+    if (allTeachers.length === 0) return []
+    const nameSummary = summarizeProposalNames(allTeachers)
+    const slotSummary = summarizeProposalSlots(allSlots, 3)
+    const subjectSummary = allSubjects.join('/')
+    return kind === 'teacher'
+      ? [toStatusProposal(`講師追加案: ${nameSummary}の出席可能日を追加 (${subjectSummary}) [${slotSummary}]`)]
+      : [toStatusProposal(`出席緩和案: 生徒の出席可能日を追加 (${subjectSummary}) [${slotSummary}]`)]
   }
 
   type NoMakeupReason = 'no_student' | 'no_teacher' | 'no_match'
@@ -5513,6 +5517,8 @@ const AdminPage = () => {
       if (blockAssignmentsUntilShortagesResolved) {
         proposalPool.push(toStatusProposal(STATUS_RESOLVE_SHORTAGE_FIRST))
       } else if (currentStudent) {
+        const rawTeacherItems: AttendanceSuggestionItem[] = []
+        const rawStudentItems: AttendanceSuggestionItem[] = []
         for (const [subject, count] of missingEntries) {
           const subjectDemands = regularMissingDemands.filter((demand) => demand.subject === subject)
           let handled = 0
@@ -5536,12 +5542,12 @@ const AdminPage = () => {
             proposalPool.push(
               ...analysis.force,
               ...analysis.substitute,
-              ...analysis.teacher,
-              ...analysis.student,
-              ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+              ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.rawTeacher.length === 0 && analysis.rawStudent.length === 0
                 ? buildSpecificBlockerProposals(analysis.blockers)
                 : []),
             )
+            rawTeacherItems.push(...analysis.rawTeacher)
+            rawStudentItems.push(...analysis.rawStudent)
           }
 
           if (handled >= count) continue
@@ -5550,24 +5556,24 @@ const AdminPage = () => {
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...analysis.teacher,
-            ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.rawTeacher.length === 0 && analysis.rawStudent.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
+          rawTeacherItems.push(...analysis.rawTeacher)
+          rawStudentItems.push(...analysis.rawStudent)
         }
         for (const special of specials) {
           const analysis = buildRemainingSuggestions(assignmentState, effectiveAssignments, availableSlotKeys, currentStudent, special.subj)
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...analysis.teacher,
-            ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.rawTeacher.length === 0 && analysis.rawStudent.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
+          rawTeacherItems.push(...analysis.rawTeacher)
+          rawStudentItems.push(...analysis.rawStudent)
         }
         for (const demand of studentMakeups) {
           const teacher = data.teachers.find((entry) => entry.id === demand.teacherId)
@@ -5587,13 +5593,16 @@ const AdminPage = () => {
           proposalPool.push(
             ...analysis.force,
             ...analysis.substitute,
-            ...analysis.teacher,
-            ...analysis.student,
-            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.teacher.length === 0 && analysis.student.length === 0
+            ...(analysis.force.length === 0 && analysis.substitute.length === 0 && analysis.rawTeacher.length === 0 && analysis.rawStudent.length === 0
               ? buildSpecificBlockerProposals(analysis.blockers)
               : []),
           )
+          rawTeacherItems.push(...analysis.rawTeacher)
+          rawStudentItems.push(...analysis.rawStudent)
         }
+        // Build grouped attendance adjustment proposals once across all subjects
+        proposalPool.push(...buildAttendanceAdjustmentProposals('teacher', rawTeacherItems))
+        proposalPool.push(...buildAttendanceAdjustmentProposals('student', rawStudentItems))
       }
       if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_teacher')) proposalPool.push(toStatusProposal(STATUS_ADD_TEACHER))
       if (proposalPool.length === 0 && student.noMakeupReasons.includes('no_student')) proposalPool.push(toStatusProposal(STATUS_ADD_STUDENT))
@@ -5763,7 +5772,7 @@ const AdminPage = () => {
     candidateTeachers: Teacher[],
     options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand; allowExistingTeacherPair?: boolean },
   ): PlacementAnalysis => {
-    if (!data) return { force: [], substitute: [], teacher: [], student: [], cards: [], blockers: [] }
+    if (!data) return { force: [], substitute: [], teacher: [], student: [], rawTeacher: [], rawStudent: [], cards: [], blockers: [] }
 
     const forceSuggestions = new Map<string, StatusProposal>()
     const substituteSuggestions = new Map<string, StatusProposal>()
@@ -5949,11 +5958,15 @@ const AdminPage = () => {
       })
       .slice(0, 5)
 
+    const rawTeacherItems = [...teacherSuggestions.values()]
+    const rawStudentItems = [...studentSuggestions.values()]
     return {
       force,
       substitute,
-      teacher: buildAttendanceAdjustmentProposals('teacher', [...teacherSuggestions.values()]),
-      student: buildAttendanceAdjustmentProposals('student', [...studentSuggestions.values()]),
+      teacher: buildAttendanceAdjustmentProposals('teacher', rawTeacherItems),
+      student: buildAttendanceAdjustmentProposals('student', rawStudentItems),
+      rawTeacher: rawTeacherItems,
+      rawStudent: rawStudentItems,
       cards: [...cardSuggestions.values()].slice(0, 5),
       blockers: [...blockerReasons].slice(0, 8),
     }
@@ -9123,21 +9136,6 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => void refreshSessionFromMaster()}
-                disabled={masterRefreshLoading}
-                title="管理データの修正内容を今のセッションへ再同期し、講師不足モーダルを最新状態に更新"
-              >
-                {masterRefreshLoading ? '管理データ再同期中...' : '管理データ再同期'}
-              </button>
-              <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>
-                デバッグコピー
-              </button>
-              <button className="btn secondary" type="button" onClick={() => void savePdfComparisonBaseline()}>
-                PDF比較基準を保存
-              </button>
-              <button
-                className="btn secondary"
-                type="button"
                 onClick={() => void exportSchedulePdf({
                   classroomName: currentClassroomName,
                   sessionName: data.settings.name,
@@ -9147,7 +9145,7 @@ service cloud.firestore {
                   deskCount: data.settings.deskCount,
                   holidays: data.settings.holidays,
                   assignments: data.assignments,
-                  baselineAssignments: data.pdfComparisonBaseline?.assignments,
+                  baselineAssignments: undefined,
                   getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
                   getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
                   getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
@@ -9157,9 +9155,6 @@ service cloud.firestore {
                 })}
               >
                 PDF出力
-              </button>
-              <button className="btn secondary" type="button" onClick={() => setShowAnalytics((prev) => !prev)}>
-                {showAnalytics ? '分析を閉じる' : '分析を表示'}
               </button>
               <button className="btn secondary" type="button" onClick={() => setShowRules((prev) => !prev)}>
                 {showRules ? '📕 ルール説明を閉じる' : '📖 ルール説明'}
@@ -10031,8 +10026,6 @@ service cloud.firestore {
                     <p>{statusModal.summary}</p>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>デバッグコピー</button>
-                    <button className="btn secondary" type="button" onClick={() => runModalDiagnostics()}>📊 分析</button>
                     <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
                   </div>
                 </div>
@@ -10111,44 +10104,6 @@ service cloud.firestore {
                     </section>
                   ))}
                 </div>
-                {(modalDiagnostics.length > 0 || autoAssignDiagnostics.length > 0) && (
-                  <div className="diagnostic-summary-section">
-                    <h4>残コマ診断</h4>
-                    {(modalDiagnostics.length > 0 ? modalDiagnostics : autoAssignDiagnostics).map((diag) => {
-                      const remaining = Object.values(diag.subjectDemand).reduce((s, v) => s + v.remaining, 0)
-                      const subjectParts = Object.entries(diag.subjectDemand)
-                        .filter(([, v]) => v.remaining > 0)
-                        .map(([subj, v]) => `${subj} 残${v.remaining}コマ`)
-                        .join(' / ')
-                      if (remaining === 0) return null
-                      const reasonEntries = Object.entries(diag.blockReasons)
-                        .filter(([, count]) => count > 0)
-                        .sort(([, a], [, b]) => b - a)
-                      return (
-                        <div key={diag.studentId} className="diagnostic-summary">
-                          <div className="diagnostic-summary-title">
-                            <span>{diag.studentName}（{diag.grade}）</span>
-                            <span className="diagnostic-subject-info">{subjectParts}</span>
-                          </div>
-                          <div className="diagnostic-bottleneck">
-                            ボトルネック: {blockReasonLabel(diag.primaryBottleneck)}
-                          </div>
-                          {reasonEntries.length > 0 && (
-                            <ul className="diagnostic-reasons">
-                              {reasonEntries.map(([reason, count]) => (
-                                <li key={reason}>
-                                  <span className="diagnostic-reason-label">{blockReasonLabel(reason)}</span>
-                                  <span className="diagnostic-reason-count">{count}コマ</span>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
             </div>
           )}
         </>
