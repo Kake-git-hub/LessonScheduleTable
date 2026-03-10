@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.43'
+const APP_VERSION = '1.3.44'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7443,6 +7443,128 @@ const AdminPage = () => {
     const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup, diagnostics } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
     setAutoAssignDiagnostics(diagnostics)
 
+    // Phase 6: Auto-assign teacher shortages (runs before Phase 5 so shortages
+    // are resolved before remaining-student proposals are generated)
+    // Priority: (1) both students' subjects match, (2) one matches, (3) neither matches (担当外)
+    // Tiebreaker: same day pairing > random
+    {
+      const phase6StatusAssignments = materializeUnavailableRegularShortages(nextAssignments)
+      const shortages = collectTeacherShortageItems(phase6StatusAssignments)
+      let phase6Applied = 0
+      const phase6Skipped: string[] = []
+      const phase6NewTeachersBySlot: Record<string, Set<string>> = {}
+
+      for (const item of shortages) {
+        const slotAssignments = phase6StatusAssignments[item.slot] ?? []
+        const usedTeacherIds = new Set(
+          slotAssignments
+            .filter((a) => a !== item.assignment)
+            .map((a) => a.teacherId)
+            .filter(Boolean),
+        )
+        // Include teachers already assigned by Phase 6 in the same slot
+        for (const tid of (phase6NewTeachersBySlot[item.slot] ?? [])) usedTeacherIds.add(tid)
+
+        const students = item.assignment.studentIds
+          .map((sid) => data.students.find((s) => s.id === sid))
+          .filter(Boolean) as Student[]
+        if (students.length === 0) {
+          phase6Skipped.push(`${slotLabel(item.slot, isMendan, mendanStart)}: 生徒なし`)
+          continue
+        }
+
+        // Rank each available teacher
+        type Phase6Candidate = { teacherId: string; subjectMatchCount: number; sameDayPaired: boolean; randomTie: number }
+        const candidates: Phase6Candidate[] = []
+
+        for (const teacher of data.teachers) {
+          if (usedTeacherIds.has(teacher.id)) continue
+          if (!hasInstructorAvailability('teacher', teacher.id, item.slot)) continue
+          if (students.some((s) => constraintFor(data.constraints, teacher.id, s.id) === 'incompatible')) continue
+
+          let matchCount = 0
+          for (const student of students) {
+            const subj = item.assignment.studentSubjects?.[student.id] ?? item.assignment.subject
+            if (canTeachSubject(teacher.subjects, student.grade, subj)) matchCount++
+          }
+
+          const [date] = item.slot.split('_')
+          const sameDayPaired = Object.entries(nextAssignments).some(([sk, assigns]) =>
+            sk.startsWith(`${date}_`) && sk !== item.slot && assigns.some((a) => a.teacherId === teacher.id),
+          )
+
+          candidates.push({
+            teacherId: teacher.id,
+            subjectMatchCount: matchCount,
+            sameDayPaired,
+            randomTie: Math.random(),
+          })
+        }
+
+        if (candidates.length === 0) {
+          phase6Skipped.push(`${slotLabel(item.slot, isMendan, mendanStart)}: 候補なし`)
+          continue
+        }
+
+        candidates.sort((a, b) => {
+          if (a.subjectMatchCount !== b.subjectMatchCount) return b.subjectMatchCount - a.subjectMatchCount
+          if (a.sameDayPaired !== b.sameDayPaired) return a.sameDayPaired ? -1 : 1
+          return a.randomTie - b.randomTie
+        })
+
+        const best = candidates[0]
+        const originalTeacherId = item.assignment.teacherUnavailableOriginalId
+
+        // Match assignment back to nextAssignments using index correspondence:
+        // materializeUnavailableRegularShortages copies existing assignments at
+        // indices 0..N-1 and appends materialized shortages at N..M.
+        const materializedSlot = phase6StatusAssignments[item.slot] ?? []
+        const materializedIndex = materializedSlot.indexOf(item.assignment)
+        const originalSlotAssignments = nextAssignments[item.slot] ?? []
+
+        const substituteInfo = originalTeacherId
+          ? item.assignment.studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
+              acc[studentId] = item.assignment.regularSubstituteInfo?.[studentId] ?? {
+                regularTeacherId: originalTeacherId,
+                dayOfWeek: getSlotDayOfWeek(item.slot),
+                slotNumber: getSlotNumber(item.slot),
+                date: item.slot.split('_')[0],
+              }
+              return acc
+            }, {})
+          : undefined
+
+        const resolvedAssignment = normalizeAssignment({
+          ...item.assignment,
+          teacherId: best.teacherId,
+          teacherUnassignedReason: undefined,
+          teacherUnavailableOriginalId: undefined,
+          ...(substituteInfo ? { regularSubstituteInfo: substituteInfo } : {}),
+        })
+
+        if (materializedIndex >= 0 && materializedIndex < originalSlotAssignments.length) {
+          // Existing assignment in nextAssignments — update in place
+          const updated = [...originalSlotAssignments]
+          updated[materializedIndex] = resolvedAssignment
+          nextAssignments[item.slot] = updated
+        } else {
+          // Materialized shortage — add new assignment
+          nextAssignments[item.slot] = [...originalSlotAssignments, resolvedAssignment]
+        }
+
+        if (!phase6NewTeachersBySlot[item.slot]) phase6NewTeachersBySlot[item.slot] = new Set()
+        phase6NewTeachersBySlot[item.slot].add(best.teacherId)
+
+        const teacherName = data.teachers.find((t) => t.id === best.teacherId)?.name ?? best.teacherId
+        const matchLabel = best.subjectMatchCount === students.length ? '全科目対応' : best.subjectMatchCount > 0 ? '一部科目対応' : '担当外'
+        changeLog.push({ slot: item.slot, action: '講師自動代行', detail: `${teacherName}（${matchLabel}）` })
+        phase6Applied++
+      }
+
+      if (phase6Skipped.length > 0) console.log('[AutoAssign] Phase 6: skipped:', phase6Skipped.join(' | '))
+      console.log(`[AutoAssign] Phase 6: auto-assigned ${phase6Applied} teacher shortages`)
+    }
+
     // Phase 5: Auto-apply top 割当案 proposals for remaining students
     // Protected slots (manual edits / recorded results) are allowed — Phase 5
     // tracks its own overlay so the final merge preserves both user edits AND
@@ -7791,135 +7913,6 @@ const AdminPage = () => {
       }
 
       console.log(`[AutoAssign] Phase 5b: completed after ${makeupRound} rounds, applied ${totalMakeupApplied} makeup proposals`)
-    }
-
-    // Phase 6: Auto-assign teacher shortages
-    // Priority: (1) both students' subjects match, (2) one matches, (3) neither matches (担当外)
-    // Tiebreaker: same day pairing > random
-    {
-      const phase6StatusAssignments = materializeUnavailableRegularShortages(nextAssignments)
-      const shortages = collectTeacherShortageItems(phase6StatusAssignments)
-      let phase6Applied = 0
-      const phase6Skipped: string[] = []
-
-      for (const item of shortages) {
-        const slotAssignments = phase6StatusAssignments[item.slot] ?? []
-        const usedTeacherIds = new Set(
-          slotAssignments
-            .filter((a) => a !== item.assignment)
-            .map((a) => a.teacherId)
-            .filter(Boolean),
-        )
-        const students = item.assignment.studentIds
-          .map((sid) => data.students.find((s) => s.id === sid))
-          .filter(Boolean) as Student[]
-        if (students.length === 0) {
-          phase6Skipped.push(`${slotLabel(item.slot, isMendan, mendanStart)}: 生徒なし`)
-          continue
-        }
-
-        // Rank each available teacher
-        type Phase6Candidate = { teacherId: string; subjectMatchCount: number; sameDayPaired: boolean; randomTie: number }
-        const candidates: Phase6Candidate[] = []
-
-        for (const teacher of data.teachers) {
-          if (usedTeacherIds.has(teacher.id)) continue
-          if (!hasInstructorAvailability('teacher', teacher.id, item.slot)) continue
-          if (students.some((s) => constraintFor(data.constraints, teacher.id, s.id) === 'incompatible')) continue
-
-          // Count how many students' subjects this teacher can cover
-          let matchCount = 0
-          for (const student of students) {
-            const subj = item.assignment.studentSubjects?.[student.id] ?? item.assignment.subject
-            if (canTeachSubject(teacher.subjects, student.grade, subj)) matchCount++
-          }
-
-          // Check if teacher is already paired with any student on same day
-          const [date] = item.slot.split('_')
-          const sameDayPaired = Object.entries(nextAssignments).some(([sk, assigns]) =>
-            sk.startsWith(`${date}_`) && sk !== item.slot && assigns.some((a) => a.teacherId === teacher.id),
-          )
-
-          candidates.push({
-            teacherId: teacher.id,
-            subjectMatchCount: matchCount,
-            sameDayPaired,
-            randomTie: Math.random(),
-          })
-        }
-
-        if (candidates.length === 0) {
-          phase6Skipped.push(`${slotLabel(item.slot, isMendan, mendanStart)}: 候補なし`)
-          continue
-        }
-
-        // Sort: more subject matches first, then same-day paired, then random
-        candidates.sort((a, b) => {
-          if (a.subjectMatchCount !== b.subjectMatchCount) return b.subjectMatchCount - a.subjectMatchCount
-          if (a.sameDayPaired !== b.sameDayPaired) return a.sameDayPaired ? -1 : 1
-          return a.randomTie - b.randomTie
-        })
-
-        const best = candidates[0]
-        const originalTeacherId = item.assignment.teacherUnavailableOriginalId
-
-        // Apply: find the assignment in nextAssignments and assign the teacher
-        const targetSlotAssignments = [...(nextAssignments[item.slot] ?? [])]
-        const assignmentIndex = targetSlotAssignments.findIndex((a) => a === item.assignment)
-        // If the shortage came from materializeUnavailableRegularShortages, the assignment
-        // exists in phase6StatusAssignments but may not be in nextAssignments yet.
-        // In that case, we append the assignment to nextAssignments.
-        if (assignmentIndex >= 0) {
-          const substituteInfo = originalTeacherId
-            ? item.assignment.studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
-                acc[studentId] = item.assignment.regularSubstituteInfo?.[studentId] ?? {
-                  regularTeacherId: originalTeacherId,
-                  dayOfWeek: getSlotDayOfWeek(item.slot),
-                  slotNumber: getSlotNumber(item.slot),
-                  date: item.slot.split('_')[0],
-                }
-                return acc
-              }, {})
-            : undefined
-          targetSlotAssignments[assignmentIndex] = normalizeAssignment({
-            ...item.assignment,
-            teacherId: best.teacherId,
-            teacherUnassignedReason: undefined,
-            teacherUnavailableOriginalId: undefined,
-            ...(substituteInfo ? { regularSubstituteInfo: substituteInfo } : {}),
-          })
-          nextAssignments[item.slot] = targetSlotAssignments
-        } else {
-          // Materialized shortage — add new assignment
-          const substituteInfo = originalTeacherId
-            ? item.assignment.studentIds.reduce<Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>>((acc, studentId) => {
-                acc[studentId] = {
-                  regularTeacherId: originalTeacherId,
-                  dayOfWeek: getSlotDayOfWeek(item.slot),
-                  slotNumber: getSlotNumber(item.slot),
-                  date: item.slot.split('_')[0],
-                }
-                return acc
-              }, {})
-            : undefined
-          const newAssignment = normalizeAssignment({
-            ...item.assignment,
-            teacherId: best.teacherId,
-            teacherUnassignedReason: undefined,
-            teacherUnavailableOriginalId: undefined,
-            ...(substituteInfo ? { regularSubstituteInfo: substituteInfo } : {}),
-          })
-          nextAssignments[item.slot] = [...(nextAssignments[item.slot] ?? []), newAssignment]
-        }
-
-        const teacherName = data.teachers.find((t) => t.id === best.teacherId)?.name ?? best.teacherId
-        const matchLabel = best.subjectMatchCount === students.length ? '全科目対応' : best.subjectMatchCount > 0 ? '一部科目対応' : '担当外'
-        changeLog.push({ slot: item.slot, action: '講師自動代行', detail: `${teacherName}（${matchLabel}）` })
-        phase6Applied++
-      }
-
-      if (phase6Skipped.length > 0) console.log('[AutoAssign] Phase 6: skipped:', phase6Skipped.join(' | '))
-      console.log(`[AutoAssign] Phase 6: auto-assigned ${phase6Applied} teacher shortages`)
     }
 
     const highlightAdded: Record<string, string[]> = {}
