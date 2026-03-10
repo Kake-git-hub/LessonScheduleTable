@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.39'
+const APP_VERSION = '1.3.40'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7443,6 +7443,10 @@ const AdminPage = () => {
     setAutoAssignDiagnostics(diagnostics)
 
     // Phase 5: Auto-apply top 割当案 proposals for remaining students
+    // Protected slots (manual edits / recorded results) are allowed — Phase 5
+    // tracks its own overlay so the final merge preserves both user edits AND
+    // Phase 5 additions.
+    const phase5ProtectedOverlay: Record<string, Assignment[]> = {}
     {
       const liveActual = data.actualResults ?? {}
       const phase5ProtectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
@@ -7455,10 +7459,11 @@ const AdminPage = () => {
       while (proposalRound < MAX_ROUNDS) {
         proposalRound++
 
-        // Build merged state for proposal generation (consistent with final modal)
+        // Build merged state: auto-assign output + protected slot overrides
+        // For protected slots Phase 5 already modified, use the overlay
         const mergedForEval: Record<string, Assignment[]> = { ...nextAssignments }
         for (const slot of phase5ProtectedSlots) {
-          mergedForEval[slot] = data.assignments[slot] ?? []
+          mergedForEval[slot] = phase5ProtectedOverlay[slot] ?? data.assignments[slot] ?? []
         }
         const statusAssignments = materializeUnavailableRegularShortages(mergedForEval)
         const effectiveForProposals = buildEffectiveAssignments(statusAssignments, liveActual)
@@ -7496,35 +7501,36 @@ const AdminPage = () => {
           const uniqueSubjects = [...new Set(subjects)]
 
           for (const subj of uniqueSubjects) {
-            // Use merged state for proposal generation
+            // Use merged state for proposal generation (protected slots use overlay)
             const latestMerged: Record<string, Assignment[]> = { ...nextAssignments }
             for (const slot of phase5ProtectedSlots) {
-              latestMerged[slot] = data.assignments[slot] ?? []
+              latestMerged[slot] = phase5ProtectedOverlay[slot] ?? data.assignments[slot] ?? []
             }
             const latestStatus = materializeUnavailableRegularShortages(latestMerged)
             const latestEffective = buildEffectiveAssignments(latestStatus, liveActual)
             const analysis = buildRemainingSuggestions(latestStatus, latestEffective, availableSlotKeys, student, subj)
 
-            // Only non-constraint-violating force proposals, excluding protected slots
+            // Only non-constraint-violating force proposals (protected slots are now allowed)
             const validForce = analysis.force.filter((p) => {
               if (p.action?.type !== 'force-assign') return false
               if (p.label.startsWith('制約違反')) return false
-              const fa = p.action as ForceAssignAction
-              if (phase5ProtectedSlots.has(fa.slot)) return false
               return true
             })
 
             if (validForce.length === 0) {
               const allForce = analysis.force.length
               const constraintOnly = analysis.force.filter((p) => p.label.startsWith('制約違反')).length
-              const protectedOnly = analysis.force.filter((p) => p.action?.type === 'force-assign' && phase5ProtectedSlots.has((p.action as ForceAssignAction).slot)).length
-              skipReasons.push(`${student.name}/${subj}: total=${allForce}(制約違反${constraintOnly},保護${protectedOnly})`)
+              skipReasons.push(`${student.name}/${subj}: total=${allForce}(制約違反${constraintOnly})`)
               continue
             }
 
             const action = validForce[0].action as ForceAssignAction
-            // Apply against merged state (not raw nextAssignments) for consistency
-            const slotAssignments = [...(mergedForEval[action.slot] ?? [])]
+            const isProtectedSlot = phase5ProtectedSlots.has(action.slot)
+            // For protected slots use overlay/data.assignments; for others use nextAssignments
+            const slotSource = isProtectedSlot
+              ? (phase5ProtectedOverlay[action.slot] ?? data.assignments[action.slot] ?? [])
+              : (mergedForEval[action.slot] ?? [])
+            const slotAssignments = [...slotSource]
 
             if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) {
               skipReasons.push(`${student.name}/${subj}: already in slot ${action.slot}`)
@@ -7575,7 +7581,12 @@ const AdminPage = () => {
               })
             }
 
-            nextAssignments[action.slot] = slotAssignments
+            // Write back to the correct target
+            if (isProtectedSlot) {
+              phase5ProtectedOverlay[action.slot] = slotAssignments
+            } else {
+              nextAssignments[action.slot] = slotAssignments
+            }
 
             // Track for highlighting
             const appliedAssignment = slotAssignments.find((a) =>
@@ -7595,7 +7606,7 @@ const AdminPage = () => {
             }
 
             totalProposalsApplied++
-            console.log(`[AutoAssign] Phase 5 round ${proposalRound}: applied ${student.name}/${subj} → ${action.slot}`)
+            console.log(`[AutoAssign] Phase 5 round ${proposalRound}: applied ${student.name}/${subj} → ${action.slot}${isProtectedSlot ? ' (protected)' : ''}`)
             changeLog.push({
               slot: action.slot,
               action: '割当案自動適用',
@@ -7614,7 +7625,7 @@ const AdminPage = () => {
         }
       }
 
-      console.log(`[AutoAssign] Phase 5: completed after ${proposalRound} rounds, applied ${totalProposalsApplied} proposals`)
+      console.log(`[AutoAssign] Phase 5: completed after ${proposalRound} rounds, applied ${totalProposalsApplied} proposals (${Object.keys(phase5ProtectedOverlay).length} protected slots modified)`)
     }
 
     const highlightAdded: Record<string, string[]> = {}
@@ -7667,16 +7678,18 @@ const AdminPage = () => {
     const protectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
     const mergedAssignments = { ...nextAssignments }
     for (const slot of protectedSlots) {
-      mergedAssignments[slot] = data.assignments[slot] ?? []
+      // Phase 5 overlay takes precedence — it already includes the original data
+      mergedAssignments[slot] = phase5ProtectedOverlay[slot] ?? data.assignments[slot] ?? []
     }
     const baseAutoAssignReport = buildCurrentStatusReport(mergedAssignments)
 
     await updateAssignments((current) => {
       // Merge: auto-assign results for untouched slots only.
       // Keep recorded slots and manually modified slots exactly as the user left them.
+      // Phase 5 overlay includes additions to protected slots.
       const mergedAssignments = { ...nextAssignments }
       for (const slot of protectedSlots) {
-        mergedAssignments[slot] = current.assignments[slot] ?? []
+        mergedAssignments[slot] = phase5ProtectedOverlay[slot] ?? current.assignments[slot] ?? []
       }
       return {
         ...current,
