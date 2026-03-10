@@ -28,6 +28,8 @@ export type StudentDiagnostic = {
     constraintCardBlocked: number
     deskLimitReached: number
     alreadyAssignedInSlot: number
+    allTeachersOccupied: number
+    noRemainingSubjectTeacher: number
     demandAlreadyMet: number
   }
   primaryBottleneck: string
@@ -88,6 +90,8 @@ export const diagnoseUnassignedStudents = (
       constraintCardBlocked: 0,
       deskLimitReached: 0,
       alreadyAssignedInSlot: 0,
+      allTeachersOccupied: 0,
+      noRemainingSubjectTeacher: 0,
       demandAlreadyMet: 0,
     }
 
@@ -192,6 +196,40 @@ export const diagnoseUnassignedStudents = (
         continue
       }
 
+      // Check if all suitable teachers are already occupied in this slot
+      const usedTeacherIdsInSlot = new Set(slotAssignments.map((a) => a.teacherId))
+      const freeTeachers = notCardBlocked.filter((t) => !usedTeacherIdsInSlot.has(t.id))
+      if (freeTeachers.length === 0) {
+        blockReasons.allTeachersOccupied++
+        slotDetails.push({
+          slot,
+          slotLabel: label,
+          blocked: true,
+          reason: 'allTeachersOccupied',
+          detail: `適合する${notCardBlocked.length}名の講師が全員このコマで他の生徒に割当済`,
+        })
+        continue
+      }
+
+      // Check if any free teacher can teach a subject with remaining demand
+      const remainingSubjects = Object.entries(subjectDemand)
+        .filter(([, v]) => v.remaining > 0)
+        .map(([subj]) => subj)
+      const hasRemainingSubjectTeacher = freeTeachers.some((t) =>
+        remainingSubjects.some((subj) => canTeachSubject(t.subjects, student.grade, subj)),
+      )
+      if (!hasRemainingSubjectTeacher) {
+        blockReasons.noRemainingSubjectTeacher++
+        slotDetails.push({
+          slot,
+          slotLabel: label,
+          blocked: true,
+          reason: 'noRemainingSubjectTeacher',
+          detail: `空き講師${freeTeachers.length}名が残需要科目(${remainingSubjects.join(',')})に対応不可`,
+        })
+        continue
+      }
+
       blockReasons.demandAlreadyMet++
       slotDetails.push({ slot, slotLabel: label, blocked: false, reason: 'demandAlreadyMet' })
     }
@@ -227,7 +265,9 @@ const BLOCK_REASON_LABELS: Record<string, string> = {
   constraintCardBlocked: '制約カードでブロック',
   deskLimitReached: '机数上限',
   alreadyAssignedInSlot: 'そのスロットに既に割当済',
-  demandAlreadyMet: '需要充足済（割当可能枠あり）',
+  allTeachersOccupied: '適合講師が他の生徒に割当済',
+  noRemainingSubjectTeacher: '残需要科目に対応できる空き講師なし',
+  demandAlreadyMet: '割当可能だが他の生徒が優先された',
 }
 
 export const blockReasonLabel = (reason: string): string => BLOCK_REASON_LABELS[reason] ?? reason
