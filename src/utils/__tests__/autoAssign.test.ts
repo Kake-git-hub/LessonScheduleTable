@@ -1,4 +1,5 @@
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments, dedupeMakeupInfosByOccurrence } from '../autoAssign'
+import { blockReasonLabel } from '../autoAssignDiagnostics'
 import type { SessionData, Student, Teacher } from '../../types'
 
 const makeTeacher = (overrides: Partial<Teacher> = {}): Teacher => ({
@@ -139,6 +140,32 @@ describe('buildIncrementalAutoAssignments', () => {
     const result = await buildIncrementalAutoAssignments(data, slots)
     const allAssigns = Object.values(result.assignments).flat()
     expect(allAssigns).toHaveLength(0)
+  })
+
+  it('reports diagnostics for students with unmet demand', async () => {
+    const data = makeSessionData({
+      teachers: [makeTeacher({ subjects: ['英'] })],
+      students: [makeStudent({ subjects: ['数'], subjectSlots: { 数: 1 } })],
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'student:s1': ['2026-07-21_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1'])
+
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0]).toMatchObject({
+      studentId: 's1',
+      subjectDemand: {
+        数: { requested: 1, assigned: 0, remaining: 1 },
+      },
+      blockReasons: expect.objectContaining({
+        subjectMismatch: 1,
+      }),
+      primaryBottleneck: 'subjectMismatch',
+    })
+    expect(blockReasonLabel(result.diagnostics[0].primaryBottleneck)).toBe('科目が合う講師がいない')
   })
 
   it('keeps regular substitute assignments on rerun even when special demand is zero', async () => {
