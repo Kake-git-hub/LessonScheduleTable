@@ -7477,27 +7477,7 @@ const AdminPage = () => {
     }
 
     const json = JSON.stringify(analysis, null, 2)
-    const prompt = [
-      '以下は塾の講習スケジュール自動割り当ての解析データ（JSON）です。',
-      '',
-      '【データ構造】',
-      '- slotDistribution: 限（コマ）別の生徒配置数（小学生/中高生の内訳あり）',
-      '- teacherSummary: 講師ごとの担当コマ数と対応科目',
-      '- studentDetails: 生徒ごとの割り当て詳細（申請コマ数・配置コマ数・制約スコア・限別配置数）',
-      '  - constraintScore: 制約評価の合計スコア（負の値＝制約違反の度合い）',
-      '  - scoreBreakdown: 各制約カードの個別スコア',
-      '',
-      'このデータを分析して、以下の観点でレポートしてください:',
-      '1. 配置の偏りや問題点（1限配置、特定限への集中など）',
-      '2. 申請と配置の過不足がある生徒',
-      '3. 制約スコアが低い（問題のある）配置',
-      '4. 改善提案',
-      '',
-      '追加の分析要望: ',
-      '',
-      '---',
-      '',
-    ].join('\n')
+    const prompt = 'このデータを分析して、以降ユーザーの質問に答えてください\n\n'
     const clipText = prompt + json
     void navigator.clipboard.writeText(clipText).then(
       () => alert('AIプロンプト付き解析データをクリップボードにコピーしました。\nAIチャットに貼り付けて分析してください。'),
