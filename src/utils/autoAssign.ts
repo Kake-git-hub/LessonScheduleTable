@@ -3,6 +3,7 @@ import { personKey } from './schedule'
 import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson } from './constraints'
 import { canTeachSubject, teachableBaseSubjects, BASE_SUBJECTS } from './subjects'
 import { evaluateConstraintCards, getDefaultConstraintCards } from './slotConstraints'
+import { diagnoseUnassignedStudents, type StudentDiagnostic } from './autoAssignDiagnostics'
 import {
   getSlotNumber,
   getIsoDayOfWeek,
@@ -77,7 +78,7 @@ export const dedupeMakeupInfosByOccurrence = <T extends {
   return [...deduped.values()]
 }
 
-const hasTeacherAvailabilityForAutoAssign = (data: SessionData, teacherId: string, slot: string): boolean => {
+export const hasTeacherAvailabilityForAutoAssign = (data: SessionData, teacherId: string, slot: string): boolean => {
   if (hasAvailability(data.availability, 'teacher', teacherId, slot)) return true
   if ((data.teacherSubmittedAt?.[teacherId] ?? 0) > 0) return false
   const [date] = slot.split('_')
@@ -90,7 +91,7 @@ export const buildIncrementalAutoAssignments = async (
   data: SessionData,
   slots: string[],
   onProgress?: (ratio: number) => void,
-): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; makeupPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>>; unplacedMakeup: { studentId: string; teacherId: string; subject: string; absentDate?: string }[] }> => {
+): Promise<{ assignments: Record<string, Assignment[]>; changeLog: ChangeLogEntry[]; changedPairSignatures: Record<string, string[]>; addedPairSignatures: Record<string, string[]>; makeupPairSignatures: Record<string, string[]>; changeDetails: Record<string, Record<string, string>>; unplacedMakeup: { studentId: string; teacherId: string; subject: string; absentDate?: string }[]; diagnostics: StudentDiagnostic[] }> => {
   const changeLog: ChangeLogEntry[] = []
   const changedPairSigSetBySlot: Record<string, Set<string>> = {}
   const addedPairSigSetBySlot: Record<string, Set<string>> = {}
@@ -1130,7 +1131,9 @@ export const buildIncrementalAutoAssignments = async (
 
   console.log('[AutoAssign] Done: result has', Object.keys(result).length, 'slots,', changeLog.length, 'changes,', unplacedMakeup.length, 'unplaced makeup')
 
-  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot, unplacedMakeup }
+  const diagnostics = diagnoseUnassignedStudents(data, result, slots)
+
+  return { assignments: result, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails: changeDetailsBySlot, unplacedMakeup, diagnostics }
 }
 
 /** Mendan (interview) FCFS auto-assign: each parent gets exactly 1 slot with 1 manager */

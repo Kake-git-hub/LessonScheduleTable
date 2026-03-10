@@ -30,6 +30,7 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import { blockReasonLabel, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
 const APP_VERSION = '1.3.37'
 
@@ -3838,6 +3839,7 @@ const AdminPage = () => {
   const [statusModal, setStatusModal] = useState<StatusReport | null>(null)
   const [statusModalMode, setStatusModalMode] = useState<'full' | 'blocking' | null>(null)
   const [latestStatusReport, setLatestStatusReport] = useState<StatusReport | null>(null)
+  const [autoAssignDiagnostics, setAutoAssignDiagnostics] = useState<StudentDiagnostic[]>([])
   const [proposalSelections, setProposalSelections] = useState<Record<string, string>>({})
   const [sessionTableSorts, setSessionTableSorts] = useState<{
     instructors: MasterTableSortState | null
@@ -6894,6 +6896,20 @@ const AdminPage = () => {
     }
   }
 
+  const [diagnosticCopyLabel, setDiagnosticCopyLabel] = useState('診断JSONコピー')
+
+  const copyDiagnosticsJson = async (): Promise<void> => {
+    const text = JSON.stringify(autoAssignDiagnostics, null, 2)
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      window.prompt('診断JSONをコピーしてください:', text)
+      return
+    }
+    setDiagnosticCopyLabel('コピーしました ✓')
+    setTimeout(() => setDiagnosticCopyLabel('診断JSONコピー'), 2000)
+  }
+
   const shouldShowAutoAssignButton = useMemo(() => {
     if (!data) return false
     if (isMendan) return true
@@ -7425,7 +7441,8 @@ const AdminPage = () => {
     }
 
     // Lecture auto-assign (existing logic)
-    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
+    const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup, diagnostics } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
+    setAutoAssignDiagnostics(diagnostics)
 
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
@@ -9493,6 +9510,9 @@ service cloud.firestore {
                   </div>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>デバッグコピー</button>
+                    {autoAssignDiagnostics.length > 0 && (
+                      <button className="btn secondary diagnostic-copy-btn" type="button" onClick={() => void copyDiagnosticsJson()}>{diagnosticCopyLabel}</button>
+                    )}
                     <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
                   </div>
                 </div>
@@ -9571,6 +9591,43 @@ service cloud.firestore {
                     </section>
                   ))}
                 </div>
+                {autoAssignDiagnostics.length > 0 && (
+                  <div className="diagnostic-summary-section">
+                    <h4>残コマ診断</h4>
+                    {autoAssignDiagnostics.map((diag) => {
+                      const remaining = Object.values(diag.subjectDemand).reduce((s, v) => s + v.remaining, 0)
+                      const subjectParts = Object.entries(diag.subjectDemand)
+                        .filter(([, v]) => v.remaining > 0)
+                        .map(([subj, v]) => `${subj} 残${v.remaining}コマ`)
+                        .join(' / ')
+                      if (remaining === 0) return null
+                      const reasonEntries = Object.entries(diag.blockReasons)
+                        .filter(([, count]) => count > 0)
+                        .sort(([, a], [, b]) => b - a)
+                      return (
+                        <div key={diag.studentId} className="diagnostic-summary">
+                          <div className="diagnostic-summary-title">
+                            <span>{diag.studentName}（{diag.grade}）</span>
+                            <span className="diagnostic-subject-info">{subjectParts}</span>
+                          </div>
+                          <div className="diagnostic-bottleneck">
+                            ボトルネック: {blockReasonLabel(diag.primaryBottleneck)}
+                          </div>
+                          {reasonEntries.length > 0 && (
+                            <ul className="diagnostic-reasons">
+                              {reasonEntries.map(([reason, count]) => (
+                                <li key={reason}>
+                                  <span className="diagnostic-reason-label">{blockReasonLabel(reason)}</span>
+                                  <span className="diagnostic-reason-count">{count}コマ</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           )}
