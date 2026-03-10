@@ -1172,9 +1172,8 @@ export const buildIncrementalAutoAssignments = async (
               )
               if (evalResult.blocked) continue
 
-              // Avoid same student in teacher's consecutive slot
               const prevSlotStudentIds = new Set(getTeacherPrevSlotStudentIds(result, teacherId, currentDate, currentSlotNum))
-              if (prevSlotStudentIds.has(student.id)) continue
+              const sameStudentConsecutivePenalty = prevSlotStudentIds.has(student.id) ? -200 : 0
 
               // Score: merge into existing solo pair is overwhelmingly preferred
               const teacherDates = getTeacherAssignedDates(result, teacherId)
@@ -1188,7 +1187,7 @@ export const buildIncrementalAutoAssignments = async (
               const mkInfos = makeupStudentInfo.get(student.id)
               const makeupBonus = mkInfos && mkInfos.some(mk => mk.teacherId === teacherId && mk.subject === subj && (!mk.absentDate || currentDate > mk.absentDate)) ? 200 : 0
 
-              const score = evalResult.score + mergeBonus + attendanceBonus + teacherConsecBonus + preferredBonus + makeupBonus
+              const score = evalResult.score + mergeBonus + attendanceBonus + teacherConsecBonus + preferredBonus + makeupBonus + sameStudentConsecutivePenalty
 
               if (!bestCandidate || score > bestCandidate.score) {
                 bestCandidate = { slot, teacherId, mergeInto, score }

@@ -443,6 +443,30 @@ describe('buildIncrementalAutoAssignments', () => {
     const slot1 = result.assignments['2026-07-21_1'] ?? []
     expect(slot1.length).toBeLessThanOrEqual(1)
   })
+
+  it('supplementary assignment still uses an otherwise valid slot even if the same teacher taught the student in the previous slot', async () => {
+    const data = makeSessionData({
+      settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 2, holidays: [], lastAutoAssignedAt: Date.now() },
+      teachers: [makeTeacher({ id: 't1', name: '田中先生', subjects: ['数'] })],
+      students: [
+        makeStudent({ id: 's1', name: '先行生徒', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 1000 }),
+        makeStudent({ id: 's2', name: '残コマ生徒', subjects: ['数'], subjectSlots: { 数: 2 }, submittedAt: 2000 }),
+      ],
+      assignments: {
+        '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s2'], subject: '数', studentSubjects: { s2: '数' } }],
+      },
+      availability: {
+        'teacher:t1': ['2026-07-21_1', '2026-07-21_2'],
+        'student:s1': ['2026-07-21_1'],
+        'student:s2': ['2026-07-21_1', '2026-07-21_2'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1', '2026-07-21_2'])
+    const slot2 = result.assignments['2026-07-21_2'] ?? []
+
+    expect(slot2.some((assignment) => assignment.teacherId === 't1' && assignment.studentIds.includes('s2'))).toBe(true)
+  })
 })
 
 describe('buildMendanAutoAssignments', () => {
