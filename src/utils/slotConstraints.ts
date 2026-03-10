@@ -44,7 +44,7 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   preferRegularTeacher: '[推奨] 通常授業の講師を優先して配置',
   lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
   earlySlotPreference: '[推奨] 小学生を2限優先で配置しやすくする（2限 > 3限 > 4限 > 5限、1限はなるべく避ける）',
-  lateSlotPreference: '[推奨] 中高生を5限寄り（遅いコマ）に配置しやすくする',
+  lateSlotPreference: '[推奨] 中高生を5限以降優先で配置しやすくする（5限以降 > 4限 > 3限 > 2限 > 1限）',
 }
 
 /** Get default constraint cards for a student based on grade.
@@ -342,27 +342,31 @@ export const evaluateConstraintCards = (
       case 'earlySlotPreference': {
         // 小学生は 2限 > 3限 > 4限 > 5限 を優先し、1限はできるだけ避ける
         if (slotNum === 2) {
-          score += 900
+          score += 1400
         } else if (slotNum === 3) {
-          score += 500
+          score += 650
         } else if (slotNum === 4) {
           score += 150
         } else if (slotNum >= 5) {
-          score -= 200 * (slotNum - 4)
+          score -= 350 * (slotNum - 4)
         } else if (slotNum === 1) {
-          score -= 250
+          score -= 900
         }
         break
       }
 
       case 'lateSlotPreference': {
-        // 中高生は5限寄り（推奨）: late slots get bonus, early slots get penalty
+        // 中高生は 5限以降 > 4限 > 3限 > 2限 > 1限 を強めに優先
         if (slotNum >= 5) {
-          score += 600
+          score += 1400 + 100 * (slotNum - 5)
         } else if (slotNum === 4) {
-          score += 200
+          score += 450
+        } else if (slotNum === 3) {
+          score -= 150
+        } else if (slotNum === 2) {
+          score -= 700
         } else {
-          score -= 300 * (4 - slotNum)
+          score -= 1300
         }
         break
       }
