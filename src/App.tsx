@@ -7442,6 +7442,132 @@ const AdminPage = () => {
     const { assignments: nextAssignments, changeLog, changedPairSignatures, addedPairSignatures, makeupPairSignatures, changeDetails, unplacedMakeup, diagnostics } = await buildIncrementalAutoAssignments(data, availableSlotKeys, (ratio) => setAutoAssignProgress(ratio))
     setAutoAssignDiagnostics(diagnostics)
 
+    // Phase 5: Auto-apply top 割当案 proposals for remaining students
+    {
+      const liveActual = data.actualResults ?? {}
+      let proposalRound = 0
+      const MAX_ROUNDS = 200
+      let totalProposalsApplied = 0
+
+      while (proposalRound < MAX_ROUNDS) {
+        proposalRound++
+        const statusAssignments = materializeUnavailableRegularShortages(nextAssignments)
+        const effectiveForProposals = buildEffectiveAssignments(statusAssignments, liveActual)
+        const { studentsWithRemaining } = buildStudentsWithRemaining(
+          statusAssignments, effectiveForProposals, liveActual, [],
+        )
+
+        const underAssigned = studentsWithRemaining.filter((s) =>
+          s.remaining.some((e) => e.rem > 0) || Object.values(s.missingBySubj).some((c) => c > 0),
+        )
+        if (underAssigned.length === 0) break
+
+        let appliedInRound = false
+
+        for (const summary of underAssigned) {
+          const student = data.students.find((s) => s.id === summary.studentId)
+          if (!student) continue
+
+          const subjects = [
+            ...summary.remaining.filter((e) => e.rem > 0).map((e) => e.subj),
+            ...Object.entries(summary.missingBySubj).filter(([, c]) => c > 0).map(([subj]) => subj),
+          ]
+          const uniqueSubjects = [...new Set(subjects)]
+
+          for (const subj of uniqueSubjects) {
+            const latestStatus = materializeUnavailableRegularShortages(nextAssignments)
+            const latestEffective = buildEffectiveAssignments(latestStatus, liveActual)
+            const analysis = buildRemainingSuggestions(latestStatus, latestEffective, availableSlotKeys, student, subj)
+
+            // Only non-constraint-violating force proposals
+            const validForce = analysis.force.filter((p) =>
+              p.action?.type === 'force-assign' && !p.label.startsWith('制約違反'),
+            )
+            if (validForce.length === 0) continue
+
+            const action = validForce[0].action as ForceAssignAction
+            const slotAssignments = [...(nextAssignments[action.slot] ?? [])]
+
+            if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) continue
+
+            const existingPairIndex = slotAssignments.findIndex((a) => a.teacherId === action.teacherId && !a.isGroupLesson)
+
+            if (existingPairIndex >= 0) {
+              const existing = slotAssignments[existingPairIndex]
+              if (existing.studentIds.length >= 2) continue
+              slotAssignments[existingPairIndex] = {
+                ...existing,
+                studentIds: [...existing.studentIds, action.studentId],
+                studentSubjects: {
+                  ...(existing.studentSubjects ?? {}),
+                  [action.studentId]: action.subject,
+                },
+                ...(action.makeupInfo ? {
+                  regularMakeupInfo: {
+                    ...(existing.regularMakeupInfo ?? {}),
+                    [action.studentId]: action.makeupInfo,
+                  },
+                } : {}),
+                ...(action.substituteInfo ? {
+                  regularSubstituteInfo: {
+                    ...(existing.regularSubstituteInfo ?? {}),
+                    [action.studentId]: action.substituteInfo,
+                  },
+                } : {}),
+              }
+            } else {
+              const deskLimit = data.settings.deskCount ?? 0
+              if (deskLimit > 0 && slotAssignments.length >= deskLimit) continue
+              slotAssignments.push({
+                teacherId: action.teacherId,
+                studentIds: [action.studentId],
+                subject: action.subject,
+                studentSubjects: { [action.studentId]: action.subject },
+                ...(action.makeupInfo ? { regularMakeupInfo: { [action.studentId]: action.makeupInfo } } : {}),
+                ...(action.substituteInfo ? { regularSubstituteInfo: { [action.studentId]: action.substituteInfo } } : {}),
+              })
+            }
+
+            nextAssignments[action.slot] = slotAssignments
+
+            // Track for highlighting
+            const appliedAssignment = slotAssignments.find((a) =>
+              a.teacherId === action.teacherId && a.studentIds.includes(action.studentId),
+            )
+            if (appliedAssignment) {
+              const sig = assignmentSignature(appliedAssignment)
+              if (!addedPairSignatures[action.slot]) addedPairSignatures[action.slot] = []
+              if (!addedPairSignatures[action.slot].includes(sig)) addedPairSignatures[action.slot].push(sig)
+              if (action.makeupInfo) {
+                if (!makeupPairSignatures[action.slot]) makeupPairSignatures[action.slot] = []
+                if (!makeupPairSignatures[action.slot].includes(sig)) makeupPairSignatures[action.slot].push(sig)
+              }
+              const teacherName = data.teachers.find((t) => t.id === action.teacherId)?.name ?? action.teacherId
+              if (!changeDetails[action.slot]) changeDetails[action.slot] = {}
+              changeDetails[action.slot][sig] = `割当案自動適用: ${slotLabel(action.slot, isMendan, mendanStart)} / ${teacherName} / ${student.name} / ${action.subject}`
+            }
+
+            totalProposalsApplied++
+            changeLog.push({
+              slot: action.slot,
+              action: '割当案自動適用',
+              detail: `${student.name} / ${action.subject} → ${slotLabel(action.slot, isMendan, mendanStart)}`,
+            })
+            appliedInRound = true
+            break
+          }
+
+          if (appliedInRound) break
+        }
+
+        if (!appliedInRound) break
+      }
+
+      if (totalProposalsApplied > 0) {
+        console.log(`[AutoAssign] Auto-applied ${totalProposalsApplied} top proposals`)
+      }
+    }
+
     const highlightAdded: Record<string, string[]> = {}
     const highlightChanged: Record<string, string[]> = {}
     const highlightMakeup: Record<string, string[]> = {}
