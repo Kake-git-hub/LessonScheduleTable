@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.44'
+const APP_VERSION = '1.3.45'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -6828,6 +6828,17 @@ const AdminPage = () => {
       .join(' / ')
   }, [currentAutoAssignBlockerCount, currentAutoAssignBlockingSections])
 
+  const currentNonShortageBlockerCount = useMemo(
+    () => countStatusItems(currentAutoAssignBlockingSections.filter((s) => s.key !== 'shortage')),
+    [currentAutoAssignBlockingSections],
+  )
+
+  const currentNonShortageBlockerLabel = useMemo(() => {
+    const sections = currentAutoAssignBlockingSections.filter((s) => s.key !== 'shortage')
+    if (countStatusItems(sections) === 0) return ''
+    return sections.map((section) => `${section.title} ${section.items.length}件`).join(' / ')
+  }, [currentAutoAssignBlockingSections])
+
   const summarizeDuplicateConflicts = (assignmentState: Record<string, Assignment[]>) => {
     const currentData = data
     if (!currentData) return []
@@ -6952,10 +6963,11 @@ const AdminPage = () => {
   const canRunAutoAssignNow = useMemo(() => {
     if (!data) return false
     if (isMendan) return true
-    return currentAutoAssignBlockerCount === 0 && !hasTeacherShortages && !hasChoiceBasedResolution && !shouldOpenStatusInsteadOfRerun
-  }, [data, isMendan, currentAutoAssignBlockerCount, hasTeacherShortages, hasChoiceBasedResolution, shouldOpenStatusInsteadOfRerun])
+    // Shortages are auto-resolved by Phase 6 inside applyAutoAssign, so they don't block here
+    return currentNonShortageBlockerCount === 0 && !hasChoiceBasedResolution && !shouldOpenStatusInsteadOfRerun
+  }, [data, isMendan, currentNonShortageBlockerCount, hasChoiceBasedResolution, shouldOpenStatusInsteadOfRerun])
 
-  const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentAutoAssignBlockerCount > 0)
+  const shouldShowUnifiedResolveButton = unresolvedCount > 0 || shouldShowAutoAssignButton || (!isMendan && currentNonShortageBlockerCount > 0)
 
   const unifiedResolveButtonLabel = unresolvedCount > 0
     ? `コマ割り未完了: ${unresolvedCount}件`
@@ -7361,18 +7373,11 @@ const AdminPage = () => {
 
   const applyAutoAssign = async (): Promise<void> => {
     if (!data) return
-    if (!isMendan && currentAutoAssignBlockerCount > 0 && currentStatusReport) {
+    if (!isMendan && currentNonShortageBlockerCount > 0 && currentStatusReport) {
       setLatestStatusReport(currentStatusReport)
       openStatusModal(currentStatusReport, 'blocking')
-      alert(`先に破綻を解消してください。\n${currentAutoAssignBlockerLabel}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
+      alert(`先に破綻を解消してください。\n${currentNonShortageBlockerLabel}\n\n上からクリックで解消して、0件になったら再度 自動提案 を実行してください。`)
       return
-    }
-    if (!isMendan) {
-      const currentShortages = collectTeacherShortageItems(buildEffectiveAssignments(materializeUnavailableRegularShortages(data.assignments), data.actualResults))
-      if (currentShortages.length > 0) {
-        alert(`先に${instructorLabel}不足を解消してください。\nコマ割り未完了 ${currentShortages.length} 件が残っている間は、自動提案で残コマを埋められません。`)
-        return
-      }
     }
     setAutoAssignLoading(true)
     setAutoAssignProgress(0)
@@ -7563,6 +7568,39 @@ const AdminPage = () => {
 
       if (phase6Skipped.length > 0) console.log('[AutoAssign] Phase 6: skipped:', phase6Skipped.join(' | '))
       console.log(`[AutoAssign] Phase 6: auto-assigned ${phase6Applied} teacher shortages`)
+    }
+
+    // Post-Phase 6: If unresolved shortages remain, save partial results and show modal
+    {
+      const postPhase6Status = materializeUnavailableRegularShortages(nextAssignments)
+      const postPhase6Effective = buildEffectiveAssignments(postPhase6Status, data.actualResults ?? {})
+      const remainingShortages = collectTeacherShortageItems(postPhase6Effective)
+      if (remainingShortages.length > 0) {
+        console.log(`[AutoAssign] Phase 6: ${remainingShortages.length} shortages remain after auto-resolve, saving partial and showing modal`)
+        const protectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
+        await updateAssignments((current) => {
+          const merged = { ...nextAssignments }
+          for (const slot of protectedSlots) {
+            merged[slot] = current.assignments[slot] ?? []
+          }
+          return {
+            ...current,
+            assignments: merged,
+            settings: { ...current.settings, lastAutoAssignedAt: Date.now() },
+          }
+        })
+        setManuallyModifiedSlots(new Set())
+        const mergedForReport = { ...nextAssignments }
+        for (const slot of protectedSlots) {
+          mergedForReport[slot] = data.assignments[slot] ?? []
+        }
+        const postSaveReport = buildCurrentStatusReport(mergedForReport)
+        if (postSaveReport) {
+          setLatestStatusReport(postSaveReport)
+          openStatusModal(postSaveReport, 'blocking')
+        }
+        return
+      }
     }
 
     // Phase 5: Auto-apply top 割当案 proposals for remaining students
@@ -9044,12 +9082,12 @@ service cloud.firestore {
                   className="btn secondary"
                   type="button"
                   onClick={() => {
-                    if (!isMendan && currentAutoAssignBlockerCount > 0 && activeStatusReport) {
+                    if (!isMendan && currentNonShortageBlockerCount > 0 && activeStatusReport) {
                       setLatestStatusReport(activeStatusReport)
                       openStatusModal(activeStatusReport, 'blocking')
                       return
                     }
-                    if (unresolvedCount > 0 && !canRunAutoAssignNow && activeStatusReport) {
+                    if (unresolvedCount > 0 && !canRunAutoAssignNow && !hasTeacherShortages && activeStatusReport) {
                       setLatestStatusReport(activeStatusReport)
                       openStatusModal(activeStatusReport, 'full')
                       return
@@ -9057,9 +9095,9 @@ service cloud.firestore {
                     void applyAutoAssign()
                   }}
                   disabled={autoAssignLoading}
-                  title={!isMendan && currentAutoAssignBlockerCount > 0
-                    ? `先に解消: ${currentAutoAssignBlockerLabel}`
-                    : unresolvedCount > 0 && shouldOpenStatusInsteadOfRerun
+                  title={!isMendan && currentNonShortageBlockerCount > 0
+                    ? `先に解消: ${currentNonShortageBlockerLabel}`
+                    : unresolvedCount > 0 && shouldOpenStatusInsteadOfRerun && !hasTeacherShortages
                       ? 'この状態では自動提案は出尽くしています。詳細から候補を選んで実行してください'
                     : unresolvedCount > 0 && hasChoiceBasedResolution
                       ? '選択が必要な提案があります。詳細から実行してください'
