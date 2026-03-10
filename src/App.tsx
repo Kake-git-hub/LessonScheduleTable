@@ -8820,7 +8820,7 @@ service cloud.firestore {
 
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
-                    style={!slotMatchesFilter ? { opacity: 0.25 } : undefined}
+                    style={!slotMatchesFilter && !isDragActive ? { opacity: 0.25 } : undefined}
                   >
                     <div className="slot-title">
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
@@ -9114,7 +9114,7 @@ service cloud.firestore {
                             .map((sid) => data.students.find((s) => s.id === sid)?.name ?? '?')
                           return (
                             <div key={idx} className="assignment-block assignment-block-regular"
-                              style={{ position: 'relative', background: '#e0e7ff', borderColor: '#818cf8', ...(!matchesFilter ? { opacity: 0.15 } : {}) }}>
+                              style={{ position: 'relative', background: '#e0e7ff', borderColor: '#818cf8', ...(!matchesFilter && !isDragActive ? { opacity: 0.15 } : {}) }}>
                               <span className="badge" style={{ background: '#6366f1', color: '#fff', fontSize: '0.72em', padding: '2px 7px', marginBottom: '4px' }} title="集団授業">■</span>
                               <div style={{ fontWeight: 600, fontSize: '0.9em' }}>{tName}</div>
                               <div style={{ fontSize: '0.8em', color: '#4338ca' }}>{assignment.subject}</div>
@@ -9133,7 +9133,7 @@ service cloud.firestore {
                             className={`assignment-block${assignment.isRegular ? ' assignment-block-regular' : ''}${isIncompatiblePair ? ' assignment-block-incompatible' : ''}${hasManualConstraintWarning || hasTeacherUnassignedWarning ? ' assignment-block-manual-warning' : ''}${isAutoDiff ? ' assignment-block-auto-updated' : ''}${isStudentDropValid ? ' assignment-block-drop-target' : ''}${isStudentDropInvalid ? ' assignment-block-drop-invalid' : ''}`}
                             style={{
                               ...(isDragActive && isSourceSlot && dragInfo.sourceIdx === idx ? { outline: '2px solid #3b82f6', outlineOffset: '-2px', background: isStudentDrag ? '#eff6ff' : '#fef3c7' } : {}),
-                              ...(!matchesFilter ? { opacity: 0.15 } : {}),
+                              ...(!matchesFilter && !isDragActive ? { opacity: 0.15 } : {}),
                             }}
                           >
                             {/* Student-drag destination: "ここに移動" on valid target assignment */}
