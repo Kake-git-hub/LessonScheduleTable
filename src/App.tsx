@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.41'
+const APP_VERSION = '1.3.42'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -677,9 +677,9 @@ const formatRegularLessonReference = (
   const dayNames = ['日', '月', '火', '水', '木', '金', '土']
   const teacherName = sessionData.teachers.find((teacher) => teacher.id === teacherId)?.name ?? teacherId
   const when = makeupInfo.date
-    ? `${formatShortDate(makeupInfo.date)}(${dayNames[makeupInfo.dayOfWeek] ?? '?'}) ${makeupInfo.slotNumber}限`
+    ? `${formatShortDate(makeupInfo.date)} ${makeupInfo.slotNumber}限`
     : `${dayNames[makeupInfo.dayOfWeek] ?? '?'}曜${makeupInfo.slotNumber}限`
-  return `通常授業参考: ${teacherName} / ${when}`
+  return `元: ${teacherName} ${when}`
 }
 
 type MakeupReasonKind = 'student' | 'teacher' | 'both' | 'actual-absence' | 'unknown'
@@ -5148,8 +5148,8 @@ const AdminPage = () => {
         const nameSummary = summarizeProposalNames(item.teacherNames)
         const slotSummary = summarizeProposalSlots(item.slots)
         return kind === 'teacher'
-          ? toStatusProposal(`講師出席追加案: ${nameSummary} / ${slotSummary} / ${item.subject}`)
-          : toStatusProposal(`生徒出席緩和案: ${slotSummary} / ${nameSummary} / ${item.subject}`)
+          ? toStatusProposal(`講師追加案: ${nameSummary} / ${slotSummary} / ${item.subject}`)
+          : toStatusProposal(`出席緩和案: ${slotSummary} / ${nameSummary} / ${item.subject}`)
       })
       .slice(0, 5)
   }
@@ -5455,7 +5455,7 @@ const AdminPage = () => {
       if (cause.includes('担当外科目')) add('担当外')
     }
 
-    return tags.slice(0, 3).join(' / ')
+    return tags.slice(0, 3).join('・')
   }
 
   const buildRemainingDetailItems = (
@@ -5613,9 +5613,9 @@ const AdminPage = () => {
       const makeupReasonKind = matchingDemand ? getMakeupReasonKind(data, matchingDemand.studentId, matchingDemand.teacherId, matchingDemand.makeupInfo, matchingDemand.absentDate) : 'unknown'
       const makeupReasonLabel = formatMakeupReasonLabel(makeupReasonKind)
       const regularReference = matchingDemand ? formatRegularLessonReference(data, matchingDemand.teacherId, matchingDemand.makeupInfo) : ''
-      const causeLabel = conciseCause
-        ? `${item.subject}: ${makeupReasonLabel}の振替未配置 (${conciseCause})${regularReference ? ` / ${regularReference}` : ''}`
-        : `${item.subject}: ${makeupReasonLabel}の振替未配置${regularReference ? ` (${regularReference})` : ''}`
+      const causeLabel = regularReference
+        ? `${item.subject} 振替（${makeupReasonLabel}）${regularReference}${conciseCause ? ` / ${conciseCause}` : ''}`
+        : `${item.subject} 振替（${makeupReasonLabel}）${conciseCause ? ` ${conciseCause}` : ''}`
       const mergedCauses = mergeStringList([...(existing?.causes ?? []), causeLabel])
       const mergedProposals = filterExecutableStatusProposals(data, assignmentState, dedupeStatusProposals([
         ...(existing?.proposals ?? []),
@@ -5817,9 +5817,9 @@ const AdminPage = () => {
 
         if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && !evalResult.blocked) {
           const verb = options?.makeupDemand ? '振替' : '割当'
-          const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
+          const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
-          const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${regularReference ? ` / ${regularReference}` : ''}`
+          const label = `${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject}（${targetText}）${regularReference ? ` / ${regularReference}` : ''}`
           const action: ForceAssignAction = {
             type: 'force-assign',
             slot,
@@ -5833,10 +5833,11 @@ const AdminPage = () => {
         }
 
         if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && evalResult.blocked) {
-          const verb = options?.makeupDemand ? '強制振替' : '強制割当'
-          const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
+          const verb = options?.makeupDemand ? '振替' : '割当'
+          const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
-          const label = `制約違反${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject} / ${targetText}${evalResult.blockReason ? ` (${evalResult.blockReason})` : ''}${regularReference ? ` / ${regularReference}` : ''}`
+          const shortReason = evalResult.blockReason ? evalResult.blockReason.split(':')[0].trim() : ''
+          const label = `⚠${verb}案: ${slotLabel(slot, isMendan, mendanStart)} / ${teacher.name} / ${subject}（${targetText}）${shortReason ? `[${shortReason}]` : ''}${regularReference ? ` / ${regularReference}` : ''}`
           const action: ForceAssignAction = {
             type: 'force-assign',
             slot,
@@ -5882,8 +5883,8 @@ const AdminPage = () => {
 
     const force = [...forceSuggestions.values()]
       .sort((a, b) => {
-        const aExisting = a.label.includes('既存ペアへ追加') ? 0 : 1
-        const bExisting = b.label.includes('既存ペアへ追加') ? 0 : 1
+        const aExisting = a.label.includes('既存ペア') ? 0 : 1
+        const bExisting = b.label.includes('既存ペア') ? 0 : 1
         if (aExisting !== bExisting) return aExisting - bExisting
         return a.label.localeCompare(b.label, 'ja')
       })
@@ -5915,10 +5916,10 @@ const AdminPage = () => {
 
           if (teacherAssignment && !allowExistingTeacherPair) continue
 
-          const targetText = teacherAssignment ? '既存ペアへ追加' : '新規ペアで追加'
+          const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularTeacher = data.teachers.find((item) => item.id === makeupDemand.teacherId)
           const regularReference = formatRegularLessonReference(data, makeupDemand.teacherId, makeupDemand.makeupInfo)
-          const label = `通常講師代行案: ${slotLabel(slot, isMendan, mendanStart)} / ${regularTeacher?.name ?? makeupDemand.teacherId} の代行を ${teacher.name} が担当 / ${subject} / ${targetText} / ${regularReference}`
+          const label = `代行案: ${slotLabel(slot, isMendan, mendanStart)} / ${regularTeacher?.name ?? makeupDemand.teacherId}→${teacher.name} / ${subject}（${targetText}）/ ${regularReference}`
           substituteSuggestions.set(
             `${slot}|${teacher.id}|${student.id}|${subject}`,
             toStatusProposal(label, {
@@ -5941,8 +5942,8 @@ const AdminPage = () => {
 
     const substitute = [...substituteSuggestions.values()]
       .sort((a, b) => {
-        const aExisting = a.label.includes('既存ペアへ追加') ? 0 : 1
-        const bExisting = b.label.includes('既存ペアへ追加') ? 0 : 1
+        const aExisting = a.label.includes('既存ペア') ? 0 : 1
+        const bExisting = b.label.includes('既存ペア') ? 0 : 1
         if (aExisting !== bExisting) return aExisting - bExisting
         return a.label.localeCompare(b.label, 'ja')
       })
@@ -7514,13 +7515,13 @@ const AdminPage = () => {
             // Only non-constraint-violating force proposals (protected slots are now allowed)
             const validForce = analysis.force.filter((p) => {
               if (p.action?.type !== 'force-assign') return false
-              if (p.label.startsWith('制約違反')) return false
+              if (p.label.startsWith('⚠')) return false
               return true
             })
 
             if (validForce.length === 0) {
               const allForce = analysis.force.length
-              const constraintOnly = analysis.force.filter((p) => p.label.startsWith('制約違反')).length
+              const constraintOnly = analysis.force.filter((p) => p.label.startsWith('⚠')).length
               skipReasons.push(`${student.name}/${subj}: total=${allForce}(制約違反${constraintOnly})`)
               continue
             }
@@ -7681,14 +7682,14 @@ const AdminPage = () => {
           const allCandidates = [...analysis.force, ...analysis.substitute]
           const valid = allCandidates.filter((p) => {
             if (p.action?.type !== 'force-assign') return false
-            if (p.label.startsWith('制約違反')) return false
+            if (p.label.startsWith('⚠')) return false
             return true
           })
 
           if (valid.length === 0) {
             const studentName = student.name
             const total = allCandidates.length
-            const constraintOnly = allCandidates.filter((p) => p.label.startsWith('制約違反')).length
+            const constraintOnly = allCandidates.filter((p) => p.label.startsWith('⚠')).length
             if (total > 0) skipReasons.push(`${studentName}/${um.subject}: total=${total}(制約違反${constraintOnly})`)
             continue
           }
@@ -7879,7 +7880,7 @@ const AdminPage = () => {
         if (section.key !== 'under') continue
         for (const item of section.items) {
           if (phase5ConstraintOnlyStudents.has(item.label)) {
-            item.causes.push('自動割当: 全候補が制約違反のため自動配置されませんでした（手動で制約違反割当を適用してください）')
+            item.causes.push('⚠ 自動割当不可（全候補が制約違反）')
           }
         }
       }
