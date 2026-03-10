@@ -30,7 +30,7 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
-import { blockReasonLabel, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
+import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
 const APP_VERSION = '1.3.37'
 
@@ -6796,6 +6796,7 @@ const AdminPage = () => {
   const closeStatusModal = (): void => {
     setStatusModal(null)
     setStatusModalMode(null)
+    setModalDiagnostics([])
   }
 
   const currentStatusReport = useMemo(() => {
@@ -6896,18 +6897,15 @@ const AdminPage = () => {
     }
   }
 
-  const [diagnosticCopyLabel, setDiagnosticCopyLabel] = useState('診断JSONコピー')
+  const [modalDiagnostics, setModalDiagnostics] = useState<StudentDiagnostic[]>([])
 
-  const copyDiagnosticsJson = async (): Promise<void> => {
-    const text = JSON.stringify(autoAssignDiagnostics, null, 2)
-    try {
-      await navigator.clipboard.writeText(text)
-    } catch {
-      window.prompt('診断JSONをコピーしてください:', text)
-      return
-    }
-    setDiagnosticCopyLabel('コピーしました ✓')
-    setTimeout(() => setDiagnosticCopyLabel('診断JSONコピー'), 2000)
+  const runModalDiagnostics = (): void => {
+    if (!data) return
+    const recordedSlots = new Set(Object.keys(data.actualResults ?? {}))
+    const availableSlots = slotKeys.filter((s) => !recordedSlots.has(s))
+    const result = buildEffectiveAssignments(data.assignments, data.actualResults)
+    const diagnostics = diagnoseUnassignedStudents(data, result, availableSlots)
+    setModalDiagnostics(diagnostics)
   }
 
   const shouldShowAutoAssignButton = useMemo(() => {
@@ -9510,9 +9508,7 @@ service cloud.firestore {
                   </div>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button className="btn secondary" type="button" onClick={() => void copyChatDebugData()}>デバッグコピー</button>
-                    {autoAssignDiagnostics.length > 0 && (
-                      <button className="btn secondary diagnostic-copy-btn" type="button" onClick={() => void copyDiagnosticsJson()}>{diagnosticCopyLabel}</button>
-                    )}
+                    <button className="btn secondary" type="button" onClick={() => runModalDiagnostics()}>📊 分析</button>
                     <button className="btn secondary" type="button" onClick={() => closeStatusModal()}>閉じる</button>
                   </div>
                 </div>
@@ -9591,10 +9587,10 @@ service cloud.firestore {
                     </section>
                   ))}
                 </div>
-                {autoAssignDiagnostics.length > 0 && (
+                {(modalDiagnostics.length > 0 || autoAssignDiagnostics.length > 0) && (
                   <div className="diagnostic-summary-section">
                     <h4>残コマ診断</h4>
-                    {autoAssignDiagnostics.map((diag) => {
+                    {(modalDiagnostics.length > 0 ? modalDiagnostics : autoAssignDiagnostics).map((diag) => {
                       const remaining = Object.values(diag.subjectDemand).reduce((s, v) => s + v.remaining, 0)
                       const subjectParts = Object.entries(diag.subjectDemand)
                         .filter(([, v]) => v.remaining > 0)
