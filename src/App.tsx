@@ -32,7 +32,7 @@ import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './u
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 import { blockReasonLabel, diagnoseUnassignedStudents, type StudentDiagnostic } from './utils/autoAssignDiagnostics'
 
-const APP_VERSION = '1.3.40'
+const APP_VERSION = '1.3.41'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7447,6 +7447,7 @@ const AdminPage = () => {
     // tracks its own overlay so the final merge preserves both user edits AND
     // Phase 5 additions.
     const phase5ProtectedOverlay: Record<string, Assignment[]> = {}
+    const phase5ConstraintOnlyStudents = new Set<string>()
     {
       const liveActual = data.actualResults ?? {}
       const phase5ProtectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
@@ -7620,12 +7621,175 @@ const AdminPage = () => {
         }
 
         if (!appliedInRound) {
+          // Track students where all proposals are constraint violations
+          for (const reason of skipReasons) {
+            const match = reason.match(/^(.+?)\/(.+?): total=\d+\(制約違反\d+\)$/)
+            if (match) phase5ConstraintOnlyStudents.add(match[1])
+          }
           console.log(`[AutoAssign] Phase 5: stopped at round ${proposalRound}. Remaining: ${underAssigned.length} students. Skip reasons:`, skipReasons.join(' | '))
           break
         }
       }
 
       console.log(`[AutoAssign] Phase 5: completed after ${proposalRound} rounds, applied ${totalProposalsApplied} proposals (${Object.keys(phase5ProtectedOverlay).length} protected slots modified)`)
+    }
+
+    // Phase 5b: Auto-apply unplaced makeup substitute/force proposals
+    {
+      const liveActual = data.actualResults ?? {}
+      const phase5bProtectedSlots = new Set<string>([...recordedSlots, ...protectedManualSlots])
+      let makeupRound = 0
+      const MAX_MAKEUP_ROUNDS = 100
+      let totalMakeupApplied = 0
+
+      console.log('[AutoAssign] Phase 5b: starting unplaced makeup auto-apply, entries:', unplacedMakeup.length)
+
+      while (makeupRound < MAX_MAKEUP_ROUNDS && unplacedMakeup.length > 0) {
+        makeupRound++
+
+        const latestMerged: Record<string, Assignment[]> = { ...nextAssignments }
+        for (const slot of phase5bProtectedSlots) {
+          latestMerged[slot] = phase5ProtectedOverlay[slot] ?? data.assignments[slot] ?? []
+        }
+        const latestStatus = materializeUnavailableRegularShortages(latestMerged)
+        const latestEffective = buildEffectiveAssignments(latestStatus, liveActual)
+        const pendingDemands = collectPendingMakeupDemands(latestStatus, liveActual)
+
+        let appliedInRound = false
+        const skipReasons: string[] = []
+
+        for (const um of unplacedMakeup) {
+          const student = data.students.find((s) => s.id === um.studentId)
+          if (!student) continue
+          const teacher = data.teachers.find((t) => t.id === um.teacherId)
+          if (!teacher) continue
+
+          const demand = pendingDemands.find((d) =>
+            d.studentId === um.studentId && d.teacherId === um.teacherId && d.subject === um.subject,
+          )
+          if (!demand) continue // already resolved
+
+          const analysis = analyzePlacementOptions(
+            latestStatus, latestEffective, availableSlotKeys, student, um.subject,
+            [teacher],
+            {
+              slotFilter: (slot) => !demand.absentDate || slot.split('_')[0] > demand.absentDate,
+              makeupDemand: demand,
+            },
+          )
+
+          const allCandidates = [...analysis.force, ...analysis.substitute]
+          const valid = allCandidates.filter((p) => {
+            if (p.action?.type !== 'force-assign') return false
+            if (p.label.startsWith('制約違反')) return false
+            return true
+          })
+
+          if (valid.length === 0) {
+            const studentName = student.name
+            const total = allCandidates.length
+            const constraintOnly = allCandidates.filter((p) => p.label.startsWith('制約違反')).length
+            if (total > 0) skipReasons.push(`${studentName}/${um.subject}: total=${total}(制約違反${constraintOnly})`)
+            continue
+          }
+
+          const action = valid[0].action as ForceAssignAction
+          const isProtectedSlot = phase5bProtectedSlots.has(action.slot)
+          const slotSource = isProtectedSlot
+            ? (phase5ProtectedOverlay[action.slot] ?? data.assignments[action.slot] ?? [])
+            : (latestMerged[action.slot] ?? [])
+          const slotAssignments = [...slotSource]
+
+          if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) {
+            skipReasons.push(`${student.name}/${um.subject}: already in slot ${action.slot}`)
+            continue
+          }
+
+          const existingPairIndex = slotAssignments.findIndex((a) => a.teacherId === action.teacherId && !a.isGroupLesson)
+
+          if (existingPairIndex >= 0) {
+            const existing = slotAssignments[existingPairIndex]
+            if (existing.studentIds.length >= 2) {
+              skipReasons.push(`${student.name}/${um.subject}: pair full at ${action.slot}`)
+              continue
+            }
+            slotAssignments[existingPairIndex] = {
+              ...existing,
+              studentIds: [...existing.studentIds, action.studentId],
+              studentSubjects: {
+                ...(existing.studentSubjects ?? {}),
+                [action.studentId]: action.subject,
+              },
+              ...(action.makeupInfo ? {
+                regularMakeupInfo: {
+                  ...(existing.regularMakeupInfo ?? {}),
+                  [action.studentId]: action.makeupInfo,
+                },
+              } : {}),
+              ...(action.substituteInfo ? {
+                regularSubstituteInfo: {
+                  ...(existing.regularSubstituteInfo ?? {}),
+                  [action.studentId]: action.substituteInfo,
+                },
+              } : {}),
+            }
+          } else {
+            const deskLimit = data.settings.deskCount ?? 0
+            if (deskLimit > 0 && slotAssignments.length >= deskLimit) {
+              skipReasons.push(`${student.name}/${um.subject}: desk limit at ${action.slot}`)
+              continue
+            }
+            slotAssignments.push({
+              teacherId: action.teacherId,
+              studentIds: [action.studentId],
+              subject: action.subject,
+              studentSubjects: { [action.studentId]: action.subject },
+              ...(action.makeupInfo ? { regularMakeupInfo: { [action.studentId]: action.makeupInfo } } : {}),
+              ...(action.substituteInfo ? { regularSubstituteInfo: { [action.studentId]: action.substituteInfo } } : {}),
+            })
+          }
+
+          if (isProtectedSlot) {
+            phase5ProtectedOverlay[action.slot] = slotAssignments
+          } else {
+            nextAssignments[action.slot] = slotAssignments
+          }
+
+          const appliedAssignment = slotAssignments.find((a) =>
+            a.teacherId === action.teacherId && a.studentIds.includes(action.studentId),
+          )
+          if (appliedAssignment) {
+            const sig = assignmentSignature(appliedAssignment)
+            if (!addedPairSignatures[action.slot]) addedPairSignatures[action.slot] = []
+            if (!addedPairSignatures[action.slot].includes(sig)) addedPairSignatures[action.slot].push(sig)
+            if (action.makeupInfo || action.substituteInfo) {
+              if (!makeupPairSignatures[action.slot]) makeupPairSignatures[action.slot] = []
+              if (!makeupPairSignatures[action.slot].includes(sig)) makeupPairSignatures[action.slot].push(sig)
+            }
+            const teacherName = data.teachers.find((t) => t.id === action.teacherId)?.name ?? action.teacherId
+            if (!changeDetails[action.slot]) changeDetails[action.slot] = {}
+            changeDetails[action.slot][sig] = `振替自動適用: ${slotLabel(action.slot, isMendan, mendanStart)} / ${teacherName} / ${student.name} / ${action.subject}`
+          }
+
+          totalMakeupApplied++
+          const isSubstitute = valid[0].label.includes('代行')
+          console.log(`[AutoAssign] Phase 5b round ${makeupRound}: applied ${student.name}/${um.subject} → ${action.slot}${isSubstitute ? ' (代行)' : ''}${isProtectedSlot ? ' (protected)' : ''}`)
+          changeLog.push({
+            slot: action.slot,
+            action: '振替自動適用',
+            detail: `${student.name} / ${action.subject} → ${slotLabel(action.slot, isMendan, mendanStart)}`,
+          })
+          appliedInRound = true
+          break
+        }
+
+        if (!appliedInRound) {
+          if (skipReasons.length > 0) console.log(`[AutoAssign] Phase 5b: stopped at round ${makeupRound}. Skip reasons:`, skipReasons.join(' | '))
+          break
+        }
+      }
+
+      console.log(`[AutoAssign] Phase 5b: completed after ${makeupRound} rounds, applied ${totalMakeupApplied} makeup proposals`)
     }
 
     const highlightAdded: Record<string, string[]> = {}
@@ -7708,6 +7872,17 @@ const AdminPage = () => {
         causes: item.detail.split('\n').filter(Boolean),
         proposals: [toStatusProposal(STATUS_REVIEW_COUNTS)],
       })),
+    }
+    // Annotate constraint-violation-only students in the report
+    if (phase5ConstraintOnlyStudents.size > 0 && baseAutoAssignReport) {
+      for (const section of baseAutoAssignReport.sections) {
+        if (section.key !== 'under') continue
+        for (const item of section.items) {
+          if (phase5ConstraintOnlyStudents.has(item.label)) {
+            item.causes.push('自動割当: 全候補が制約違反のため自動配置されませんでした（手動で制約違反割当を適用してください）')
+          }
+        }
+      }
     }
     const report: StatusReport = {
       title: '自動提案結果',
