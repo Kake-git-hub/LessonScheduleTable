@@ -43,7 +43,7 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   regularLink: '[絶対] 通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   preferRegularTeacher: '[推奨] 通常授業の講師を優先して配置',
   lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
-  earlySlotPreference: '[推奨] 小学生を2限寄り（早いコマ）に配置しやすくする',
+  earlySlotPreference: '[推奨] 小学生を2限優先で配置しやすくする（2限 > 3限 > 4限 > 5限、1限はなるべく避ける）',
   lateSlotPreference: '[推奨] 中高生を5限寄り（遅いコマ）に配置しやすくする',
 }
 
@@ -340,13 +340,17 @@ export const evaluateConstraintCards = (
       }
 
       case 'earlySlotPreference': {
-        // 小学生は2限寄り（推奨）: early slots get bonus, late slots get penalty
-        if (slotNum <= 2) {
-          score += 600
+        // 小学生は 2限 > 3限 > 4限 > 5限 を優先し、1限はできるだけ避ける
+        if (slotNum === 2) {
+          score += 900
         } else if (slotNum === 3) {
-          score += 200
-        } else {
-          score -= 300 * (slotNum - 3)
+          score += 500
+        } else if (slotNum === 4) {
+          score += 150
+        } else if (slotNum >= 5) {
+          score -= 200 * (slotNum - 4)
+        } else if (slotNum === 1) {
+          score -= 250
         }
         break
       }
