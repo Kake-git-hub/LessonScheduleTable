@@ -393,7 +393,9 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     }
 
     const totalBodyRows = Math.max(1, rowHasAnyContent.length)
-    const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin)
+    const borderPaddingExtra = 0.4
+    const borderPaddingTotal = slotsPerDay * borderPaddingExtra
+    const availableTableHeight = Math.max(120, pageHeight - tableStartY - tableBottomMargin - borderPaddingTotal)
     const targetBodyRowHeight = fitBodyRowHeightToPage(totalBodyRows, availableTableHeight)
     const { headRow1Height, headRow2Height } = resolveHeaderHeights(targetBodyRowHeight)
     const cellPadding = clamp(targetBodyRowHeight * 0.045, 0.08, 0.24)
@@ -496,7 +498,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
           hookData.cell.styles.cellPadding = cellPadding
           hookData.cell.styles.textColor = [0, 0, 0]
           if (deskIdx === 0) {
-            hookData.cell.styles.cellPadding = { top: cellPadding + 0.4, right: cellPadding, bottom: cellPadding, left: cellPadding }
+            hookData.cell.styles.minCellHeight = targetBodyRowHeight + borderPaddingExtra
+            hookData.cell.styles.cellPadding = { top: cellPadding + borderPaddingExtra, right: cellPadding, bottom: cellPadding, left: cellPadding }
             hookData.cell.styles.lineWidth = {
               top: 0.75,
               right: 0.2,
