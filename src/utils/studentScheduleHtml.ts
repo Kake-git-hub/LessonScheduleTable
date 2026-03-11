@@ -57,11 +57,12 @@ function buildStudentAssignmentMap(
       const subject = getStudentSubject(a, student.id)
       const key = `${date}_${slotNumber}`
       const makeupInfo = a.regularMakeupInfo?.[student.id]
+      const substituteInfo = a.regularSubstituteInfo?.[student.id]
       const manualMark = a.manualRegularMark?.[student.id]
       const isRegAtSlot = !!a.isRegular && findRegularLessonsForSlot(regularLessons, slotKey).some(r => r.studentIds.includes(student.id))
       // Skip regular lessons marked as completed (振替済)
       if (isRegAtSlot && getStudentRegularLessonStatus(student, slotKey) === 'completed') continue
-      const isRegular = isRegAtSlot || manualMark === 'regular'
+      const isRegular = isRegAtSlot || manualMark === 'regular' || !!substituteInfo
       const isMakeup = !!makeupInfo || manualMark === 'makeup'
 
       map[key] = {

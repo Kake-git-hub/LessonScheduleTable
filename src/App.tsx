@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.95'
+const APP_VERSION = '1.3.96'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -9530,7 +9530,7 @@ service cloud.firestore {
                                       }
                                     }
 
-                                    if (!star1 && !star2) return null
+                                    if (!star1) return null
                                     return <>{star1}{star2}</>
                                   })()
                                   const isSourceStudent = isDragActive && isStudentDrag && isSourceSlot && dragInfo.sourceIdx === idx && dragInfo.studentDragId === currentStudentId
