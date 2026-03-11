@@ -48,7 +48,7 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
   earlySlotPreference: '[推奨] 小学生を2限優先で配置しやすくする（2限 > 3限 > 4限 > 5限、1限はなるべく避ける）',
   lateSlotPreference: '[推奨] 中高生を5限以降優先で配置しやすくする（5限以降 > 4限 > 3限 > 2限 > 1限）',
-  avoidSlot1: '[推奨] 1限へのペア形成を抑制する（マージは低優先で許容）',
+  avoidSlot1: '[絶対] 1限への配置を禁止する',
 }
 
 /** Get default constraint cards for a student based on grade.
@@ -70,12 +70,11 @@ export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] =
   } else {
     cards.push('lateSlotPreference')
   }
-  cards.push('avoidSlot1')
   return cards
 }
 
 /** Static fallback (used when grade is unknown). */
-export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous', 'priorityAssign', 'lateSlotPreference', 'avoidSlot1']
+export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous', 'priorityAssign', 'lateSlotPreference']
 
 /** All constraint card types in display order. */
 export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
@@ -390,11 +389,9 @@ export const evaluateConstraintCards = (
       }
 
       case 'avoidSlot1': {
-        // 1限回避: ペアボーナス(+5000)を相殺しペア形成を抑制
-        // Phase3 2人ペア: 5000 + 2×(-2600) = -200 → 1限ペア回避
-        // Phase4 マージ: 5000 + (-2600) = +2400 → 1限マージは許容（低優先）
+        // 1限回避: ハード制約 — 1限への配置を完全にブロック
         if (slotNum === 1) {
-          score -= 2600
+          return { score: -99999, blocked: true, blockReason: '1限回避: 1限への配置は禁止されています' }
         }
         break;
       }

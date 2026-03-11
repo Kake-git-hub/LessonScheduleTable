@@ -20,7 +20,7 @@ export type ConstraintCardType =
   | 'regularLink'           // 通常授業連結
   | 'earlySlotPreference'   // 小学生は2限寄り優先 (default)
   | 'lateSlotPreference'    // 中高生は5限寄り優先 (default)
-  | 'avoidSlot1'            // 1限回避 (default)
+  | 'avoidSlot1'            // 1限回避
 
 export type Manager = {
   id: string
