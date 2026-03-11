@@ -35,7 +35,7 @@ function getAllDatesInRange(settings: SessionData['settings']): string[] {
 }
 
 type SlotEntry = {
-  students: { name: string; grade: string; subject: string; isRegular: boolean; isMakeup: boolean; isSubstitute: boolean }[]
+  students: { id: string; name: string; grade: string; subject: string; isRegular: boolean; isMakeup: boolean; isSubstitute: boolean }[]
   isGroupLesson: boolean
   groupSubject?: string
 }
@@ -82,6 +82,7 @@ function buildTeacherAssignmentMap(
           const isMakeup = !!a.regularMakeupInfo?.[sid]
           const isSubstitute = !!a.regularSubstituteInfo?.[sid]
           return {
+            id: sid,
             name: getStudentName(sid),
             grade: getStudentGrade(sid),
             subject,
@@ -224,20 +225,21 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
         const isUnavailable = unavailableSet.has(key)
         const isHoliday = holidaySet.has(date)
         if (entry) {
+          const studentIds = entry.students.map(st => st.id).join(',')
           if (entry.isGroupLesson) {
-            slotRows += `<td class="cell group-cell">■${escapeHtml(entry.groupSubject ?? '')}</td>`
+            slotRows += `<td class="cell group-cell" data-slot="${key}">\u25A0${escapeHtml(entry.groupSubject ?? '')}</td>`
           } else {
             const lines = entry.students.map(st => {
-              const tag = st.isRegular ? '<span class="regular-tag">通常</span>' : st.isMakeup ? '<span class="makeup-tag">振替</span>' : ''
-              const subTag = st.isSubstitute ? '<span class="substitute-tag">代行</span>' : ''
+              const tag = st.isRegular ? '<span class="regular-tag">\u901A\u5E38</span>' : st.isMakeup ? '<span class="makeup-tag">\u632F\u66FF</span>' : ''
+              const subTag = st.isSubstitute ? '<span class="substitute-tag">\u4EE3\u884C</span>' : ''
               return `<span class="student-line">${escapeHtml(st.name)}<br>${escapeHtml(st.grade)}${escapeHtml(st.subject)}${tag}${subTag}</span>`
             }).join('<hr class="cell-divider">')
-            slotRows += `<td class="cell assigned-cell">${lines}</td>`
+            slotRows += `<td class="cell assigned-cell" data-slot="${key}" data-student-ids="${studentIds}">${lines}</td>`
           }
         } else if (isUnavailable || isHoliday) {
-          slotRows += '<td class="cell unavailable"></td>'
+          slotRows += `<td class="cell unavailable" data-slot="${key}"></td>`
         } else {
-          slotRows += '<td class="cell"></td>'
+          slotRows += `<td class="cell" data-slot="${key}"></td>`
         }
       }
       slotRows += '</tr>'
@@ -404,8 +406,12 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
   .toolbar button:hover { background: #1d4ed8; }
   .toolbar span { font-size: 13px; }
 
-  @media print { .toolbar { display: none; } body { padding: 0; background: #fff; } }
+  @media print { .toolbar { display: none; } body { padding: 0; background: #fff; } .sa-hl-source, .sa-hl-student { background: inherit !important; outline: none !important; } }
   @media screen { body { padding-top: 48px; } }
+
+  /* Slot adjust highlighting */
+  .sa-hl-source { background: #fef08a !important; outline: 2px solid #eab308 !important; outline-offset: -1px; }
+  .sa-hl-student { background: #dbeafe !important; outline: 2px solid #3b82f6 !important; outline-offset: -1px; }
 </style>
 </head>
 <body>

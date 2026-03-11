@@ -24,6 +24,7 @@ type SlotAdjustViewProps = {
   undoCount: number
   redoCount: number
   onClose: () => void
+  onSelectionChange?: (sel: { slot: string; studentId: string } | null) => void
 }
 
 type SelectionInfo = {
@@ -194,6 +195,7 @@ export default function SlotAdjustView({
   undoCount,
   redoCount,
   onClose,
+  onSelectionChange,
 }: SlotAdjustViewProps) {
   const [selection, setSelection] = useState<SelectionInfo | null>(null)
   const [weekIdx, setWeekIdx] = useState(0)
@@ -289,6 +291,11 @@ export default function SlotAdjustView({
     [onAddStudent, runBusy],
   )
 
+  // Notify parent when selection changes (for schedule HTML highlighting)
+  useEffect(() => {
+    onSelectionChange?.(selection ? { slot: selection.slot, studentId: selection.studentId } : null)
+  }, [selection, onSelectionChange])
+
   // Escape key to cancel selection / close picker
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -297,8 +304,9 @@ export default function SlotAdjustView({
         else setSelection(null)
       }
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    const win = containerRef.current?.ownerDocument?.defaultView ?? window
+    win.addEventListener('keydown', handler)
+    return () => win.removeEventListener('keydown', handler)
   }, [studentPicker])
 
   // Build list of students for the picker
@@ -319,8 +327,9 @@ export default function SlotAdjustView({
         setStudentPicker(null)
       }
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    const doc = containerRef.current?.ownerDocument ?? document
+    doc.addEventListener('mousedown', handler)
+    return () => doc.removeEventListener('mousedown', handler)
   }, [studentPicker])
 
   if (weeks.length === 0) return null
@@ -344,12 +353,18 @@ export default function SlotAdjustView({
           <button className="btn secondary" type="button" disabled={redoCount === 0 || busy} onClick={() => void runBusy(onRedo)} title="やり直し">
             ↪ やり直し
           </button>
-          {selection && (
-            <span className="slot-adjust-selection-badge">
-              {selection.studentName} を移動中
-              <button type="button" onClick={() => setSelection(null)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
-            </span>
-          )}
+          {selection && (() => {
+            const [sDate, sSlot] = selection.slot.split('_')
+            const [, sm, sd] = sDate.split('-')
+            const isOtherWeek = !currentWeek.includes(sDate)
+            return (
+              <span className="slot-adjust-selection-badge">
+                {selection.studentName} を移動中（{Number(sm)}/{Number(sd)} {sSlot}限目）
+                {isOtherWeek && <span style={{ marginLeft: 6, fontSize: '0.85em', color: '#b91c1c' }}>※別の週から</span>}
+                <button type="button" onClick={() => setSelection(null)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+              </span>
+            )
+          })()}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button

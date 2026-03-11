@@ -32,7 +32,7 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
-import SlotAdjustView from './components/SlotAdjustView'
+import SlotAdjustView from './components/SlotAdjustView'\nimport WindowPortal from './components/WindowPortal'
 
 const APP_VERSION = '1.4.5'
 
@@ -8487,6 +8487,7 @@ service cloud.firestore {
   return (
     <div className="app-shell">
       {showSlotAdjust && (
+        <WindowPortal title="コマ調整" onClose={() => setShowSlotAdjust(false)}>
         <SlotAdjustView
           data={data}
           instructors={instructors}
@@ -8501,8 +8502,7 @@ service cloud.firestore {
               const pos = assign.studentIds.length
               return setSlotStudent(slot, idx, pos, studentId)
             }
-            // No existing assignment — create via moveStudentToSlot with a dummy source
-            // Use a direct assignment creation instead
+            // No existing assignment — create new
             return updateAssignments((current) => {
               const slotAssignments = [...(current.assignments[slot] ?? [])]
               const deskCount = current.settings.deskCount ?? 0
@@ -8525,7 +8525,28 @@ service cloud.firestore {
           undoCount={undoCount}
           redoCount={redoCount}
           onClose={() => setShowSlotAdjust(false)}
+          onSelectionChange={(sel) => {
+            const win = teacherScheduleWindowRef.current
+            if (!win || win.closed) return
+            const doc = win.document
+            doc.querySelectorAll('.sa-hl-source, .sa-hl-student').forEach(el => {
+              el.classList.remove('sa-hl-source', 'sa-hl-student')
+            })
+            if (!sel) return
+            // Highlight source slot
+            doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => {
+              el.classList.add('sa-hl-source')
+            })
+            // Highlight all cells containing the selected student
+            doc.querySelectorAll('td[data-student-ids]').forEach(el => {
+              const ids = (el.getAttribute('data-student-ids') ?? '').split(',')
+              if (ids.includes(sel.studentId)) {
+                el.classList.add('sa-hl-student')
+              }
+            })
+          }}
         />
+        </WindowPortal>
       )}
       <div className="panel">
         <div className="admin-header-row">
