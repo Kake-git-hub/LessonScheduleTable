@@ -186,6 +186,7 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
         other.innerHTML = value
       }
     })
+    try { localStorage.setItem(`studentSchedule_${key}`, value) } catch { /* quota */ }
   }
 
   scheduleWindow.pickLogo = () => {
@@ -202,11 +203,13 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
       reader.onload = (ev) => {
         const src = typeof ev.target?.result === 'string' ? ev.target.result : ''
         if (!src) return
+        const imgHtml = `<img src="${src}" alt="logo">`
         doc.querySelectorAll('[data-shared="logo-box"]').forEach((other) => {
           if (isHtmlElement(other)) {
-            other.innerHTML = `<img src="${src}" alt="logo">`
+            other.innerHTML = imgHtml
           }
         })
+        try { localStorage.setItem('studentSchedule_logo-box', imgHtml) } catch { /* quota */ }
       }
       reader.readAsDataURL(file)
     })
@@ -236,6 +239,16 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   const baseYear = new Date(data.settings.startDate).getFullYear()
   const reiwaYear = baseYear - 2018
   const slotsPerDay = data.settings.slotsPerDay || 5
+
+  // Restore saved defaults from localStorage
+  let savedLogo = ''
+  let savedSchoolText = ''
+  let savedSharedNotes = ''
+  try {
+    savedLogo = localStorage.getItem('studentSchedule_logo-box') ?? ''
+    savedSchoolText = localStorage.getItem('studentSchedule_school-text') ?? ''
+    savedSharedNotes = localStorage.getItem('studentSchedule_shared-notes') ?? ''
+  } catch { /* localStorage unavailable */ }
 
   // Group dates by month
   const datesByMonth: { month: string; dates: string[] }[] = []
@@ -354,8 +367,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       <div class="page${pageBreak}">
         <div class="header-row">
           <div class="header-left">
-            <div class="logo-box" data-shared="logo-box" onclick="window.pickLogo()"></div>
-            <div class="school-text" contenteditable="true" data-shared="school-text" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)"></div>
+            <div class="logo-box" data-shared="logo-box" onclick="window.pickLogo()">${savedLogo}</div>
+            <div class="school-text" contenteditable="true" data-shared="school-text" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)">${savedSchoolText}</div>
           </div>
           <div class="title-center">
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
@@ -381,7 +394,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
           <div class="notes-area">
             <div class="notes-col">
               <div class="notes-label">共通欄（全生徒に反映）</div>
-              <div class="notes-shared" contenteditable="true" data-shared="shared-notes" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)"></div>
+              <div class="notes-shared" contenteditable="true" data-shared="shared-notes" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)">${savedSharedNotes}</div>
             </div>
             <div class="notes-col">
               <div class="notes-label">個別欄</div>
