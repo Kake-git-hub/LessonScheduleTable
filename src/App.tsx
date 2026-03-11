@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.96'
+const APP_VERSION = '1.3.97'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -9513,7 +9513,9 @@ service cloud.firestore {
                                     if (subInfo) {
                                       regTeacherId = subInfo.regularTeacherId
                                     } else {
-                                      const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId))
+                                      const slotDow = getSlotDayOfWeek(slot)
+                                      const slotNum = getSlotNumber(slot)
+                                      const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId) && r.dayOfWeek === slotDow && r.slotNumber === slotNum)
                                       if (regLesson) regTeacherId = regLesson.teacherId
                                     }
                                     if (regTeacherId && assignment.teacherId && assignment.teacherId !== regTeacherId) {
