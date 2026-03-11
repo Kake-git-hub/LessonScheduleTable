@@ -156,6 +156,15 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         textColor: colorMakeup.text,
       }
     }
+    if (assignment.manualRegularMark?.[studentId]) {
+      const mark = assignment.manualRegularMark[studentId]
+      return {
+        text,
+        compareKey: `${studentId}|${studentSubject}|manual-${mark}`,
+        fillColor: mark === 'regular' ? colorNormal.fill : colorMakeup.fill,
+        textColor: pdfTextBlack,
+      }
+    }
     if (assignment.isRegular) {
       return {
         text,
