@@ -230,6 +230,23 @@ describe('countStudentLoad', () => {
     }
     expect(countStudentLoad(assignments, 's1')).toBe(1)
   })
+
+  it('with regularLessons, counts per-student regular status', () => {
+    const regularLessons = [
+      { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+    ]
+    // s1 is regular at 2026-07-21 (Tue) slot 1, s2 is NOT regular there
+    const assignments = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1', 's2'], subject: '数', isRegular: true }],
+      '2026-07-21_2': [{ teacherId: 't1', studentIds: ['s2'], subject: '英' }],
+    }
+    // Without regularLessons: both s1 and s2 excluded by isRegular
+    expect(countStudentLoad(assignments, 's1')).toBe(0)
+    expect(countStudentLoad(assignments, 's2')).toBe(1)
+    // With regularLessons: s1 is actually regular → excluded, s2 is NOT regular → counted
+    expect(countStudentLoad(assignments, 's1', regularLessons)).toBe(0)
+    expect(countStudentLoad(assignments, 's2', regularLessons)).toBe(2)
+  })
 })
 
 describe('countStudentSubjectLoad', () => {
@@ -241,6 +258,22 @@ describe('countStudentSubjectLoad', () => {
     }
     expect(countStudentSubjectLoad(assignments, 's1', '数')).toBe(2)
     expect(countStudentSubjectLoad(assignments, 's1', '英')).toBe(1)
+  })
+
+  it('with regularLessons, non-regular student in regular assignment is counted as lecture', () => {
+    const regularLessons = [
+      { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+    ]
+    // s2 is placed in a regular assignment but is NOT a regular student there
+    const assignments = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1', 's2'], subject: '数', isRegular: true }],
+    }
+    // Without regularLessons: excluded by isRegular for both
+    expect(countStudentSubjectLoad(assignments, 's2', '数')).toBe(0)
+    // With regularLessons: s2 is NOT regular → counted as lecture
+    expect(countStudentSubjectLoad(assignments, 's2', '数', regularLessons)).toBe(1)
+    // s1 is regular → still excluded
+    expect(countStudentSubjectLoad(assignments, 's1', '数', regularLessons)).toBe(0)
   })
 })
 

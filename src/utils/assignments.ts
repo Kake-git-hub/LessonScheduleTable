@@ -227,19 +227,57 @@ export const countStudentAssignedDates = (assignments: Record<string, Assignment
   return dates.size
 }
 
+/** Check if a student is actually a regular student at a given slot */
+const isStudentRegularAtSlot = (
+  regularLessons: RegularLesson[],
+  slotKey: string,
+  studentId: string,
+): boolean =>
+  findRegularLessonsForSlot(regularLessons, slotKey).some(r => r.studentIds.includes(studentId))
+
 /** Count how many SPECIAL (non-regular) slots a student is assigned */
-export const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string): number =>
-  allAssignments(assignments).filter((a) => a.studentIds.includes(studentId) && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId]).length
+export const countStudentLoad = (assignments: Record<string, Assignment[]>, studentId: string, regularLessons?: RegularLesson[]): number => {
+  let count = 0
+  for (const [slotKey, slotAssignments] of Object.entries(assignments)) {
+    for (const a of slotAssignments) {
+      if (!a.studentIds.includes(studentId)) continue
+      if (a.regularMakeupInfo?.[studentId] || a.regularSubstituteInfo?.[studentId]) continue
+      // Per-student regular check: if regularLessons provided, check whether this student is actually regular at this slot
+      if (regularLessons) {
+        if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
+      } else {
+        if (a.isRegular) continue
+      }
+      count++
+    }
+  }
+  return count
+}
 
 /** Count how many SPECIAL (non-regular) slots a student is assigned for a specific subject */
 export const countStudentSubjectLoad = (
   assignments: Record<string, Assignment[]>,
   studentId: string,
   subject: string,
-): number =>
-  allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId] && !a.manualRegularMark?.[studentId],
-  ).length
+  regularLessons?: RegularLesson[],
+): number => {
+  let count = 0
+  for (const [slotKey, slotAssignments] of Object.entries(assignments)) {
+    for (const a of slotAssignments) {
+      if (!a.studentIds.includes(studentId)) continue
+      if (getStudentSubject(a, studentId) !== subject) continue
+      if (a.regularMakeupInfo?.[studentId] || a.regularSubstituteInfo?.[studentId] || a.manualRegularMark?.[studentId]) continue
+      // Per-student regular check
+      if (regularLessons) {
+        if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
+      } else {
+        if (a.isRegular) continue
+      }
+      count++
+    }
+  }
+  return count
+}
 
 export type TeacherShortageEntry = {
   slot: string

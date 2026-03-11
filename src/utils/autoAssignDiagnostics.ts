@@ -72,7 +72,7 @@ export const diagnoseUnassignedStudents = (
     let totalRemaining = 0
 
     for (const [subj, requested] of Object.entries(student.subjectSlots ?? {})) {
-      const assigned = countStudentSubjectLoad(result, student.id, subj)
+      const assigned = countStudentSubjectLoad(result, student.id, subj, data.regularLessons)
       const remaining = Math.max(0, requested - assigned)
       subjectDemand[subj] = { requested, assigned, remaining }
       totalRemaining += remaining

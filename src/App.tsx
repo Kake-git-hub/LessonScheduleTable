@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.83'
+const APP_VERSION = '1.3.84'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -4561,7 +4561,7 @@ const AdminPage = () => {
         const groupSubjectSet = getGroupSubjectSetForStudent(student.id)
         const remaining = Object.entries(student.subjectSlots)
           .map(([subj, desired]) => {
-            const assigned = countStudentSubjectLoad(effectiveAssignments, student.id, subj)
+            const assigned = countStudentSubjectLoad(effectiveAssignments, student.id, subj, data.regularLessons)
             return { subj, rem: desired - assigned }
           })
           .filter((entry) => entry.rem !== 0)

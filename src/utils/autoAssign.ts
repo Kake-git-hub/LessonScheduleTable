@@ -665,15 +665,15 @@ export const buildIncrementalAutoAssignments = async (
         return student.subjects.some((baseSubj) => {
           if (!canTeachSubject(teacher.subjects, student.grade, baseSubj)) return false
           const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
-          const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
+          const allocated = countStudentSubjectLoad(result, student.id, baseSubj, data.regularLessons)
           return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, slotDate)
         })
       })
 
       if (candidates.length > 0 && assignment.studentIds.length < 2) {
         const best = candidates.sort((a, b) => {
-          const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id)
-          const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id)
+          const aRem = Object.values(a.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, a.id, data.regularLessons)
+          const bRem = Object.values(b.subjectSlots).reduce((s, c) => s + c, 0) - countStudentLoad(result, b.id, data.regularLessons)
           const aPreferred = (a.preferredSlots ?? []).includes(slot) ? 1 : 0
           const bPreferred = (b.preferredSlots ?? []).includes(slot) ? 1 : 0
           if (aPreferred !== bPreferred) return bPreferred - aPreferred
@@ -686,7 +686,7 @@ export const buildIncrementalAutoAssignments = async (
           if (!canUseSubjectForStudent(best.id, teacher.id, best.subjects, baseSubj, bestSlotDate)) return false
           if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
           const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
-          const allocated = countStudentSubjectLoad(result, best.id, baseSubj)
+          const allocated = countStudentSubjectLoad(result, best.id, baseSubj, data.regularLessons)
           return allocated < requested || hasMakeupForTeacher(best.id, teacher.id, baseSubj, bestSlotDate)
         }) ?? assignment.subject
         // Reconstruct studentSubjects
@@ -722,7 +722,7 @@ export const buildIncrementalAutoAssignments = async (
           markMakeupPair(slot, assignment, makeupDetail)
         } else {
           const addChangeInfo = describeStudentSubmissionChange(best.id)
-          const addReason = addChangeInfo || `${best.name}の${bestSubj}が未充足(残${(best.subjectSlots[bestSubj] ?? 0) - countStudentSubjectLoad(result, best.id, bestSubj)}コマ)のため空き枠に追加`
+          const addReason = addChangeInfo || `${best.name}の${bestSubj}が未充足(残${(best.subjectSlots[bestSubj] ?? 0) - countStudentSubjectLoad(result, best.id, bestSubj, data.regularLessons)}コマ)のため空き枠に追加`
           markChangedPair(slot, assignment, `生徒追加: ${best.name}(${bestSubj})\n理由: ${addReason}`)
         }
         changeLog.push({ slot, action: '生徒追加', detail: `${best.name}(${bestSubj}) を追加` })
@@ -734,7 +734,7 @@ export const buildIncrementalAutoAssignments = async (
   {
     const demandSummary = data.students.map((s) => {
       const rem = Object.entries(s.subjectSlots)
-        .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj) }))
+        .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj, data.regularLessons) }))
         .filter((x) => x.rem > 0)
       return rem.length > 0 ? `${s.name}: ${rem.map((x) => `${x.subj}残${x.rem}`).join(',')}` : null
     }).filter(Boolean)
@@ -895,7 +895,7 @@ export const buildIncrementalAutoAssignments = async (
             if (!canUseSubjectForStudent(s1.id, teacher.id, s1.subjects, baseSubj, currentDate)) return false
             if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
             const req = (s1.subjectSlots ?? {})[baseSubj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s1.id, baseSubj)
+            const alloc = countStudentSubjectLoad(result, s1.id, baseSubj, data.regularLessons)
             return alloc < req || hasMakeupForTeacher(s1.id, teacher.id, baseSubj, currentDate)
           })
           const s2Viable = teachableBaseSubjects(teacher.subjects, s2.grade).filter((baseSubj) => {
@@ -903,7 +903,7 @@ export const buildIncrementalAutoAssignments = async (
             if (!canUseSubjectForStudent(s2.id, teacher.id, s2.subjects, baseSubj, currentDate)) return false
             if (makeupSubjects.length > 0 && !makeupSubjects.includes(baseSubj)) return false
             const req = (s2.subjectSlots ?? {})[baseSubj] ?? 0
-            const alloc = countStudentSubjectLoad(result, s2.id, baseSubj)
+            const alloc = countStudentSubjectLoad(result, s2.id, baseSubj, data.regularLessons)
             return alloc < req || hasMakeupForTeacher(s2.id, teacher.id, baseSubj, currentDate)
           })
           // Only add mixed plans where subjects actually differ
@@ -936,7 +936,7 @@ export const buildIncrementalAutoAssignments = async (
         let remainingSlotScore = 0
         for (const st of combo) {
           const totalRequested = Object.values(st.subjectSlots).reduce((s, c) => s + c, 0)
-          const totalAssigned = countStudentLoad(result, st.id)
+          const totalAssigned = countStudentLoad(result, st.id, data.regularLessons)
           remainingSlotScore += (totalRequested - totalAssigned) * 20
         }
 
@@ -1092,7 +1092,7 @@ export const buildIncrementalAutoAssignments = async (
     const phase4Students = data.students
       .map((s) => {
         const remEntries = Object.entries(s.subjectSlots)
-          .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj) }))
+          .map(([subj, req]) => ({ subj, rem: req - countStudentSubjectLoad(result, s.id, subj, data.regularLessons) }))
           .filter((x) => x.rem > 0)
         return { student: s, remaining: remEntries }
       })
@@ -1112,7 +1112,7 @@ export const buildIncrementalAutoAssignments = async (
 
     for (const { student, remaining } of phase4Students) {
       for (const { subj } of remaining) {
-        let currentRem = (student.subjectSlots[subj] ?? 0) - countStudentSubjectLoad(result, student.id, subj)
+        let currentRem = (student.subjectSlots[subj] ?? 0) - countStudentSubjectLoad(result, student.id, subj, data.regularLessons)
         while (currentRem > 0) {
           await yieldToMain()
 
