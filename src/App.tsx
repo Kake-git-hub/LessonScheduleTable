@@ -7374,6 +7374,13 @@ const AdminPage = () => {
 
     const assignments = data.assignments
     const groupLessons = data.groupLessons ?? []
+    const nameById = (id: string): string => {
+      const t = instructors.find((x) => x.id === id)
+      if (t) return t.name
+      const s = data.students.find((x) => x.id === id)
+      if (s) return s.name
+      return id
+    }
 
     // ── 1. 限別の生徒配置数集計 ──
     const slotDistribution: Record<number, { total: number; elementary: number; secondary: number }> = {}
@@ -7391,11 +7398,28 @@ const AdminPage = () => {
       }
     }
 
-    // ── 2. 生徒ごとの詳細 ──
+    // ── 2. コマ別の全割当一覧 (ペア構成を見られるようにする) ──
+    const timetable: Record<string, { desk: number; teacher: string; students: { name: string; grade: string; subject: string }[]; isRegular: boolean; isGroupLesson: boolean }[]> = {}
+    for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
+      timetable[slotKey] = slotAssigns.map((a, idx) => {
+        const teacher = instructors.find((t) => t.id === a.teacherId)
+        return {
+          desk: idx + 1,
+          teacher: teacher?.name ?? (a.teacherUnassignedReason ? `(未割当: ${a.teacherUnassignedReason})` : a.teacherId),
+          students: a.studentIds.map((sid) => {
+            const st = data.students.find((s) => s.id === sid)
+            return { name: st?.name ?? sid, grade: st?.grade ?? '?', subject: getStudentSubject(a, sid) }
+          }),
+          isRegular: !!a.isRegular,
+          isGroupLesson: !!a.isGroupLesson,
+        }
+      })
+    }
+
+    // ── 3. 生徒ごとの詳細 ──
     const studentDetails = data.students.map((st) => {
       const cards = st.constraintCards ?? getDefaultConstraintCards(st.grade)
-      // この生徒が割り当てられている全コマを収集
-      const assignedSlots: { slotKey: string; slotNum: number; date: string; teacherId: string; teacherName: string; subject: string; isRegular: boolean; constraintScore: number; scoreBreakdown: Record<string, number> }[] = []
+      const assignedSlots: { slotKey: string; slotNum: number; date: string; teacherName: string; subject: string; pairStudents: string[]; isRegular: boolean; isGroupLesson: boolean; constraintScore: number; scoreBreakdown: Record<string, number> }[] = []
 
       for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
         for (const a of slotAssigns) {
@@ -7404,14 +7428,15 @@ const AdminPage = () => {
           const date = slotKey.split('_')[0]
           const teacher = instructors.find((t) => t.id === a.teacherId)
           const subject = getStudentSubject(a, st.id)
+          const pairStudents = a.studentIds.filter((sid) => sid !== st.id).map((sid) => {
+            const ps = data.students.find((s) => s.id === sid)
+            return ps ? `${ps.name}(${ps.grade})` : sid
+          })
 
-          // 制約カードの再評価（各カードの個別スコアも取得）
           const fullEval = evaluateConstraintCards(
             st, slotKey, assignments, data.settings.slotsPerDay,
             data.regularLessons, groupLessons, a.teacherId,
           )
-
-          // 個別カードのスコアを算出
           const breakdown: Record<string, number> = {}
           for (const card of cards) {
             const singleCardStudent = { ...st, constraintCards: [card] as ConstraintCardType[] }
@@ -7420,7 +7445,7 @@ const AdminPage = () => {
               data.regularLessons, groupLessons, a.teacherId,
             )
             if (singleEval.score !== 0 || singleEval.blocked) {
-              breakdown[card] = singleEval.blocked ? -99999 : singleEval.score
+              breakdown[CONSTRAINT_CARD_LABELS[card]] = singleEval.blocked ? -99999 : singleEval.score
             }
           }
 
@@ -7428,10 +7453,11 @@ const AdminPage = () => {
             slotKey,
             slotNum,
             date,
-            teacherId: a.teacherId,
             teacherName: teacher?.name ?? a.teacherId,
             subject,
+            pairStudents,
             isRegular: !!a.isRegular,
+            isGroupLesson: !!a.isGroupLesson,
             constraintScore: fullEval.score,
             scoreBreakdown: breakdown,
           })
@@ -7439,7 +7465,6 @@ const AdminPage = () => {
       }
       assignedSlots.sort((a, b) => a.slotKey.localeCompare(b.slotKey))
 
-      // 限別の配置回数
       const slotNumCounts: Record<number, number> = {}
       for (const s of assignedSlots) {
         if (!s.isRegular) slotNumCounts[s.slotNum] = (slotNumCounts[s.slotNum] ?? 0) + 1
@@ -7452,19 +7477,52 @@ const AdminPage = () => {
         subjectSlots: st.subjectSlots,
         totalRequested: Object.values(st.subjectSlots).reduce((s, c) => s + c, 0),
         totalAssigned: assignedSlots.filter((s) => !s.isRegular).length,
+        unavailableDates: st.unavailableDates,
         slotNumCounts,
         assignments: assignedSlots,
       }
     })
 
-    // ── 3. 講師ごとの稼働集計 ──
+    // ── 4. 講師ごとの稼働集計 ──
     const teacherSummary = instructors.map((t) => {
       const slots: string[] = []
       for (const [slotKey, slotAssigns] of Object.entries(assignments)) {
         if (slotAssigns.some((a) => a.teacherId === t.id)) slots.push(slotKey)
       }
-      return { name: t.name, totalSlots: slots.length, subjects: t.subjects }
+      const availableSlots = data.availability[`teacher_${t.id}`] ?? []
+      return { name: t.name, totalSlots: slots.length, subjects: t.subjects, availableSlotCount: availableSlots.length }
     })
+
+    // ── 5. ペア制約（相性） ──
+    const pairConstraints = data.constraints.map((c) => ({
+      personA: `${c.personAType === 'teacher' ? '講師' : '生徒'}:${nameById(c.personAId)}`,
+      personB: `${c.personBType === 'teacher' ? '講師' : '生徒'}:${nameById(c.personBId)}`,
+      type: c.type === 'incompatible' ? '相性不可' : '推奨',
+    }))
+
+    // ── 6. 学年制約 ──
+    const gradeConstraints = data.gradeConstraints.map((gc) => ({
+      teacher: nameById(gc.teacherId),
+      grade: gc.grade,
+      type: gc.type === 'incompatible' ? '不可' : '推奨',
+      subjects: gc.subjects,
+    }))
+
+    // ── 7. 通常授業 ──
+    const dayNames = ['日', '月', '火', '水', '木', '金', '土']
+    const regularLessons = data.regularLessons.map((rl) => ({
+      teacher: nameById(rl.teacherId),
+      students: rl.studentIds.map((sid) => nameById(sid)),
+      subject: rl.subject,
+      dayOfWeek: dayNames[rl.dayOfWeek] ?? String(rl.dayOfWeek),
+      slotNumber: rl.slotNumber,
+    }))
+
+    // ── 8. 制約カードの説明 ──
+    const constraintCardDescriptions: Record<string, string> = {}
+    for (const card of ALL_CONSTRAINT_CARDS) {
+      constraintCardDescriptions[CONSTRAINT_CARD_LABELS[card]] = CONSTRAINT_CARD_DESCRIPTIONS[card]
+    }
 
     const analysis = {
       exportedAt: new Date().toISOString(),
@@ -7472,13 +7530,42 @@ const AdminPage = () => {
       slotsPerDay: data.settings.slotsPerDay,
       deskCount: data.settings.deskCount,
       period: { start: data.settings.startDate, end: data.settings.endDate },
+      holidays: data.settings.holidays,
+      constraintCardDescriptions,
       slotDistribution,
+      pairConstraints,
+      gradeConstraints,
+      regularLessons,
       teacherSummary,
       studentDetails,
+      timetable,
     }
 
     const json = JSON.stringify(analysis, null, 2)
-    const prompt = 'このデータを分析して、以降ユーザーの質問に答えてください\n\n'
+    const prompt = `あなたは個別指導塾のコマ割り表（スケジュール）分析アシスタントです。
+以下のJSONは、講習セッションの全割当データです。
+
+【データ構造の説明】
+- timetable: コマ(slotKey=日付_限番号)ごとの全ペア。desk番号・講師・生徒(名前,学年,科目)・通常授業/集団授業フラグ
+- studentDetails: 生徒ごとの割当・制約カード・希望コマ数・出席不可日
+- pairConstraints: 「相性不可」「推奨」のペア制約（講師×生徒、生徒×生徒）
+- gradeConstraints: 講師の学年別担当可否
+- constraintCardDescriptions: 各制約カードの意味（[絶対]はハード制約、[推奨]はソフト制約）
+- scoreBreakdown: 各割当の制約スコア内訳（マイナスは制約違反、-99999はハード制約違反）
+- regularLessons: 通常授業の固定スケジュール（曜日・コマ番号）
+
+【ルール】
+- 1コマ = 講師1人 + 生徒1〜2人のペア。生徒2人の場合「ペア授業」
+- 同一コマに同じ講師は1ペアのみ担当可能
+- 相性不可の組み合わせ同士は同一ペアにできない
+- 制約カードは生徒単位で設定。ハード制約([絶対])違反はスコア-99999
+- slotKey「2026-03-23_3」= 2026年3月23日の3限
+
+このデータに基づいてユーザーの質問に正確に回答してください。
+推測ではなくデータの事実に基づいて答えてください。
+データに根拠がない場合は「このデータからは判断できません」と回答してください。
+
+`
     const clipText = prompt + json
     void navigator.clipboard.writeText(clipText).then(
       () => alert('AIプロンプト付き解析データをクリップボードにコピーしました。\nAIチャットに貼り付けて分析してください。'),
