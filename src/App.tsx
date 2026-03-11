@@ -32,7 +32,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.75'
+const APP_VERSION = '1.3.76'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3209,7 +3209,7 @@ const AdminPage = () => {
   const { data, setData, loading, error: sessionError } = useSessionData(classroomId, sessionId)
   const [authorized, setAuthorized] = useState(import.meta.env.DEV || skipAuth)
   const [recentlyUpdated, setRecentlyUpdated] = useState<Set<string>>(new Set())
-  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string; regularTeacherId?: string } | null>(null)
+  const [dragInfo, setDragInfo] = useState<{ sourceSlot: string; sourceIdx: number; teacherId: string; studentIds: string[]; studentDragId?: string; studentDragSubject?: string } | null>(null)
   const [, setTransferSlot] = useState<string | null>(null)
   const [showRules, setShowRules] = useState(false)
   const [gridFilter, setGridFilter] = useState('')
@@ -8032,8 +8032,16 @@ const AdminPage = () => {
         const updatedTargetMakeupInfo = studentMakeupInfo
           ? { ...(targetAssignment.regularMakeupInfo ?? {}), [studentId]: studentMakeupInfo }
           : targetAssignment.regularMakeupInfo
-        const updatedTargetSubstituteInfo = existingSubstituteInfo
-          ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [studentId]: existingSubstituteInfo }
+        // Determine substitute info: if the target teacher is not the regular teacher, create substitute info
+        const regLessonForTarget = !isMendan ? current.regularLessons.find(r => r.studentIds.includes(studentId)) : undefined
+        const targetTeacherIsRegular = regLessonForTarget ? targetAssignment.teacherId === regLessonForTarget.teacherId : true
+        const studentSubstituteInfo = existingSubstituteInfo ?? (
+          studentMakeupInfo && regLessonForTarget && !targetTeacherIsRegular
+            ? { regularTeacherId: regLessonForTarget.teacherId, dayOfWeek: studentMakeupInfo.dayOfWeek, slotNumber: studentMakeupInfo.slotNumber, date: studentMakeupInfo.date }
+            : undefined
+        )
+        const updatedTargetSubstituteInfo = studentSubstituteInfo
+          ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [studentId]: studentSubstituteInfo }
           : targetAssignment.regularSubstituteInfo
         targetAssignments[targetIdx] = {
           ...targetAssignment,
@@ -8075,13 +8083,20 @@ const AdminPage = () => {
           }
         }
 
+        // Determine substitute info for new assignment
+        const newTeacherIsRegular = regLesson ? autoTeacherId === regLesson.teacherId : true
+        const newSubstituteInfo = existingSubstituteInfo ?? (
+          studentMakeupInfo && regLesson && !newTeacherIsRegular
+            ? { regularTeacherId: regLesson.teacherId, dayOfWeek: studentMakeupInfo.dayOfWeek, slotNumber: studentMakeupInfo.slotNumber, date: studentMakeupInfo.date }
+            : undefined
+        )
         targetAssignments.push({
           teacherId: autoTeacherId,
           studentIds: [studentId],
           subject: studentSubject,
           studentSubjects: { [studentId]: studentSubject },
           ...(studentMakeupInfo ? { regularMakeupInfo: { [studentId]: studentMakeupInfo } } : {}),
-          ...(existingSubstituteInfo ? { regularSubstituteInfo: { [studentId]: existingSubstituteInfo } } : {}),
+          ...(newSubstituteInfo ? { regularSubstituteInfo: { [studentId]: newSubstituteInfo } } : {}),
         })
       }
 
@@ -8671,7 +8686,7 @@ service cloud.firestore {
               )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　薄桃★=通常講師代行　紫★=担当外科目の通常講師代行　⚠=制約不可　担当外=担当科目外　クリックでペア/生徒を別コマへ移動可'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '緑★=通常　橙★=振替　桃★=講師代行　紫★=担当外講師代行（★は2つ並ぶ場合あり）　⚠=制約不可　担当外=担当科目外　クリックでペア/生徒を別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
               const rates = data.tierRates ?? { ...defaultTierRates }
@@ -8761,7 +8776,7 @@ service cloud.firestore {
                   <div style={{ display: 'grid', gap: '10px' }}>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>基本</h4>
-                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。青★=通常授業、黄★=振替、薄桃★=通常講師代行、紫★=担当外科目の通常講師代行。■=集団授業。机数上限あり。</p>
+                      <p style={{ margin: 0, color: '#475569' }}>1コマ = 講師1人 ＋ 生徒2人まで。緑★=通常授業、橙★=振替、桃★=講師代行、紫★=担当外講師代行（★は2つ並ぶ場合あり）。■=集団授業。机数上限あり。</p>
                     </section>
                     <section>
                       <h4 style={{ margin: '0 0 4px', fontSize: '14px', color: '#334155' }}>共通ルール（自動提案スコアリング・優先順）</h4>
@@ -8877,12 +8892,9 @@ service cloud.firestore {
                   if (!isStudentDrag || isSameSlot) return false
                   const draggedStudent = data.students.find((s) => s.id === dragInfo.studentDragId)
                   const dragSubject = dragInfo.studentDragSubject ?? ''
-                  const regTid = dragInfo.regularTeacherId
                   // Check if any existing block can accept (has space, not group, and teacher can teach subject)
                   const hasAcceptableBlock = slotAssignments.some((a) => {
                     if (a.isGroupLesson || a.studentIds.length >= 2) return false
-                    // For regular student: only allow their regular teacher's block
-                    if (regTid && a.teacherId !== regTid) return false
                     if (!isMendan && draggedStudent && dragSubject && a.teacherId) {
                       const teacher = instructors.find(t => t.id === a.teacherId) as Teacher | undefined
                       if (teacher && !canTeachSubject(teacher.subjects ?? [], draggedStudent.grade, dragSubject)) return false
@@ -8891,12 +8903,6 @@ service cloud.firestore {
                   })
                   if (hasAcceptableBlock) return false
                   // No existing block accepts — check if a compatible teacher exists for new pair
-                  if (regTid) {
-                    // Regular student: only their regular teacher can form a new pair
-                    if (usedTeacherIds.has(regTid)) return true
-                    if (!hasAvailability(data.availability, instructorPersonType, regTid, slot)) return true
-                    return false
-                  }
                   for (const inst of instructors) {
                     if (usedTeacherIds.has(inst.id)) continue
                     if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
@@ -8919,12 +8925,6 @@ service cloud.firestore {
                   const dragSubject = dragInfo.studentDragSubject ?? ''
                   const dCount = data.settings.deskCount ?? 0
                   if (dCount > 0 && slotAssignments.length >= dCount) return false
-                  const regTid = dragInfo.regularTeacherId
-                  if (regTid) {
-                    // Regular student: only their regular teacher can form a new pair
-                    if (usedTeacherIds.has(regTid)) return false
-                    return hasAvailability(data.availability, instructorPersonType, regTid, slot)
-                  }
                   for (const inst of instructors) {
                     if (usedTeacherIds.has(inst.id)) continue
                     if (!hasAvailability(data.availability, instructorPersonType, inst.id, slot)) continue
@@ -9246,9 +9246,6 @@ service cloud.firestore {
                         })
                         const isTeacherCompatibleForDrag = (() => {
                           if (!isStudentDropCandidate || !selectedTeacher) return true
-                          // For regular student: only allow their regular teacher's block
-                          const regTid = dragInfo.regularTeacherId
-                          if (regTid && selectedTeacher.id !== regTid) return false
                           const draggedStudent = data.students.find(s => s.id === draggedStudentId)
                           const dragSubject = isStudentDrag ? dragInfo.studentDragSubject ?? '' : ''
                           if (!draggedStudent || !dragSubject) return true
@@ -9405,32 +9402,55 @@ service cloud.firestore {
                                   if (studentSubject && !studentSubjectOptions.includes(studentSubject)) {
                                     studentSubjectOptions.unshift(studentSubject)
                                   }
-                                  // Compute ★ badge for this student (shown in left column)
+                                  // Compute ★ badge(s) for this student (shown in left column)
+                                  // Star 1: slot type (green=通常, orange=振替), Star 2: teacher status (pink=代行, purple=担当外)
                                   const starBadge = (() => {
                                     if (!currentStudentId || isMendan) return null
                                     const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
+                                    const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
                                     const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
                                     const subInfo = assignment.regularSubstituteInfo?.[currentStudentId]
-                                    if (subInfo) {
-                                      const isUnsupportedSubstitute = isUnsupportedSubstituteStudent(assignment, currentStudentId)
-                                      const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
-                                      const origLabel = subInfo.date ? `${fmtMkDate(subInfo.date)} ${subInfo.slotNumber}限` : `${DAY_NAMES_STAR[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限`
-                                      const regularTeacherName = data.teachers.find((t) => t.id === subInfo.regularTeacherId)?.name ?? subInfo.regularTeacherId
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: isUnsupportedSubstitute ? '#c4b5fd' : '#fbcfe8', color: isUnsupportedSubstitute ? '#4c1d95' : '#9d174d' }} title={isUnsupportedSubstitute ? `通常講師代行（担当外科目: ${regularTeacherName} の ${origLabel} を代行）` : `通常講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
-                                    }
-                                    if (isRegAtSlot) return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
-                                    if (mkInfo) {
-                                      const fmtMkDate = (d: string) => { const [, m, day] = d.split('-'); return `${Number(m)}/${Number(day)}` }
+
+                                    // Star 1: Slot type
+                                    let star1: React.ReactNode = null
+                                    if (isRegAtSlot) {
+                                      star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
+                                    } else if (mkInfo) {
                                       const origLabel = mkInfo.date ? `${fmtMkDate(mkInfo.date)} ${mkInfo.slotNumber}限` : `${DAY_NAMES_STAR[mkInfo.dayOfWeek]}曜${mkInfo.slotNumber}限`
                                       const [curDate] = slot.split('_')
                                       const curSlotNum = getSlotNumber(slot)
                                       const destLabel = `${fmtMkDate(curDate)} ${curSlotNum}限`
-                                      const regularTeacherId = data.regularLessons.find((lesson) => lesson.studentIds.includes(currentStudentId) && lesson.dayOfWeek === mkInfo.dayOfWeek && lesson.slotNumber === mkInfo.slotNumber)?.teacherId ?? assignment.teacherId
-                                      const reasonLabel = formatMakeupReasonLabel(getMakeupReasonKind(data, currentStudentId, regularTeacherId, mkInfo))
-                                      return <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`${reasonLabel}の振替（${origLabel} → ${destLabel}）`}>★</span>
+                                      const mkRegTeacherId = data.regularLessons.find((lesson) => lesson.studentIds.includes(currentStudentId) && lesson.dayOfWeek === mkInfo.dayOfWeek && lesson.slotNumber === mkInfo.slotNumber)?.teacherId ?? assignment.teacherId
+                                      const reasonLabel = formatMakeupReasonLabel(getMakeupReasonKind(data, currentStudentId, mkRegTeacherId, mkInfo))
+                                      star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`${reasonLabel}の振替（${origLabel} → ${destLabel}）`}>★</span>
                                     }
-                                    return null
+
+                                    // Star 2: Teacher status (pink=代行, purple=担当外科目)
+                                    let star2: React.ReactNode = null
+                                    let regTeacherId: string | undefined
+                                    if (subInfo) {
+                                      regTeacherId = subInfo.regularTeacherId
+                                    } else {
+                                      const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId))
+                                      if (regLesson) regTeacherId = regLesson.teacherId
+                                    }
+                                    if (regTeacherId && assignment.teacherId && assignment.teacherId !== regTeacherId) {
+                                      const curTeacher = data.teachers.find(t => t.id === assignment.teacherId)
+                                      const curStudent = data.students.find(s => s.id === currentStudentId)
+                                      const curSubject = getStudentSubject(assignment, currentStudentId)
+                                      const isUnsupported = curTeacher && curStudent ? !canTeachSubject(curTeacher.subjects, curStudent.grade, curSubject) : false
+                                      const regularTeacherName = data.teachers.find(t => t.id === regTeacherId)?.name ?? regTeacherId
+                                      if (subInfo) {
+                                        const origLabel = subInfo.date ? `${fmtMkDate(subInfo.date)} ${subInfo.slotNumber}限` : `${DAY_NAMES_STAR[subInfo.dayOfWeek]}曜${subInfo.slotNumber}限`
+                                        star2 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: isUnsupported ? '#c4b5fd' : '#fbcfe8', color: isUnsupported ? '#4c1d95' : '#9d174d' }} title={isUnsupported ? `担当外講師代行（${regularTeacherName} の ${origLabel} を代行）` : `講師代行（${regularTeacherName} の ${origLabel} を代行）`}>★</span>
+                                      } else {
+                                        star2 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: isUnsupported ? '#c4b5fd' : '#fbcfe8', color: isUnsupported ? '#4c1d95' : '#9d174d' }} title={isUnsupported ? `担当外講師代行（通常: ${regularTeacherName}）` : `講師代行（通常: ${regularTeacherName}）`}>★</span>
+                                      }
+                                    }
+
+                                    if (!star1 && !star2) return null
+                                    return <>{star1}{star2}</>
                                   })()
                                   const isSourceStudent = isDragActive && isStudentDrag && isSourceSlot && dragInfo.sourceIdx === idx && dragInfo.studentDragId === currentStudentId
                                   return (
@@ -9523,11 +9543,6 @@ service cloud.firestore {
                                         title="生徒を別コマへ移動"
                                         style={{ cursor: 'pointer', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '0 4px', color: '#2563eb', fontSize: '0.8em', lineHeight: 1.4, flexShrink: 0, marginLeft: 2 }}
                                         onClick={() => {
-                                          // Find the regular lesson teacher for this student (if any)
-                                          const regLesson = data.regularLessons.find(r => r.studentIds.includes(currentStudentId))
-                                          const substituteInfo = assignment.regularSubstituteInfo?.[currentStudentId]
-                                          const makeupInfo = assignment.regularMakeupInfo?.[currentStudentId]
-                                          const shouldRestrictToRegularTeacher = !substituteInfo && !!(assignment.isRegular || makeupInfo) && !!regLesson
                                           setDragInfo({
                                             sourceSlot: slot,
                                             sourceIdx: idx,
@@ -9535,7 +9550,6 @@ service cloud.firestore {
                                             studentIds: [currentStudentId],
                                             studentDragId: currentStudentId,
                                             studentDragSubject: studentSubject,
-                                            ...(shouldRestrictToRegularTeacher && regLesson ? { regularTeacherId: regLesson.teacherId } : {}),
                                           })
                                           setTransferSlot(slot)
                                         }}
