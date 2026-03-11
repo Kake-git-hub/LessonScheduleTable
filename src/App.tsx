@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.4.2'
+const APP_VERSION = '1.4.3'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -8118,7 +8118,7 @@ const AdminPage = () => {
           ...targetAssignment,
           studentIds: updatedTargetStudentIds,
           studentSubjects: updatedTargetStudentSubjects,
-          isRegular: false, // Mark as manual so auto-fill won't overwrite
+          // Preserve original isRegular — markSlotsManual already prevents auto-fill overwrite
           ...(updatedTargetMakeupInfo ? { regularMakeupInfo: updatedTargetMakeupInfo } : {}),
           ...(updatedTargetSubstituteInfo ? { regularSubstituteInfo: updatedTargetSubstituteInfo } : {}),
           ...(updatedTargetManualMark ? { manualRegularMark: updatedTargetManualMark } : {}),
@@ -8189,9 +8189,10 @@ const AdminPage = () => {
           studentIds: updatedSrcStudentIds,
           studentSubjects: updatedSrcStudentSubjects,
           // Keep isRegular if the source was regular — remaining students are still regular
-          ...(Object.keys(updatedSrcMakeupInfo).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo } : {}),
-          ...(Object.keys(updatedSrcSubstituteInfo).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo } : {}),
-          ...(Object.keys(updatedSrcManualMark).length > 0 ? { manualRegularMark: updatedSrcManualMark } : {}),
+          // Explicitly set to undefined when empty to override spread from srcAssignment
+          regularMakeupInfo: Object.keys(updatedSrcMakeupInfo).length > 0 ? updatedSrcMakeupInfo : undefined,
+          regularSubstituteInfo: Object.keys(updatedSrcSubstituteInfo).length > 0 ? updatedSrcSubstituteInfo : undefined,
+          manualRegularMark: Object.keys(updatedSrcManualMark).length > 0 ? updatedSrcManualMark : undefined,
         }
       }
 
@@ -8216,9 +8217,9 @@ const AdminPage = () => {
             ...srcAssignment,
             studentIds: updatedSrcStudentIds,
             studentSubjects: updatedSrcStudentSubjects,
-            ...(Object.keys(updatedSrcMakeupInfo2).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo2 } : {}),
-            ...(Object.keys(updatedSrcSubstituteInfo2).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo2 } : {}),
-            ...(Object.keys(updatedSrcManualMark2).length > 0 ? { manualRegularMark: updatedSrcManualMark2 } : {}),
+            regularMakeupInfo: Object.keys(updatedSrcMakeupInfo2).length > 0 ? updatedSrcMakeupInfo2 : undefined,
+            regularSubstituteInfo: Object.keys(updatedSrcSubstituteInfo2).length > 0 ? updatedSrcSubstituteInfo2 : undefined,
+            manualRegularMark: Object.keys(updatedSrcManualMark2).length > 0 ? updatedSrcManualMark2 : undefined,
           }
         }
         nextAssignments[sourceSlot] = mergedAssignments
