@@ -8843,6 +8843,10 @@ service cloud.firestore {
                   getStudentSubject,
                   isUnsupportedSubstituteStudent,
                   getIsoDayOfWeek,
+                  getAvailableTeacherNames: (slotKey) =>
+                    instructors
+                      .filter((t) => hasInstructorAvailability(instructorPersonType, t.id, slotKey))
+                      .map((t) => t.name),
                 })}
               >
                 PDF出力

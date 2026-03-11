@@ -83,6 +83,8 @@ export type SchedulePdfParams = {
   getStudentSubject: (a: Assignment, studentId: string) => string
   isUnsupportedSubstituteStudent?: (assignment: Assignment, studentId: string) => boolean
   getIsoDayOfWeek: (date: string) => number
+  /** Return display names of ALL available teachers for a given slot key (e.g. '2026-03-21_1') */
+  getAvailableTeacherNames?: (slotKey: string) => string[]
 }
 
 type StudentPdfCell = {
@@ -104,6 +106,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   const {
     classroomName, sessionName, startDate, endDate, slotsPerDay, deskCount, holidays,
     assignments, baselineAssignments, getTeacherName, getStudentName, getStudentGrade, getStudentSubject, isUnsupportedSubstituteStudent, getIsoDayOfWeek,
+    getAvailableTeacherNames,
   } = params
 
   if (!startDate || !endDate) { alert('開始日・終了日を設定してください。'); return }
@@ -369,25 +372,54 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const rowSlotNum: number[] = []
     const rowDeskIdx: number[] = []
     const rowHasAnyContent: boolean[] = []
+    /** Track which rows have an unassigned available teacher (for styling) */
+    const rowIsUnassignedTeacher: boolean[] = []
     const teacherLinesForFit: string[] = []
     const studentLinesForFit: string[] = []
     for (let slotNumber = 1; slotNumber <= slotsPerDay; slotNumber++) {
+      // Pre-compute unassigned available teachers per day for this slot
+      const unassignedTeachersByDay: string[][] = []
+      for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+        const date = fullWeek[dayIdx]
+        if (!lectureDateSet.has(date) || holidaySet.has(date) || !getAvailableTeacherNames) {
+          unassignedTeachersByDay.push([])
+          continue
+        }
+        const slotKey = `${date}_${slotNumber}`
+        const allAvailable = getAvailableTeacherNames(slotKey).map(n => normalizePdfDisplayText(n))
+        const assignedNames = new Set(
+          (assignments[slotKey] ?? [])
+            .filter(a => a.teacherId)
+            .map(a => normalizePdfDisplayText(getTeacherName(a.teacherId))),
+        )
+        unassignedTeachersByDay.push(allAvailable.filter(n => !assignedNames.has(n)))
+      }
+
       for (let deskIdx = 0; deskIdx < effectiveDeskCount; deskIdx++) {
         const row: string[] = [deskIdx === 0 ? formatSlotTimeLabel(slotNumber) : '']
         let hasAnyContent = false
+        let isUnassignedRow = false
         for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
           const date = fullWeek[dayIdx]
           const deskCell = buildDeskPdfCell(date, slotNumber, deskIdx, lectureDateSet, assignments)
-          if (deskCell.teacher || deskCell.student1.text || deskCell.student2.text) hasAnyContent = true
-          if (deskCell.teacher) teacherLinesForFit.push(deskCell.teacher)
+          // If this desk has no assigned teacher, fill with an unassigned available teacher
+          let teacherText = deskCell.teacher
+          const isFromUnassigned = !teacherText && unassignedTeachersByDay[dayIdx].length > 0
+          if (isFromUnassigned) {
+            teacherText = unassignedTeachersByDay[dayIdx].shift()!
+            isUnassignedRow = true
+          }
+          if (teacherText || deskCell.student1.text || deskCell.student2.text) hasAnyContent = true
+          if (teacherText) teacherLinesForFit.push(teacherText)
           studentLinesForFit.push(...deskCell.student1.text.split('\n').filter(Boolean))
           studentLinesForFit.push(...deskCell.student2.text.split('\n').filter(Boolean))
-          row.push(String(deskIdx + 1), deskCell.teacher, deskCell.student1.text, deskCell.student2.text)
+          row.push(String(deskIdx + 1), teacherText, deskCell.student1.text, deskCell.student2.text)
         }
         bodyRows.push(row)
         rowSlotNum.push(slotNumber)
         rowDeskIdx.push(deskIdx)
         rowHasAnyContent.push(hasAnyContent)
+        rowIsUnassignedTeacher.push(isUnassignedRow)
       }
     }
 
@@ -565,6 +597,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
             hookData.cell.styles.halign = 'center'
             hookData.cell.styles.valign = 'middle'
             hookData.cell.styles.fontStyle = 'normal'
+            // Gray out unassigned available teachers (no students)
+            if (rowIsUnassignedTeacher[hookData.row.index] && !deskCell.teacher) {
+              hookData.cell.styles.textColor = [140, 140, 140]
+            }
           }
 
           if (daySubCol === 2 || daySubCol === 3) {
