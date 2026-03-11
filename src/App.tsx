@@ -8193,7 +8193,7 @@ const AdminPage = () => {
     studentId: string,
     targetSlot: string,
     targetIdx?: number, // if provided, add to existing assignment; otherwise create new
-    options?: { skipAvailCheck?: boolean },
+    options?: { skipAvailCheck?: boolean; preferTeacherId?: string },
   ): Promise<void> => {
     await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
@@ -8277,9 +8277,13 @@ const AdminPage = () => {
         const instructorsList = isMendan ? current.managers : current.teachers
         const pType: PersonType = isMendan ? 'manager' : 'teacher'
         let autoTeacherId = ''
+        // If a specific teacher was requested (e.g. from SlotAdjustView), use that first
+        if (options?.preferTeacherId && !usedTeacherIdsInTarget.has(options.preferTeacherId) && hasAvailability(current.availability, pType, options.preferTeacherId, targetSlot)) {
+          autoTeacherId = options.preferTeacherId
+        }
         // For regular students, prefer their regular teacher (only if they can teach the subject)
         const regLesson = !isMendan ? current.regularLessons.find(r => r.studentIds.includes(studentId)) : undefined
-        if (regLesson?.teacherId && !usedTeacherIdsInTarget.has(regLesson.teacherId) && hasAvailability(current.availability, pType, regLesson.teacherId, targetSlot)) {
+        if (!autoTeacherId && regLesson?.teacherId && !usedTeacherIdsInTarget.has(regLesson.teacherId) && hasAvailability(current.availability, pType, regLesson.teacherId, targetSlot)) {
           const regTeacher = current.teachers.find(t => t.id === regLesson.teacherId)
           if (regTeacher && canTeachSubject(regTeacher.subjects, student?.grade ?? '', studentSubject)) {
             autoTeacherId = regLesson.teacherId
@@ -8488,8 +8492,8 @@ service cloud.firestore {
           instructors={instructors}
           instructorPersonType={instructorPersonType}
           isMendan={isMendan}
-          onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx) =>
-            moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true })
+          onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, targetTeacherId) =>
+            moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true, preferTeacherId: targetTeacherId })
           }
           onAddStudent={(slot, idx, studentId) => {
             const assign = (data.assignments[slot] ?? [])[idx]

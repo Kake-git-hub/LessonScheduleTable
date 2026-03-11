@@ -16,6 +16,7 @@ type SlotAdjustViewProps = {
     studentId: string,
     targetSlot: string,
     targetIdx?: number,
+    targetTeacherId?: string,
   ) => Promise<void>
   onAddStudent: (slot: string, idx: number, studentId: string) => Promise<void>
   onUndo: () => Promise<void>
@@ -268,10 +269,10 @@ export default function SlotAdjustView({
   }, [])
 
   const handleDestinationClick = useCallback(
-    async (targetSlot: string, targetIdx?: number) => {
+    async (targetSlot: string, targetIdx?: number, targetTeacherId?: string) => {
       if (!selection || busy) return
       await runBusy(async () => {
-        await onMove(selection.slot, selection.assignmentIdx, selection.studentId, targetSlot, targetIdx)
+        await onMove(selection.slot, selection.assignmentIdx, selection.studentId, targetSlot, targetIdx, targetTeacherId)
         setSelection(null)
       })
     },
@@ -432,6 +433,7 @@ export default function SlotAdjustView({
 
                       // Unassigned available teacher
                       let unassignedTeacher = ''
+                      let unassignedTeacherId = ''
                       if (isLecture && !assignment?.teacherId) {
                         const assignedIds = new Set(
                           slotAssigns.map((a) => a.teacherId).filter(Boolean),
@@ -444,6 +446,7 @@ export default function SlotAdjustView({
                           )
                           if (unassignedOffset < unassignedList.length) {
                             unassignedTeacher = unassignedList[unassignedOffset].name
+                            unassignedTeacherId = unassignedList[unassignedOffset].id
                           }
                         }
                       }
@@ -512,7 +515,7 @@ export default function SlotAdjustView({
                               if (sId && !selection) {
                                 handleStudentClick(slotKey, deskIdx, sId)
                               } else if (selection && canAcceptHere && !isSource) {
-                                void handleDestinationClick(slotKey, assignment ? deskIdx : undefined)
+                                void handleDestinationClick(slotKey, assignment ? deskIdx : undefined, !assignment ? unassignedTeacherId || undefined : undefined)
                               } else if (showPicker) {
                                 setStudentPicker(isPickerOpen ? null : { slot: slotKey, deskIdx })
                               }
