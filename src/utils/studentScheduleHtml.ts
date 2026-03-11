@@ -307,7 +307,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   }
 
   const holidaySet = new Set(data.settings.holidays)
-  const students = [...data.students].sort((a, b) => a.name.localeCompare(b.name, 'ja'))
+  const students = data.students
   const sessionName = data.settings.name || ''
   const baseYear = new Date(data.settings.startDate).getFullYear()
   const reiwaYear = baseYear - 2018
@@ -756,7 +756,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
   }
 
   const holidaySet = new Set(data.settings.holidays)
-  const students = [...data.students].sort((a, b) => a.name.localeCompare(b.name, 'ja'))
+  const students = data.students
   const sessionName = data.settings.name || ''
   const baseYear = new Date(data.settings.startDate).getFullYear()
   const reiwaYear = baseYear - 2018
