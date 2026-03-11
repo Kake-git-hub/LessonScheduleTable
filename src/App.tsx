@@ -7793,16 +7793,50 @@ const AdminPage = () => {
     return !canTeachSubject(teacher.subjects, student.grade, subject)
   }
 
+  /** Migrate autoAssignHighlights when an assignment's signature changes (or is removed) */
+  const migrateHighlightSig = (
+    hl: NonNullable<SessionData['autoAssignHighlights']>,
+    slot: string,
+    oldSig: string,
+    newSig: string | null, // null = assignment was deleted
+  ): SessionData['autoAssignHighlights'] => {
+    if (oldSig === newSig) return hl
+    const added = { ...(hl.added ?? {}) }
+    const changed = { ...(hl.changed ?? {}) }
+    const makeup = { ...(hl.makeup ?? {}) }
+    const details = { ...(hl.changeDetails ?? {}) }
+    for (const sigMap of [added, changed, makeup]) {
+      if (sigMap[slot]?.includes(oldSig)) {
+        sigMap[slot] = sigMap[slot].filter((s) => s !== oldSig)
+        if (newSig) sigMap[slot] = [...sigMap[slot], newSig]
+        if (sigMap[slot].length === 0) delete sigMap[slot]
+      }
+    }
+    if (details[slot]?.[oldSig]) {
+      const oldDetail = details[slot][oldSig]
+      delete details[slot][oldSig]
+      if (newSig) {
+        if (!details[slot]) details[slot] = {}
+        details[slot][newSig] = oldDetail
+      }
+      if (details[slot] && Object.keys(details[slot]).length === 0) delete details[slot]
+    }
+    return { ...hl, added, changed, makeup, changeDetails: details }
+  }
+
   const deleteSlotAssignment = async (slot: string, idx: number): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
-      if (!slotAssignments[idx]) return current
+      const deleted = slotAssignments[idx]
+      if (!deleted) return current
       markSlotsManual([slot])
+      const oldSig = assignmentSignature(deleted)
       slotAssignments.splice(idx, 1)
       const nextAssignments = { ...current.assignments }
       if (slotAssignments.length === 0) delete nextAssignments[slot]
       else nextAssignments[slot] = slotAssignments
-      return { ...current, assignments: nextAssignments }
+      const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, null)
+      return { ...current, assignments: nextAssignments, autoAssignHighlights: nextHL }
     })
   }
 
@@ -7812,6 +7846,7 @@ const AdminPage = () => {
       const prev = slotAssignments[idx]
       if (!prev) return current
 
+      const oldSig = assignmentSignature(prev)
       markSlotsManual([slot])
 
       if (!teacherId) {
@@ -7821,9 +7856,12 @@ const AdminPage = () => {
           teacherUnavailableOriginalId: undefined,
         }
         delete slotAssignments[idx].teacherUnassignedReason
+        const newSig = assignmentSignature(slotAssignments[idx])
+        const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
         return {
           ...current,
           assignments: { ...current.assignments, [slot]: slotAssignments },
+          autoAssignHighlights: nextHL,
         }
       }
 
@@ -7868,9 +7906,12 @@ const AdminPage = () => {
         ...(nextRegularSubstituteInfo ? { regularSubstituteInfo: { ...nextRegularSubstituteInfo } } : {}),
       }
 
+      const newSig = assignmentSignature(slotAssignments[idx])
+      const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
       return {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
+        autoAssignHighlights: nextHL,
       }
     })
   }
@@ -7898,6 +7939,8 @@ const AdminPage = () => {
       if (!assignment) {
         return current
       }
+
+      const oldSig = assignmentSignature(assignment)
 
       const prevIds = [...assignment.studentIds]
       const removedId = prevIds[position]
@@ -7949,9 +7992,12 @@ const AdminPage = () => {
         studentSubjects: studentIds.length > 0 ? newStudentSubjects : {},
       }
 
+      const newSig = assignmentSignature(slotAssignments[idx])
+      const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
       return {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
+        autoAssignHighlights: nextHL,
       }
     })
   }
@@ -7964,6 +8010,7 @@ const AdminPage = () => {
       if (!assignment) {
         return current
       }
+      const oldSig = assignmentSignature(assignment)
       if (studentId) {
         // Per-student subject change
         const studentSubjects = { ...(assignment.studentSubjects ?? {}) }
@@ -7981,9 +8028,12 @@ const AdminPage = () => {
         }
         slotAssignments[idx] = { ...assignment, subject, studentSubjects: assignment.studentIds.length > 0 ? studentSubjects : {} }
       }
+      const newSig = assignmentSignature(slotAssignments[idx])
+      const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
       return {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
+        autoAssignHighlights: nextHL,
       }
     })
   }
@@ -8080,24 +8130,30 @@ const AdminPage = () => {
 
       // Highlight moved pair as UPDATE
       const hl = current.autoAssignHighlights ?? {}
+      const oldSig = assignmentSignature(moved)
+      const newSig = assignmentSignature(movedCopy)
       const changedSigs = { ...(hl.changed ?? {}) }
-      const sig = assignmentSignature(moved)
-      changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
-      // Remove old highlight from source slot
+      changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), newSig]
+      // Remove old highlight from source slot (try both old and new sigs)
       if (changedSigs[sourceSlot]) {
-        changedSigs[sourceSlot] = changedSigs[sourceSlot].filter((s) => s !== sig)
+        changedSigs[sourceSlot] = changedSigs[sourceSlot].filter((s) => s !== oldSig && s !== newSig)
         if (changedSigs[sourceSlot].length === 0) delete changedSigs[sourceSlot]
       }
       const addedSigs = { ...(hl.added ?? {}) }
       if (addedSigs[sourceSlot]) {
-        addedSigs[sourceSlot] = addedSigs[sourceSlot].filter((s) => s !== sig)
+        addedSigs[sourceSlot] = addedSigs[sourceSlot].filter((s) => s !== oldSig && s !== newSig)
         if (addedSigs[sourceSlot].length === 0) delete addedSigs[sourceSlot]
+      }
+      const makeupSigs = { ...(hl.makeup ?? {}) }
+      if (makeupSigs[sourceSlot]) {
+        makeupSigs[sourceSlot] = makeupSigs[sourceSlot].filter((s) => s !== oldSig && s !== newSig)
+        if (makeupSigs[sourceSlot].length === 0) delete makeupSigs[sourceSlot]
       }
       const details = { ...(hl.changeDetails ?? {}) }
       if (!details[targetSlot]) details[targetSlot] = {}
-      details[targetSlot][sig] = `ペア移動: ${sourceSlot} → ${targetSlot}`
+      details[targetSlot][newSig] = `ペア移動: ${sourceSlot} → ${targetSlot}`
 
-      return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, added: addedSigs, changeDetails: details } }
+      return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, added: addedSigs, makeup: makeupSigs, changeDetails: details } }
     })
   }
 
@@ -8290,6 +8346,19 @@ const AdminPage = () => {
         nextAssignments[targetSlot] = targetAssignments
       }
 
+      // Update autoAssignHighlights: clean up source, add target
+      let nextHL = current.autoAssignHighlights ?? {}
+      const oldSrcSig = assignmentSignature(srcAssignment)
+
+      // Get updated source assignment to compute its new signature
+      const finalSrcAssignments = nextAssignments[sourceSlot] ?? []
+      // For same-slot moves where source was deleted, sourceIdx may be out of bounds
+      const updatedSrcAssignment = sourceIdx < finalSrcAssignments.length ? finalSrcAssignments[sourceIdx] : undefined
+      const newSrcSig = updatedSrcAssignment ? assignmentSignature(updatedSrcAssignment) : null
+
+      // Migrate source assignment highlights from old sig to new sig
+      nextHL = migrateHighlightSig(nextHL, sourceSlot, oldSrcSig, newSrcSig)
+
       // Highlight moved student's target assignment as UPDATE
       // For same-slot moves, use the merged assignments; for cross-slot, use targetAssignments
       const finalTargetAssignments = isSameSlotMove ? (nextAssignments[targetSlot] ?? []) : targetAssignments
@@ -8298,25 +8367,24 @@ const AdminPage = () => {
         return a.studentIds.includes(studentId)
       })
       if (movedTargetAssignment) {
-        const hl = current.autoAssignHighlights ?? {}
         const sig = assignmentSignature(movedTargetAssignment)
-        const details = { ...(hl.changeDetails ?? {}) }
+        const details = { ...(nextHL.changeDetails ?? {}) }
         if (!details[targetSlot]) details[targetSlot] = {}
         const studentName = student?.name ?? studentId
         // Regular student move → 振替 badge, otherwise → 変更 badge
         if (studentMakeupInfo) {
-          const makeupSigs = { ...(hl.makeup ?? {}) }
+          const makeupSigs = { ...(nextHL.makeup ?? {}) }
           makeupSigs[targetSlot] = [...(makeupSigs[targetSlot] ?? []), sig]
           details[targetSlot][sig] = `振替: ${studentName} (${sourceSlot} → ${targetSlot})`
-          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, makeup: makeupSigs, changeDetails: details } }
+          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, makeup: makeupSigs, changeDetails: details } }
         }
-        const changedSigs = { ...(hl.changed ?? {}) }
+        const changedSigs = { ...(nextHL.changed ?? {}) }
         changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
         details[targetSlot][sig] = `生徒移動: ${studentName} (${sourceSlot} → ${targetSlot})`
-        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...hl, changed: changedSigs, changeDetails: details } }
+        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, changed: changedSigs, changeDetails: details } }
       }
 
-      return { ...current, assignments: nextAssignments }
+      return { ...current, assignments: nextAssignments, autoAssignHighlights: nextHL }
     })
   }
 
