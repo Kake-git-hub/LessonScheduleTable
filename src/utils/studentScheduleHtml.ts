@@ -379,7 +379,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
         const entry = assignmentMap[key]
         const isUnavailable = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
-          const regularLabel = entry.isRegular ? '<br><span class="regular-tag">通常</span>' : ''
+          const regularLabel = (entry.isRegular || entry.isMakeup) ? '<br><span class="regular-tag">通常</span>' : ''
           slotRows += `<td class="cell">${escapeHtml(entry.subject)}${regularLabel}</td>`
         } else if (isUnavailable) {
           slotRows += '<td class="cell unavailable"></td>'
@@ -879,7 +879,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
         const entry = assignmentMap[key]
         const isUnavail = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
-          const label = entry.isRegular ? `${entry.subject}(通常)` : entry.subject
+          const label = (entry.isRegular || entry.isMakeup) ? `${entry.subject}(通常)` : entry.subject
           slotRow.push({ v: label, t: 's', s: cellStyle })
         } else if (isUnavail) {
           slotRow.push({ v: '', t: 's', s: unavailableStyle })
