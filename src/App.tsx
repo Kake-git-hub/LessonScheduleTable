@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.94'
+const APP_VERSION = '1.3.95'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -6657,90 +6657,6 @@ const AdminPage = () => {
       return
     }
     if (success) {
-      // Auto-apply remaining clean (non-⚠) proposals in a batch
-      let autoApplied = 0
-      const MAX_AUTO_ROUNDS = 100
-      for (let round = 0; round < MAX_AUTO_ROUNDS; round++) {
-        let appliedInRound = false
-        await updateAssignments((current) => {
-          const liveActual = current.actualResults ?? {}
-          const recordedSlotSet = new Set(Object.keys(liveActual))
-          const currentAvailableSlots = slotKeys.filter((s) => !recordedSlotSet.has(s))
-          const statusAssignments = materializeUnavailableRegularShortages(current.assignments)
-          const effective = buildEffectiveAssignments(statusAssignments, liveActual)
-          const { studentsWithRemaining } = buildStudentsWithRemaining(statusAssignments, effective, liveActual, [])
-          const under = studentsWithRemaining.filter((s) =>
-            s.remaining.some((e) => e.rem > 0) || Object.values(s.missingBySubj).some((c) => c > 0),
-          )
-          if (under.length === 0) return current
-
-          for (const summary of under) {
-            const student = current.students.find((s) => s.id === summary.studentId)
-            if (!student) continue
-            const subjects = [
-              ...summary.remaining.filter((e) => e.rem > 0).map((e) => e.subj),
-              ...Object.entries(summary.missingBySubj).filter(([, c]) => c > 0).map(([subj]) => subj),
-            ]
-            for (const subj of [...new Set(subjects)]) {
-              const analysis = buildRemainingSuggestions(statusAssignments, effective, currentAvailableSlots, student, subj)
-              const clean = analysis.force.filter((p) => p.action?.type === 'force-assign' && !p.label.startsWith('⚠'))
-              if (clean.length === 0) continue
-              const action = clean[0].action as ForceAssignAction
-              const nextAssignments = { ...current.assignments }
-              const slotAssignments = [...(nextAssignments[action.slot] ?? [])]
-              if (slotAssignments.some((a) => a.studentIds.includes(action.studentId))) continue
-              const existingIdx = slotAssignments.findIndex((a) => a.teacherId === action.teacherId && !a.isGroupLesson)
-              if (existingIdx >= 0) {
-                const existing = slotAssignments[existingIdx]
-                if (existing.studentIds.length >= 2) continue
-                slotAssignments[existingIdx] = {
-                  ...existing,
-                  studentIds: [...existing.studentIds, action.studentId],
-                  studentSubjects: { ...(existing.studentSubjects ?? {}), [action.studentId]: action.subject },
-                  ...(action.makeupInfo ? { regularMakeupInfo: { ...(existing.regularMakeupInfo ?? {}), [action.studentId]: action.makeupInfo } } : {}),
-                  ...(action.substituteInfo ? { regularSubstituteInfo: { ...(existing.regularSubstituteInfo ?? {}), [action.studentId]: action.substituteInfo } } : {}),
-                }
-              } else {
-                const deskLimit = current.settings.deskCount ?? 0
-                if (deskLimit > 0 && slotAssignments.length >= deskLimit) continue
-                slotAssignments.push({
-                  teacherId: action.teacherId,
-                  studentIds: [action.studentId],
-                  subject: action.subject,
-                  studentSubjects: { [action.studentId]: action.subject },
-                  ...(action.makeupInfo ? { regularMakeupInfo: { [action.studentId]: action.makeupInfo } } : {}),
-                  ...(action.substituteInfo ? { regularSubstituteInfo: { [action.studentId]: action.substituteInfo } } : {}),
-                })
-              }
-              nextAssignments[action.slot] = slotAssignments
-              const currentHighlights = current.autoAssignHighlights ?? { added: {}, changed: {}, makeup: {} }
-              const nextAdded = { ...(currentHighlights.added ?? {}) }
-              const nextDetails = { ...(currentHighlights.changeDetails ?? {}) }
-              const appliedAssignment = slotAssignments.find((a) => a.teacherId === action.teacherId && a.studentIds.includes(action.studentId))
-              if (appliedAssignment) {
-                const sig = assignmentSignature(appliedAssignment)
-                nextAdded[action.slot] = [...new Set([...(nextAdded[action.slot] ?? []), sig])]
-                if (!nextDetails[action.slot]) nextDetails[action.slot] = {}
-                const teacherName = current.teachers.find((t) => t.id === action.teacherId)?.name ?? action.teacherId
-                nextDetails[action.slot][sig] = `提案自動適用: ${slotLabel(action.slot, isMendan, mendanStart)} / ${teacherName} / ${student.name} / ${action.subject}`
-              }
-              appliedInRound = true
-              autoApplied++
-              nextStatusReport = buildCurrentStatusReport(nextAssignments)
-              return {
-                ...current,
-                assignments: nextAssignments,
-                autoAssignHighlights: { ...current.autoAssignHighlights, added: nextAdded, changeDetails: nextDetails },
-              }
-            }
-          }
-          return current
-        })
-        if (!appliedInRound) break
-      }
-      if (autoApplied > 0) {
-        console.log(`[ProposalAutoApply] auto-applied ${autoApplied} clean proposals after manual execution`)
-      }
       if (nextStatusReport) {
         setLatestStatusReport(nextStatusReport)
         if (statusModalMode === 'blocking') {
