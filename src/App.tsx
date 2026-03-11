@@ -7567,8 +7567,21 @@ const AdminPage = () => {
 
 `
     const clipText = prompt + json
+    const now = new Date()
+    const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`
+    const safeSessionName = data.settings.name.replace(/[\\/:*?"<>|]/g, '_')
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' })
+    const downloadUrl = URL.createObjectURL(blob)
+    const downloadLink = document.createElement('a')
+    downloadLink.href = downloadUrl
+    downloadLink.download = `AI分析_${safeSessionName}_${timestamp}.json`
+    document.body.appendChild(downloadLink)
+    downloadLink.click()
+    document.body.removeChild(downloadLink)
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
+
     void navigator.clipboard.writeText(clipText).then(
-      () => alert('AIプロンプト付き解析データをクリップボードにコピーしました。\nAIチャットに貼り付けて分析してください。'),
+      () => alert('AIプロンプト付き解析データをクリップボードにコピーし、JSONファイルもダウンロードしました。\nAIチャットに貼り付けるか、JSONファイルを添付して分析してください。'),
       () => window.prompt('解析データ（手動コピー）:', clipText),
     )
   }
