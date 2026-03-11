@@ -261,7 +261,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams): void {
           </div>
           <div class="teacher-info">
             <div>期間: ${escapeHtml(periodStr)}</div>
-            <div class="teacher-name">講師名: ${escapeHtml(teacher.name)}</div>
+            <div class="teacher-name">講師名: ${escapeHtml(teacher.name)}　<span class="page-number">${idx + 1}ページ目 / 全${teachers.length}ページ</span></div>
             <div class="teacher-subjects">担当科目: ${escapeHtml(teacher.subjects.join(', '))}</div>
           </div>
         </div>
@@ -342,6 +342,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams): void {
     font-weight: bold;
   }
   .teacher-name { font-size: 14px; }
+  .page-number { font-size: 11px; font-weight: normal; color: #666; margin-left: 8px; }
   .teacher-subjects { font-size: 10px; font-weight: normal; color: #555; }
   .regular-info { font-size: 9px; color: #555; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
