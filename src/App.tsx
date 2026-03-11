@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.4.0'
+const APP_VERSION = '1.4.1'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -8723,7 +8723,7 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId })}
+                onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId, sortedStudents: sessionStudentRows })}
               >
                 📄 生徒日程表
               </button>
@@ -8738,7 +8738,7 @@ service cloud.firestore {
                 className="btn secondary"
                 type="button"
                 style={{ display: 'none' }}
-                onClick={() => exportStudentScheduleExcel({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id })}
+                onClick={() => exportStudentScheduleExcel({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sortedStudents: sessionStudentRows })}
               >
                 📊 生徒日程Excel
               </button>

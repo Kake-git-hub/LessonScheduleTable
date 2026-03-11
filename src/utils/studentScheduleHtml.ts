@@ -17,6 +17,7 @@ type StudentScheduleParams = {
   data: SessionData
   getTeacherName: (id: string) => string
   sessionId?: string
+  sortedStudents?: Student[]
 }
 
 /** Get all dates in the range INCLUDING holidays (for display purposes) */
@@ -308,7 +309,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   }
 
   const holidaySet = new Set(data.settings.holidays)
-  const students = data.students
+  const students = params.sortedStudents ?? data.students
   const sessionName = data.settings.name || ''
   const baseYear = new Date(data.settings.startDate).getFullYear()
   const reiwaYear = baseYear - 2018
@@ -757,7 +758,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
   }
 
   const holidaySet = new Set(data.settings.holidays)
-  const students = data.students
+  const students = params.sortedStudents ?? data.students
   const sessionName = data.settings.name || ''
   const baseYear = new Date(data.settings.startDate).getFullYear()
   const reiwaYear = baseYear - 2018
