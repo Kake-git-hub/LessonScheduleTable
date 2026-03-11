@@ -8497,12 +8497,21 @@ service cloud.firestore {
           onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, targetTeacherId) =>
             moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true, preferTeacherId: targetTeacherId })
           }
-          onAddStudent={(slot, idx, studentId, teacherId, subjectOverride) => {
+          onAddStudent={(slot, idx, studentId, teacherId, subjectOverride, lessonType) => {
             const assign = (data.assignments[slot] ?? [])[idx]
             if (assign) {
               const pos = assign.studentIds.length
-              return setSlotStudent(slot, idx, pos, studentId).then(() => {
-                if (subjectOverride) return setSlotSubject(slot, idx, subjectOverride, studentId)
+              return setSlotStudent(slot, idx, pos, studentId).then(async () => {
+                if (subjectOverride) await setSlotSubject(slot, idx, subjectOverride, studentId)
+                if (lessonType) {
+                  await updateAssignments((current) => {
+                    const slotAssigns = [...(current.assignments[slot] ?? [])]
+                    const a = slotAssigns[idx]
+                    if (!a) return current
+                    slotAssigns[idx] = { ...a, manualRegularMark: { ...(a.manualRegularMark ?? {}), [studentId]: lessonType } }
+                    return { ...current, assignments: { ...current.assignments, [slot]: slotAssigns } }
+                  })
+                }
               })
             }
             // No existing assignment — create new
@@ -8514,12 +8523,16 @@ service cloud.firestore {
               const teacher = teacherId ? instructors.find(t => t.id === teacherId) : undefined
               const viable = student && teacher ? teachableBaseSubjects((teacher as Teacher).subjects ?? [], student.grade) : []
               const subject = subjectOverride ?? viable[0] ?? ''
-              slotAssignments.push({
+              const newAssign: Assignment = {
                 teacherId: teacherId ?? '',
                 studentIds: [studentId],
                 subject,
                 studentSubjects: { [studentId]: subject },
-              })
+              }
+              if (lessonType) {
+                newAssign.manualRegularMark = { [studentId]: lessonType }
+              }
+              slotAssignments.push(newAssign)
               return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
             })
           }}
@@ -8571,24 +8584,17 @@ service cloud.firestore {
             const applyHighlights = (win: Window | null) => {
               if (!win || win.closed) return
               const doc = win.document
-              doc.querySelectorAll('.sa-hl-source, .sa-hl-student').forEach(el => {
-                el.classList.remove('sa-hl-source', 'sa-hl-student')
+              doc.querySelectorAll('.sa-hl-source').forEach(el => {
+                el.classList.remove('sa-hl-source')
               })
               if (!sel) return
-              // Highlight source slot
+              // Highlight source slot (yellow) in teacher schedule
               doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => {
                 el.classList.add('sa-hl-source')
               })
-              // Highlight all cells containing the selected student (teacher schedule)
-              doc.querySelectorAll('td[data-student-ids]').forEach(el => {
-                const ids = (el.getAttribute('data-student-ids') ?? '').split(',')
-                if (ids.includes(sel.studentId)) {
-                  el.classList.add('sa-hl-student')
-                }
-              })
-              // Highlight the selected student's page cells (student schedule)
-              doc.querySelectorAll(`.page[data-student-id="${sel.studentId}"] td[data-slot]`).forEach(el => {
-                el.classList.add('sa-hl-student')
+              // Highlight source slot (yellow) in student schedule (only matching student page)
+              doc.querySelectorAll(`.page[data-student-id="${sel.studentId}"] td[data-slot="${sel.slot}"]`).forEach(el => {
+                el.classList.add('sa-hl-source')
               })
             }
             applyHighlights(teacherScheduleWindowRef.current)

@@ -1369,11 +1369,22 @@
   padding: 12px;
 }
 .slot-adjust-grid table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
   width: max-content;
   min-width: 100%;
   font-size: 11px;
+}
+.slot-adjust-grid thead th {
+  position: sticky;
+  z-index: 2;
+}
+.sa-header-row1 th {
+  top: 0;
+}
+.slot-adjust-grid thead tr:nth-child(2) th {
+  top: 26px;
 }
 .slot-adjust-grid th,
 .slot-adjust-grid td {
@@ -1386,6 +1397,7 @@
 }
 .sa-time-col {
   width: 88px;
+  background: #f1f5f9;
 }
 .sa-day-header {
   background: #f1f5f9;
@@ -1404,6 +1416,7 @@
   color: #64748b;
   width: 70px;
   min-width: 60px;
+  border-top: 1px solid #cbd5e1;
 }
 .sa-sub-header.sa-day-inactive {
   color: #cbd5e1;
