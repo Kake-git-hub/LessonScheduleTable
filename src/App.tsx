@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.4.4'
+const APP_VERSION = '1.4.5'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -3878,6 +3878,39 @@ const AdminPage = () => {
     })()
   }, [authorized, buildSessionDataFromMaster, classroomId, data, hasSessionMasterChanges, sessionId])
 
+  // One-time cleanup: remove stale regularMakeupInfo for students without matching regular lessons
+  const makeupCleanupRef = useRef('')
+  useEffect(() => {
+    if (!data || !authorized || data.settings.sessionType === 'mendan') return
+    if (makeupCleanupRef.current === sessionId) return
+    makeupCleanupRef.current = sessionId
+    let changed = false
+    const nextAssignments: Record<string, Assignment[]> = {}
+    for (const [slot, slotAssignments] of Object.entries(data.assignments)) {
+      nextAssignments[slot] = slotAssignments.map((a) => {
+        if (!a.regularMakeupInfo) return a
+        const cleaned = { ...a.regularMakeupInfo }
+        let modified = false
+        for (const sid of Object.keys(cleaned)) {
+          const mkInfo = cleaned[sid]
+          const hasMatchingRegular = data.regularLessons.some(r =>
+            r.studentIds.includes(sid) && r.dayOfWeek === mkInfo.dayOfWeek && r.slotNumber === mkInfo.slotNumber,
+          )
+          if (!hasMatchingRegular) {
+            delete cleaned[sid]
+            modified = true
+          }
+        }
+        if (!modified) return a
+        changed = true
+        return { ...a, regularMakeupInfo: Object.keys(cleaned).length > 0 ? cleaned : undefined }
+      })
+    }
+    if (changed) {
+      void persist({ ...data, assignments: nextAssignments })
+    }
+  }, [authorized, data, sessionId])
+
   // Auto-fill regular lessons when date range or regular lessons change (skip for mendan)
   const regularFillSigRef = useRef('')
   useEffect(() => {
@@ -5404,7 +5437,29 @@ const AdminPage = () => {
     if (!data || isMendan) return assignmentState
 
     const nextAssignments: Record<string, Assignment[]> = Object.fromEntries(
-      Object.entries(assignmentState).map(([slot, slotAssignments]) => [slot, slotAssignments.map((assignment) => normalizeAssignment({ ...assignment }))]),
+      Object.entries(assignmentState).map(([slot, slotAssignments]) => [slot, slotAssignments.map((assignment) => {
+        const copy = normalizeAssignment({ ...assignment })
+        // Clean up stale regularMakeupInfo: remove entries for students who don't have
+        // a matching regular lesson (e.g. special lesson students incorrectly tagged by older move logic)
+        if (copy.regularMakeupInfo) {
+          const cleaned = { ...copy.regularMakeupInfo }
+          let modified = false
+          for (const sid of Object.keys(cleaned)) {
+            const mkInfo = cleaned[sid]
+            const hasMatchingRegular = data.regularLessons.some(r =>
+              r.studentIds.includes(sid) && r.dayOfWeek === mkInfo.dayOfWeek && r.slotNumber === mkInfo.slotNumber,
+            )
+            if (!hasMatchingRegular) {
+              delete cleaned[sid]
+              modified = true
+            }
+          }
+          if (modified) {
+            copy.regularMakeupInfo = Object.keys(cleaned).length > 0 ? cleaned : undefined
+          }
+        }
+        return copy
+      })]),
     )
 
     for (const slot of slotKeys) {
