@@ -148,12 +148,12 @@ function countTeacherSlots(assignmentMap: Record<string, SlotEntry>): { regular:
 }
 
 /** Generate the HTML content for all teacher schedules */
-export function openTeacherScheduleHtml(params: TeacherScheduleParams): void {
-  const { data, getStudentName, getStudentGrade } = params
+export function openTeacherScheduleHtml(params: TeacherScheduleParams & { targetWindow?: Window | null }): Window | null {
+  const { data, getStudentName, getStudentGrade, targetWindow } = params
   const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
-    alert('講習期間が未設定です')
-    return
+    if (!targetWindow) alert('講習期間が未設定です')
+    return null
   }
 
   const holidaySet = new Set(data.settings.holidays)
@@ -417,11 +417,13 @@ ${pagesHtml}
 </body>
 </html>`
 
-  const newWindow = window.open('', '_blank')
-  if (!newWindow) {
+  const win = targetWindow && !targetWindow.closed ? targetWindow : window.open('', '_blank')
+  if (!win) {
     alert('ポップアップがブロックされました。ブラウザの設定を確認してください。')
-    return
+    return null
   }
-  newWindow.document.write(html)
-  newWindow.document.close()
+  win.document.open()
+  win.document.write(html)
+  win.document.close()
+  return win
 }

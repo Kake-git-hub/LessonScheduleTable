@@ -3250,6 +3250,7 @@ const AdminPage = () => {
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
   const studentScheduleWindowRef = useRef<Window | null>(null)
+  const teacherScheduleWindowRef = useRef<Window | null>(null)
   // Track slots manually modified since the last auto-assign to decide whether rerunning is meaningful.
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // Track slots that should stay protected from regular auto-fill even after auto-assign reruns.
@@ -3640,6 +3641,18 @@ const AdminPage = () => {
       getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
       sessionId,
       sortedStudents: sessionStudentRows,
+      targetWindow: win,
+    })
+  }, [data?.assignments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Refresh teacher schedule window when assignments change (real-time sync)
+  useEffect(() => {
+    const win = teacherScheduleWindowRef.current
+    if (!win || win.closed || !data) return
+    openTeacherScheduleHtml({
+      data,
+      getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id,
+      getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
       targetWindow: win,
     })
   }, [data?.assignments]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -8902,7 +8915,7 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '' })}
+                onClick={() => { teacherScheduleWindowRef.current = openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '' }) }}
               >
                 📄 講師日程表
               </button>
