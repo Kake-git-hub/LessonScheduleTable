@@ -9558,7 +9558,7 @@ service cloud.firestore {
                               </div>
                             )}
                             {hasSubjectMismatch && (
-                              <div className="manual-constraint-note" style={{ borderColor: '#f59e0b', background: '#fffbeb' }}>
+                              <div className="manual-constraint-note" style={{ borderColor: '#f59e0b' }}>
                                 <strong>担当科目外ペア</strong>
                                 {subjectMismatchDetails.map((detail) => (
                                   <div key={detail}>{detail}</div>
