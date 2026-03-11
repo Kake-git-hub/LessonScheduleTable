@@ -8346,7 +8346,7 @@ service cloud.firestore {
                 })}
               </tbody>
             </table>
-            <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em' }}
+            <button className="btn secondary" type="button" style={{ marginTop: 8, fontSize: '0.85em', display: 'none' }}
               onClick={() => { if (confirm(`全${instructorLabel}（${instructors.length}名）のデータをランダム生成しますか？`)) void bulkRandomInstructors() }}>
               🎲 全{instructorLabel}一括ランダム入力 (DEV)
             </button>
@@ -8461,7 +8461,7 @@ service cloud.firestore {
               </tbody>
             </table>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button className="btn secondary" type="button" style={{ fontSize: '0.85em' }}
+              <button className="btn secondary" type="button" style={{ fontSize: '0.85em', display: 'none' }}
                 onClick={() => { if (confirm(`全${isMendan ? '保護者' : '生徒'}（${data.students.length}名）のデータをランダム生成しますか？`)) void bulkRandomStudents() }}>
                 🎲 全{isMendan ? '保護者' : '生徒'}一括ランダム入力 (DEV)
               </button>
@@ -9719,7 +9719,7 @@ const TeacherInputPage = ({
     }
     return keys
   }, [dates, data.settings.slotsPerDay])
-  const showDevRandom = true
+  const showDevRandom = false
   const formRef = useRef<HTMLDivElement>(null)
 
   // Find regular lesson slots for this teacher (date_slotNum keys)
@@ -10217,7 +10217,7 @@ const StudentInputPage = ({
     }
     return keys
   }, [dates, data.settings.slotsPerDay])
-  const showDevRandom = true
+  const showDevRandom = false
   const formRef = useRef<HTMLDivElement>(null)
   const [regularOnly, setRegularOnly] = useState(student.regularOnly ?? false)
   const [subjectSlots, setSubjectSlots] = useState<Record<string, number>>(
@@ -10715,7 +10715,7 @@ const MendanParentInputPage = ({
     }
     return keys
   }, [dates, data.settings.slotsPerDay])
-  const showDevRandom = true
+  const showDevRandom = false
   const formRef = useRef<HTMLDivElement>(null)
 
   // Compute which slots have at least one manager available
