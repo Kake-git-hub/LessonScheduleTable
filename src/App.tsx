@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.98'
+const APP_VERSION = '1.3.99'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -9054,6 +9054,7 @@ service cloud.firestore {
 
                 return (
                   <div className={`slot-card${slotDragClass}${isRecorded ? ' slot-recorded' : ''}`} key={slot}
+                    data-slot={slot}
                     style={!slotMatchesFilter && !isDragActive ? { opacity: 0.25 } : undefined}
                   >
                     <div className="slot-title">
@@ -9117,14 +9118,18 @@ service cloud.firestore {
                         type="button"
                         style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                         onClick={() => {
+                          const targetSlotId = slot
                           if (dragInfo.studentDragId) {
-                            // Always create a new pair with auto-assigned compatible teacher
                             void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
                           } else {
                             void moveAssignment(dragInfo.sourceSlot, dragInfo.sourceIdx, slot)
                           }
                           setDragInfo(null)
                           setTransferSlot(null)
+                          requestAnimationFrame(() => {
+                            const card = document.querySelector(`[data-slot="${targetSlotId}"]`)
+                            if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                          })
                         }}
                       >
                         このコマに移動
@@ -9389,9 +9394,14 @@ service cloud.firestore {
                                 type="button"
                                 style={{ width: '100%', fontSize: '0.78em', padding: '3px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
                                 onClick={() => {
+                                  const targetSlotId = slot
                                   void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId!, slot, idx)
                                   setDragInfo(null)
                                   setTransferSlot(null)
+                                  requestAnimationFrame(() => {
+                                    const card = document.querySelector(`[data-slot="${targetSlotId}"]`)
+                                    if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                                  })
                                 }}
                               >
                                 ここに移動
@@ -9460,9 +9470,11 @@ service cloud.firestore {
                                     type="button"
                                     title="ペアを別コマへ移動"
                                     style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1, flexShrink: 0 }}
-                                    onClick={() => {
+                                    onClick={(e) => {
                                       setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
                                       setTransferSlot(slot)
+                                      const card = (e.target as HTMLElement).closest('[data-slot]')
+                                      if (card) requestAnimationFrame(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }))
                                     }}
                                   >
                                     ⇔
@@ -9640,7 +9652,7 @@ service cloud.firestore {
                                         type="button"
                                         title="生徒を別コマへ移動"
                                         style={{ cursor: 'pointer', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '0 4px', color: '#2563eb', fontSize: '0.8em', lineHeight: 1.4, flexShrink: 0, marginLeft: 2 }}
-                                        onClick={() => {
+                                        onClick={(e) => {
                                           setDragInfo({
                                             sourceSlot: slot,
                                             sourceIdx: idx,
@@ -9650,6 +9662,8 @@ service cloud.firestore {
                                             studentDragSubject: studentSubject,
                                           })
                                           setTransferSlot(slot)
+                                          const card = (e.target as HTMLElement).closest('[data-slot]')
+                                          if (card) requestAnimationFrame(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }))
                                         }}
                                       >
                                         ⇔
