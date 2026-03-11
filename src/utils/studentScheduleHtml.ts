@@ -406,22 +406,35 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 <title>生徒日程表 - ${escapeHtml(sessionName)}</title>
 <style>
   @page {
-    size: A4 landscape;
+    size: 297mm 210mm;
     margin: 8mm;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size: 10px; color: #333; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
-  .page { padding: 8px; position: relative; }
+  .page {
+    width: calc(297mm - 16mm);
+    min-height: calc(210mm - 16mm);
+    padding: 8px;
+    position: relative;
+  }
   .page-break { page-break-after: always; }
 
   @media print {
-    .page { padding: 0; }
+    html, body {
+      width: 297mm;
+      min-width: 297mm;
+    }
+    .page {
+      width: calc(297mm - 16mm);
+      min-height: calc(210mm - 16mm);
+      padding: 0;
+    }
     .no-print { display: none !important; }
   }
 
   @media screen {
-    .page { border: 1px solid #ccc; margin-bottom: 16px; max-width: 297mm; min-height: 200mm; }
+    .page { border: 1px solid #ccc; margin-bottom: 16px; }
     body { background: #f0f0f0; padding: 16px; }
   }
 
