@@ -521,14 +521,14 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 
   .notes-area {
-    flex: 0 0 384px;
-    width: 384px;
+    flex: 0 0 576px;
+    width: 576px;
     display: flex;
     gap: 4px;
   }
   .notes-col {
-    flex: 0 0 190px;
-    width: 190px;
+    flex: 0 0 286px;
+    width: 286px;
     display: flex;
     flex-direction: column;
   }
