@@ -100,6 +100,9 @@ export type Assignment = {
   /** Per-student substitute info for a regular lesson handled by a different teacher.
    *  Key: studentId → original regular teacher + source regular lesson slot. */
   regularSubstituteInfo?: Record<string, { regularTeacherId: string; dayOfWeek: number; slotNumber: number; date?: string }>
+  /** Per-student manual regular/makeup mark set via the UI badge toggle.
+   *  'regular' = count as 通常, 'makeup' = count as 振替 */
+  manualRegularMark?: Record<string, 'regular' | 'makeup'>
 }
 
 /** Actual result for a single pair in a slot (recorded after the lesson). */

@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.77'
+const APP_VERSION = '1.3.78'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7901,6 +7901,33 @@ const AdminPage = () => {
     })
   }
 
+  /** Toggle manual regular/makeup mark for a student in an assignment */
+  const toggleManualBadge = async (slot: string, idx: number, studentId: string): Promise<void> => {
+    await updateAssignments((current) => {
+      const slotAssignments = [...(current.assignments[slot] ?? [])]
+      const assignment = slotAssignments[idx]
+      if (!assignment || !assignment.studentIds.includes(studentId)) return current
+      const currentMark = assignment.manualRegularMark?.[studentId]
+      const newMarks = { ...(assignment.manualRegularMark ?? {}) }
+      if (!currentMark) {
+        newMarks[studentId] = 'regular'
+      } else if (currentMark === 'regular') {
+        newMarks[studentId] = 'makeup'
+      } else {
+        delete newMarks[studentId]
+      }
+      slotAssignments[idx] = {
+        ...assignment,
+        manualRegularMark: Object.keys(newMarks).length > 0 ? newMarks : undefined,
+      }
+      markSlotsManual([slot])
+      return {
+        ...current,
+        assignments: { ...current.assignments, [slot]: slotAssignments },
+      }
+    })
+  }
+
   /** Move an assignment from one slot to another (drag-and-drop) */
   const moveAssignment = async (sourceSlot: string, sourceIdx: number, targetSlot: string): Promise<void> => {
     await updateAssignments((current) => {
@@ -8010,6 +8037,7 @@ const AdminPage = () => {
       const isRegularSource = srcAssignment.isRegular
       const existingMakeupInfo = srcAssignment.regularMakeupInfo?.[studentId]
       const existingSubstituteInfo = srcAssignment.regularSubstituteInfo?.[studentId]
+      const existingManualMark = srcAssignment.manualRegularMark?.[studentId]
       const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot), date: sourceSlot.split('_')[0] } : undefined)
 
       // Remove student from source assignment
@@ -8044,6 +8072,9 @@ const AdminPage = () => {
         const updatedTargetSubstituteInfo = studentSubstituteInfo
           ? { ...(targetAssignment.regularSubstituteInfo ?? {}), [studentId]: studentSubstituteInfo }
           : targetAssignment.regularSubstituteInfo
+        const updatedTargetManualMark = existingManualMark
+          ? { ...(targetAssignment.manualRegularMark ?? {}), [studentId]: existingManualMark }
+          : targetAssignment.manualRegularMark
         targetAssignments[targetIdx] = {
           ...targetAssignment,
           studentIds: updatedTargetStudentIds,
@@ -8051,6 +8082,7 @@ const AdminPage = () => {
           isRegular: false, // Mark as manual so auto-fill won't overwrite
           ...(updatedTargetMakeupInfo ? { regularMakeupInfo: updatedTargetMakeupInfo } : {}),
           ...(updatedTargetSubstituteInfo ? { regularSubstituteInfo: updatedTargetSubstituteInfo } : {}),
+          ...(updatedTargetManualMark ? { manualRegularMark: updatedTargetManualMark } : {}),
         }
       } else {
         // Create new assignment in target slot with just this student
@@ -8098,6 +8130,7 @@ const AdminPage = () => {
           studentSubjects: { [studentId]: studentSubject },
           ...(studentMakeupInfo ? { regularMakeupInfo: { [studentId]: studentMakeupInfo } } : {}),
           ...(newSubstituteInfo ? { regularSubstituteInfo: { [studentId]: newSubstituteInfo } } : {}),
+          ...(existingManualMark ? { manualRegularMark: { [studentId]: existingManualMark } } : {}),
         })
       }
 
@@ -8108,8 +8141,10 @@ const AdminPage = () => {
         // Remove moved student's regularMakeupInfo but keep isRegular for remaining students
         const updatedSrcMakeupInfo = { ...(srcAssignment.regularMakeupInfo ?? {}) }
         const updatedSrcSubstituteInfo = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
+        const updatedSrcManualMark = { ...(srcAssignment.manualRegularMark ?? {}) }
         delete updatedSrcMakeupInfo[studentId]
         delete updatedSrcSubstituteInfo[studentId]
+        delete updatedSrcManualMark[studentId]
         srcAssignments[sourceIdx] = {
           ...srcAssignment,
           studentIds: updatedSrcStudentIds,
@@ -8117,6 +8152,7 @@ const AdminPage = () => {
           // Keep isRegular if the source was regular — remaining students are still regular
           ...(Object.keys(updatedSrcMakeupInfo).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo } : {}),
           ...(Object.keys(updatedSrcSubstituteInfo).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo } : {}),
+          ...(Object.keys(updatedSrcManualMark).length > 0 ? { manualRegularMark: updatedSrcManualMark } : {}),
         }
       }
 
@@ -8133,14 +8169,17 @@ const AdminPage = () => {
         } else {
           const updatedSrcMakeupInfo2 = { ...(srcAssignment.regularMakeupInfo ?? {}) }
           const updatedSrcSubstituteInfo2 = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
+          const updatedSrcManualMark2 = { ...(srcAssignment.manualRegularMark ?? {}) }
           delete updatedSrcMakeupInfo2[studentId]
           delete updatedSrcSubstituteInfo2[studentId]
+          delete updatedSrcManualMark2[studentId]
           mergedAssignments[sourceIdx] = {
             ...srcAssignment,
             studentIds: updatedSrcStudentIds,
             studentSubjects: updatedSrcStudentSubjects,
             ...(Object.keys(updatedSrcMakeupInfo2).length > 0 ? { regularMakeupInfo: updatedSrcMakeupInfo2 } : {}),
             ...(Object.keys(updatedSrcSubstituteInfo2).length > 0 ? { regularSubstituteInfo: updatedSrcSubstituteInfo2 } : {}),
+            ...(Object.keys(updatedSrcManualMark2).length > 0 ? { manualRegularMark: updatedSrcManualMark2 } : {}),
           }
         }
         nextAssignments[sourceSlot] = mergedAssignments
@@ -9412,6 +9451,7 @@ service cloud.firestore {
                                   }
                                   // Compute ★ badge(s) for this student (shown in left column)
                                   // Star 1: slot type (green=通常, orange=振替), Star 2: teacher status (pink=代行, purple=担当外)
+                                  const manualMark = assignment.manualRegularMark?.[currentStudentId ?? '']
                                   const starBadge = (() => {
                                     if (!currentStudentId || isMendan) return null
                                     const DAY_NAMES_STAR = ['日', '月', '火', '水', '木', '金', '土']
@@ -9420,7 +9460,7 @@ service cloud.firestore {
                                     const mkInfo = assignment.regularMakeupInfo?.[currentStudentId]
                                     const subInfo = assignment.regularSubstituteInfo?.[currentStudentId]
 
-                                    // Star 1: Slot type
+                                    // Star 1: Slot type (auto or manual)
                                     let star1: React.ReactNode = null
                                     if (isRegAtSlot) {
                                       star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常授業">★</span>
@@ -9432,6 +9472,10 @@ service cloud.firestore {
                                       const mkRegTeacherId = data.regularLessons.find((lesson) => lesson.studentIds.includes(currentStudentId) && lesson.dayOfWeek === mkInfo.dayOfWeek && lesson.slotNumber === mkInfo.slotNumber)?.teacherId ?? assignment.teacherId
                                       const reasonLabel = formatMakeupReasonLabel(getMakeupReasonKind(data, currentStudentId, mkRegTeacherId, mkInfo))
                                       star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title={`${reasonLabel}の振替（${origLabel} → ${destLabel}）`}>★</span>
+                                    } else if (manualMark === 'regular') {
+                                      star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle' }} title="通常（手動マーク）">★</span>
+                                    } else if (manualMark === 'makeup') {
+                                      star1 = <span className="badge regular-badge" style={{ fontSize: '0.7em', verticalAlign: 'middle', background: '#eab308', color: '#422006' }} title="振替（手動マーク）">★</span>
                                     }
 
                                     // Star 2: Teacher status (pink=代行, purple=担当外科目)
@@ -9461,11 +9505,16 @@ service cloud.firestore {
                                     return <>{star1}{star2}</>
                                   })()
                                   const isSourceStudent = isDragActive && isStudentDrag && isSourceSlot && dragInfo.sourceIdx === idx && dragInfo.studentDragId === currentStudentId
+                                  const hasAutoBadge = !!currentStudentId && !isMendan && (() => {
+                                    const isRegAtSlot2 = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(currentStudentId))
+                                    return isRegAtSlot2 || !!assignment.regularMakeupInfo?.[currentStudentId] || !!assignment.regularSubstituteInfo?.[currentStudentId]
+                                  })()
+                                  const canToggleBadge = !!currentStudentId && !isMendan && !assignment.isGroupLesson && !hasAutoBadge && !isRecorded
                                   return (
                                     <div key={pos} className="student-select-row"
                                       style={isSourceStudent ? { background: '#dbeafe', borderRadius: '4px', outline: '2px solid #3b82f6', outlineOffset: '-1px' } : undefined}
                                     >
-                                    <div className="star-badge-col">{starBadge}</div>
+                                    <div className="star-badge-col" style={canToggleBadge ? { cursor: 'pointer' } : undefined} title={canToggleBadge ? (manualMark === 'regular' ? '通常マーク → 振替マークに切替' : manualMark === 'makeup' ? '振替マーク → マーク解除' : 'クリックで通常マークを付与') : undefined} onClick={canToggleBadge ? () => void toggleManualBadge(slot, idx, currentStudentId) : undefined}>{starBadge}{canToggleBadge && !starBadge && <span style={{ fontSize: '0.65em', color: '#ccc' }}>☆</span>}</div>
                                     <select
                                       className={!currentStudentId ? 'slot-select slot-select-placeholder' : 'slot-select'}
                                       value={currentStudentId}

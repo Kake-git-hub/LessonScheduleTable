@@ -42,7 +42,7 @@ function buildStudentAssignmentMap(
   groupLessons: GroupLesson[],
   dates: string[],
 ) {
-  const map: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; makeupDate?: string }> = {}
+  const map: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; isManualRegular: boolean; isManualMakeup: boolean; makeupDate?: string }> = {}
   const dateSet = new Set(dates)
 
   for (const [slotKey, pairs] of Object.entries(assignments)) {
@@ -54,11 +54,14 @@ function buildStudentAssignmentMap(
       const subject = getStudentSubject(a, student.id)
       const key = `${date}_${slotNumber}`
       const makeupInfo = a.regularMakeupInfo?.[student.id]
+      const manualMark = a.manualRegularMark?.[student.id]
       map[key] = {
         subject,
-        isRegular: !!a.isRegular,
+        isRegular: !!a.isRegular || manualMark === 'regular',
         isGroupLesson: !!a.isGroupLesson,
-        isMakeup: !!makeupInfo,
+        isMakeup: !!makeupInfo || manualMark === 'makeup',
+        isManualRegular: manualMark === 'regular',
+        isManualMakeup: manualMark === 'makeup',
         makeupDate: makeupInfo?.date,
       }
     }
@@ -70,7 +73,7 @@ function buildStudentAssignmentMap(
       if (gl.dayOfWeek === dayOfWeek && gl.studentIds.includes(student.id)) {
         const key = `${date}_${gl.slotNumber}`
         if (!map[key]) {
-          map[key] = { subject: gl.subject, isRegular: false, isGroupLesson: true, isMakeup: false }
+          map[key] = { subject: gl.subject, isRegular: false, isGroupLesson: true, isMakeup: false, isManualRegular: false, isManualMakeup: false }
         }
       }
     }
@@ -111,7 +114,7 @@ function collectFurikaeEntries(
 }
 
 /** Count regular, lecture (individual), and group lesson counts by subject */
-function countLessons(assignmentMap: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean }>) {
+function countLessons(assignmentMap: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; isManualRegular: boolean; isManualMakeup: boolean }>) {
   const regularCounts: Record<string, number> = {}
   const lectureCounts: Record<string, number> = {}
   const groupCounts: Record<string, number> = {}
@@ -120,7 +123,7 @@ function countLessons(assignmentMap: Record<string, { subject: string; isRegular
   for (const entry of Object.values(assignmentMap)) {
     if (entry.isGroupLesson) {
       groupCounts[entry.subject] = (groupCounts[entry.subject] ?? 0) + 1
-    } else if (entry.isRegular) {
+    } else if (entry.isRegular || entry.isMakeup || entry.isManualRegular || entry.isManualMakeup) {
       regularCounts[entry.subject] = (regularCounts[entry.subject] ?? 0) + 1
     } else {
       lectureCounts[entry.subject] = (lectureCounts[entry.subject] ?? 0) + 1

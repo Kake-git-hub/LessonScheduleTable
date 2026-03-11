@@ -238,7 +238,7 @@ export const countStudentSubjectLoad = (
   subject: string,
 ): number =>
   allAssignments(assignments).filter(
-    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId],
+    (a) => a.studentIds.includes(studentId) && getStudentSubject(a, studentId) === subject && !a.isRegular && !a.regularMakeupInfo?.[studentId] && !a.regularSubstituteInfo?.[studentId] && !a.manualRegularMark?.[studentId],
   ).length
 
 export type TeacherShortageEntry = {
@@ -428,17 +428,21 @@ export const getRegularSubjectProgress = (
     }
   }
 
-  // Second pass: count remaining plain assignments (without makeupInfo/substituteInfo/isRegular)
-  // as covering unmatched regular occurrences, so that generic force-assigns reduce the remaining count
+  // Second pass: count manual marks and remaining plain assignments
+  // as covering unmatched regular occurrences
   for (const entry of regularLikeAssignments) {
     if (entry.used) continue
     if (entry.assignment.isRegular) continue
     if (entry.assignment.regularMakeupInfo?.[studentId]) continue
     if (entry.assignment.regularSubstituteInfo?.[studentId]) continue
-    const current = assignedBySubject[entry.subject] ?? 0
-    const desired = desiredBySubject[entry.subject] ?? 0
-    if (current >= desired) continue
-    assignedBySubject[entry.subject] = current + 1
+    // Manual marks (regular/makeup) count as covering regular occurrences
+    const hasManualMark = !!entry.assignment.manualRegularMark?.[studentId]
+    if (!hasManualMark) {
+      const current = assignedBySubject[entry.subject] ?? 0
+      const desired = desiredBySubject[entry.subject] ?? 0
+      if (current >= desired) continue
+    }
+    assignedBySubject[entry.subject] = (assignedBySubject[entry.subject] ?? 0) + 1
     entry.used = true
   }
 
