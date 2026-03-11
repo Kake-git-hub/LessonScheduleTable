@@ -138,8 +138,8 @@ function countTeacherSlots(assignmentMap: Record<string, SlotEntry>): { regular:
     if (entry.isGroupLesson) {
       group++
     } else {
-      // Check if any student in the slot is regular
-      const hasRegular = entry.students.some(s => s.isRegular)
+      // Check if any student in the slot is regular, makeup, or substitute
+      const hasRegular = entry.students.some(s => s.isRegular || s.isMakeup || s.isSubstitute)
       if (hasRegular) regular++
       else lecture++
     }
