@@ -242,11 +242,14 @@ export const countStudentLoad = (assignments: Record<string, Assignment[]>, stud
     for (const a of slotAssignments) {
       if (!a.studentIds.includes(studentId)) continue
       if (a.regularMakeupInfo?.[studentId] || a.regularSubstituteInfo?.[studentId]) continue
-      // Per-student regular check: if regularLessons provided, check whether this student is actually regular at this slot
-      if (regularLessons) {
-        if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
-      } else {
-        if (a.isRegular) continue
+      // Skip regular assignments where this student is actually a regular student at this slot
+      if (a.isRegular) {
+        if (regularLessons) {
+          if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
+          // Student is NOT regular here despite isRegular — count as lecture
+        } else {
+          continue
+        }
       }
       count++
     }
@@ -267,11 +270,14 @@ export const countStudentSubjectLoad = (
       if (!a.studentIds.includes(studentId)) continue
       if (getStudentSubject(a, studentId) !== subject) continue
       if (a.regularMakeupInfo?.[studentId] || a.regularSubstituteInfo?.[studentId] || a.manualRegularMark?.[studentId]) continue
-      // Per-student regular check
-      if (regularLessons) {
-        if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
-      } else {
-        if (a.isRegular) continue
+      // Skip regular assignments where this student is actually a regular student at this slot
+      if (a.isRegular) {
+        if (regularLessons) {
+          if (isStudentRegularAtSlot(regularLessons, slotKey, studentId)) continue
+          // Student is NOT regular here despite isRegular — count as lecture
+        } else {
+          continue
+        }
       }
       count++
     }

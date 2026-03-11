@@ -275,6 +275,19 @@ describe('countStudentSubjectLoad', () => {
     // s1 is regular → still excluded
     expect(countStudentSubjectLoad(assignments, 's1', '数', regularLessons)).toBe(0)
   })
+
+  it('non-regular assignment on same day-of-week/slot is NOT excluded', () => {
+    const regularLessons = [
+      { id: 'r1', teacherId: 't1', studentIds: ['s1'], subject: '数', dayOfWeek: 2, slotNumber: 1 },
+    ]
+    // s1 has regular lesson Tue slot 1, but also has a separate lecture assignment on another Tue slot 1
+    const assignments = {
+      '2026-07-21_1': [{ teacherId: 't1', studentIds: ['s1'], subject: '数', isRegular: true }],
+      '2026-07-28_1': [{ teacherId: 't2', studentIds: ['s1'], subject: '数' }], // NOT isRegular — lecture
+    }
+    // The lecture on 7/28 should be counted even though it shares day-of-week/slot with regular
+    expect(countStudentSubjectLoad(assignments, 's1', '数', regularLessons)).toBe(1)
+  })
 })
 
 describe('collectTeacherShortages', () => {
