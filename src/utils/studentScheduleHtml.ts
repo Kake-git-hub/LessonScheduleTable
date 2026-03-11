@@ -1,5 +1,6 @@
-import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
-import { getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import type { Assignment, GroupLesson, RegularLesson, SessionData, Student, Teacher } from '../types'
+import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import { canTeachSubject } from './subjects'
 import XLSX from 'xlsx-js-style'
 
 const SLOT_TIME_LABELS = [
@@ -35,14 +36,17 @@ function getAllDatesInRange(settings: SessionData['settings']): string[] {
 }
 
 /** Build a per-date+slot map of assignments for a given student */
+type MapEntry = { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; isManualRegular: boolean; isManualMakeup: boolean; makeupDate?: string; star1Color?: string; star2Color?: string }
+
 function buildStudentAssignmentMap(
   student: Student,
   assignments: Record<string, Assignment[]>,
-  _regularLessons: RegularLesson[],
+  regularLessons: RegularLesson[],
   groupLessons: GroupLesson[],
   dates: string[],
+  teachers: Teacher[],
 ) {
-  const map: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; isManualRegular: boolean; isManualMakeup: boolean; makeupDate?: string }> = {}
+  const map: Record<string, MapEntry> = {}
   const dateSet = new Set(dates)
 
   for (const [slotKey, pairs] of Object.entries(assignments)) {
@@ -54,15 +58,42 @@ function buildStudentAssignmentMap(
       const subject = getStudentSubject(a, student.id)
       const key = `${date}_${slotNumber}`
       const makeupInfo = a.regularMakeupInfo?.[student.id]
+      const subInfo = a.regularSubstituteInfo?.[student.id]
       const manualMark = a.manualRegularMark?.[student.id]
+      const isRegAtSlot = !!a.isRegular && findRegularLessonsForSlot(regularLessons, slotKey).some(r => r.studentIds.includes(student.id))
+      const isRegular = isRegAtSlot || manualMark === 'regular'
+      const isMakeup = !!makeupInfo || manualMark === 'makeup'
+
+      // Star 1 color: green for regular, orange for makeup
+      let star1Color: string | undefined
+      if (isRegular) star1Color = '#bbf7d0'
+      else if (isMakeup) star1Color = '#fef08a'
+
+      // Star 2 color: pink for substitute, purple for unsupported substitute
+      let star2Color: string | undefined
+      let regTeacherId: string | undefined
+      if (subInfo) {
+        regTeacherId = subInfo.regularTeacherId
+      } else {
+        const regLesson = regularLessons.find(r => r.studentIds.includes(student.id))
+        if (regLesson) regTeacherId = regLesson.teacherId
+      }
+      if (regTeacherId && a.teacherId && a.teacherId !== regTeacherId) {
+        const curTeacher = teachers.find(t => t.id === a.teacherId)
+        const isUnsupported = curTeacher ? !canTeachSubject(curTeacher.subjects, student.grade, subject) : false
+        star2Color = isUnsupported ? '#c4b5fd' : '#fbcfe8'
+      }
+
       map[key] = {
         subject,
-        isRegular: !!a.isRegular || manualMark === 'regular',
+        isRegular,
         isGroupLesson: !!a.isGroupLesson,
-        isMakeup: !!makeupInfo || manualMark === 'makeup',
+        isMakeup,
         isManualRegular: manualMark === 'regular',
         isManualMakeup: manualMark === 'makeup',
         makeupDate: makeupInfo?.date,
+        star1Color,
+        star2Color,
       }
     }
   }
@@ -114,7 +145,7 @@ function collectFurikaeEntries(
 }
 
 /** Count regular, lecture (individual), and group lesson counts by subject */
-function countLessons(assignmentMap: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; isManualRegular: boolean; isManualMakeup: boolean }>) {
+function countLessons(assignmentMap: Record<string, MapEntry>) {
   const regularCounts: Record<string, number> = {}
   const lectureCounts: Record<string, number> = {}
   const groupCounts: Record<string, number> = {}
@@ -324,7 +355,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   }
 
   const pagesHtml = students.map((student, idx) => {
-    const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates)
+    const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates, data.teachers)
     const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
     const expectedRegularCounts = countExpectedRegularLessons(student, data.regularLessons, dates, data.settings.holidays)
     const regularSubjects = [...new Set([...Object.keys(regularCounts), ...Object.keys(expectedRegularCounts)])].sort()
@@ -368,7 +399,16 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
         const isUnavailable = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
           const regularLabel = entry.isRegular ? '<br><span class="regular-tag">通常</span>' : ''
-          slotRows += `<td class="cell">${escapeHtml(entry.subject)}${regularLabel}</td>`
+          // Cell background based on star badges
+          let bgStyle = ''
+          if (entry.star1Color && entry.star2Color) {
+            bgStyle = ` style="background: linear-gradient(to right, ${entry.star1Color} 50%, ${entry.star2Color} 50%)"`
+          } else if (entry.star1Color) {
+            bgStyle = ` style="background: ${entry.star1Color}"`
+          } else if (entry.star2Color) {
+            bgStyle = ` style="background: ${entry.star2Color}"`
+          }
+          slotRows += `<td class="cell"${bgStyle}>${escapeHtml(entry.subject)}${regularLabel}</td>`
         } else if (isUnavailable) {
           slotRows += '<td class="cell unavailable"></td>'
         } else {
@@ -802,7 +842,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
   const satStyle = { ...headerStyle, font: { bold: true, sz: 8, color: { rgb: '2563EB' } } }
 
   for (const student of students) {
-    const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates)
+    const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates, data.teachers)
     const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
     const expectedRegularCounts = countExpectedRegularLessons(student, data.regularLessons, dates, data.settings.holidays)
     const regularSubjects = [...new Set([...Object.keys(regularCounts), ...Object.keys(expectedRegularCounts)])].sort()
@@ -896,7 +936,12 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
         const isUnavail = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
           const label = entry.isRegular ? `${entry.subject}(通常)` : entry.subject
-          slotRow.push({ v: label, t: 's', s: cellStyle })
+          // Apply star badge fill colors
+          const primaryColor = entry.star1Color ?? entry.star2Color
+          const slotStyle = primaryColor
+            ? { ...cellStyle, fill: { fgColor: { rgb: primaryColor.replace('#', '').toUpperCase() } } }
+            : cellStyle
+          slotRow.push({ v: label, t: 's', s: slotStyle })
         } else if (isUnavail) {
           slotRow.push({ v: '', t: 's', s: unavailableStyle })
         } else {
