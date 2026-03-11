@@ -297,7 +297,10 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     return `
       <div class="page${pageBreak}">
         <div class="header-row">
-          <div class="school-info" contenteditable="true" data-shared="school-info"></div>
+          <div class="header-left">
+            <div class="logo-box" data-shared="logo-box"></div>
+            <div class="school-text" contenteditable="true" data-shared="school-text"></div>
+          </div>
           <div class="title-center">
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
           </div>
@@ -320,11 +323,11 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 
         <div class="bottom-area">
           <div class="notes-area">
-            <div>
+            <div class="notes-col">
               <div class="notes-label">共通欄（全生徒に反映）</div>
               <div class="notes-shared" contenteditable="true" data-shared="shared-notes"></div>
             </div>
-            <div>
+            <div class="notes-col">
               <div class="notes-label">個別欄</div>
               <div class="notes-individual" contenteditable="true">${escapeHtml(student.memo || '')}</div>
             </div>
@@ -369,9 +372,29 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .title-area { margin-bottom: 6px; }
   h1 { font-size: 16px; text-align: center; margin-bottom: 0; }
   .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; }
-  .school-info {
+  .header-left {
     flex: 1;
-    min-height: 36px;
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
+  }
+  .logo-box {
+    flex: 1;
+    min-height: 40px;
+    border: 1px dashed #aaa;
+    padding: 3px 5px;
+    text-align: center;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .logo-box img { max-width: 100%; max-height: 60px; display: block; }
+  .logo-box:empty::before { content: 'クリックでロゴ画像を挿入'; color: #aaa; font-size: 8px; }
+  .school-text {
+    flex: 1;
+    min-height: 40px;
     border: 1px dashed #aaa;
     padding: 3px 5px;
     font-size: 9px;
@@ -379,14 +402,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     white-space: pre-wrap;
     outline: none;
   }
-  .school-info:empty::before {
-    content: 'ロゴ・校舎名・TEL等';
-    color: #aaa;
-  }
-  .school-info:focus { border-color: #2563eb; }
+  .school-text:empty::before { content: '校舎名・TEL等'; color: #aaa; }
+  .school-text:focus { border-color: #2563eb; }
   @media print {
-    .school-info { border: none !important; }
-    .school-info:empty::before { content: none; }
+    .logo-box { border: none !important; }
+    .logo-box:empty::before { content: none; }
+    .school-text { border: none !important; }
+    .school-text:empty::before { content: none; }
   }
   .title-center { flex: 0 0 auto; text-align: center; }
   .student-info { flex: 0 0 auto; text-align: right; font-size: 11px; font-weight: bold; }
@@ -396,13 +418,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 
   .schedule-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9px; }
   .schedule-table th, .schedule-table td { border: 1px solid #333; text-align: center; padding: 1px 2px; }
-  .corner { width: 70px; min-width: 70px; background: #f5f5f5; }
+  .corner { width: 70px; min-width: 70px; background: #fff; }
   .month-header { background: #e8e8e8; font-weight: bold; font-size: 10px; }
-  .date-header { background: #f5f5f5; font-size: 9px; }
-  .dow-header { background: #f5f5f5; font-size: 8px; }
+  .date-header { background: #fff; font-size: 9px; }
+  .dow-header { background: #fff; font-size: 8px; }
   .dow-header.sun { color: #dc2626; }
   .dow-header.sat { color: #2563eb; }
-  .slot-label { background: #f5f5f5; font-size: 8px; white-space: nowrap; text-align: left; padding-left: 3px; }
+  .slot-label { background: #fff; font-size: 8px; white-space: nowrap; text-align: left; padding-left: 3px; }
   .cell { height: 22px; vertical-align: middle; font-size: 8px; color: #000; }
   .unavailable { background: #d1d5db; }
   .holiday-col { background: #e5e7eb; }
@@ -412,10 +434,11 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 
   .notes-area {
-    flex: 1 1 50%;
+    flex: 1;
     display: flex;
     gap: 4px;
   }
+  .notes-col { flex: 1; display: flex; flex-direction: column; }
   .notes-shared, .notes-individual {
     flex: 1;
     min-height: 50px;
@@ -430,6 +453,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   }
   .notes-shared:focus, .notes-individual:focus { border-color: #2563eb; }
   .notes-label { font-size: 7px; color: #666; margin-bottom: 1px; }
+  @media print { .notes-label { display: none; } }
 
   .bottom-right { flex: 1; display: flex; justify-content: flex-end; }
   .bottom-right-top { display: flex; gap: 6px; align-items: flex-start; }
@@ -472,15 +496,45 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 </div>
 ${pagesHtml}
 <script>
-// Sync school-info across all pages
+// Sync shared elements across all pages
 (function() {
-  ['school-info','shared-notes'].forEach(function(key) {
+  ['logo-box','school-text','shared-notes'].forEach(function(key) {
     var els = document.querySelectorAll('[data-shared="' + key + '"]');
     els.forEach(function(el) {
       el.addEventListener('input', function() {
         var val = el.innerHTML;
         els.forEach(function(other) { if (other !== el) other.innerHTML = val; });
       });
+    });
+  });
+})();
+
+// Logo image insertion
+(function() {
+  document.querySelectorAll('.logo-box').forEach(function(box) {
+    box.addEventListener('click', function() {
+      if (box.querySelector('img')) return;
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = function() {
+        var file = input.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+          var img = document.createElement('img');
+          img.src = e.target.result;
+          box.innerHTML = '';
+          box.appendChild(img);
+          // Sync to all other logo boxes
+          var others = document.querySelectorAll('[data-shared="logo-box"]');
+          others.forEach(function(o) {
+            if (o !== box) { o.innerHTML = ''; var c = img.cloneNode(true); o.appendChild(c); }
+          });
+        };
+        reader.readAsDataURL(file);
+      };
+      input.click();
     });
   });
 })();
@@ -499,7 +553,8 @@ function saveHtml() {
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
     + '<script>\\n'
-    + '(function(){["school-info","shared-notes"].forEach(function(k){var els=document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  );els.forEach(function(el){el.addEventListener("input",function(){var v=el.innerHTML;els.forEach(function(o){if(o!==el)o.innerHTML=v;});});});});})();\n'
+    + '(function(){["logo-box","school-text","shared-notes"].forEach(function(k){var els=document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  );els.forEach(function(el){el.addEventListener("input",function(){var v=el.innerHTML;els.forEach(function(o){if(o!==el)o.innerHTML=v;});});});});})();\n'
+    + '(function(){document.querySelectorAll(".logo-box").forEach(function(b){b.addEventListener("click",function(){if(b.querySelector("img"))return;var i=document.createElement("input");i.type="file";i.accept="image/*";i.onchange=function(){var f=i.files[0];if(!f)return;var r=new FileReader();r.onload=function(e){var img=document.createElement("img");img.src=e.target.result;b.innerHTML="";b.appendChild(img);document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(o){if(o!==b){o.innerHTML="";o.appendChild(img.cloneNode(true));}});};r.readAsDataURL(f);};i.click();});});})();\n'
     + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
