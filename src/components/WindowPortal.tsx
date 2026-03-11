@@ -22,13 +22,7 @@ export default function WindowPortal({
   onCloseRef.current = onClose
 
   useEffect(() => {
-    const left = (window.screenX ?? 0) + 50
-    const top = (window.screenY ?? 0) + 50
-    const externalWindow = window.open(
-      '',
-      'slot-adjust-window',
-      `width=${width},height=${height},left=${left},top=${top}`,
-    )
+    const externalWindow = window.open('', 'slot-adjust-window')
     if (!externalWindow) {
       alert('ポップアップがブロックされました。ポップアップを許可してください。')
       onCloseRef.current()
