@@ -8629,13 +8629,14 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id })}
+                onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId })}
               >
                 📄 生徒日程表
               </button>
               <button
                 className="btn secondary"
                 type="button"
+                style={{ display: 'none' }}
                 onClick={() => exportStudentScheduleExcel({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id })}
               >
                 📊 生徒日程Excel

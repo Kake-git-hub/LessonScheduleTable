@@ -15,6 +15,7 @@ const DAY_OF_WEEK_LABELS = ['日', '月', '火', '水', '木', '金', '土']
 type StudentScheduleParams = {
   data: SessionData
   getTeacherName: (id: string) => string
+  sessionId?: string
 }
 
 /** Get all dates in the range INCLUDING holidays (for display purposes) */
@@ -169,7 +170,7 @@ function isHtmlElement(node: unknown): node is HTMLElement {
   return !!node && typeof node === 'object' && 'nodeType' in node && 'innerHTML' in node
 }
 
-function setupStudentScheduleWindow(targetWindow: Window): void {
+function setupStudentScheduleWindow(targetWindow: Window, sessionId?: string): void {
   const scheduleWindow = targetWindow as Window & {
     syncShared?: (el: HTMLElement) => void
     pickLogo?: () => void
@@ -222,11 +223,46 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
     node.addEventListener('keyup', sync)
     node.addEventListener('blur', sync)
   })
+
+  // Per-student save for individual notes and furikae
+  if (sessionId) {
+    const saveStudentData = (page: Element) => {
+      const studentId = page.getAttribute('data-student-id')
+      if (!studentId) return
+      const prefix = `studentSchedule_${sessionId}_${studentId}`
+      const indiv = page.querySelector('.notes-individual')
+      if (indiv && isHtmlElement(indiv)) {
+        try { localStorage.setItem(`${prefix}_individual`, indiv.innerHTML) } catch { /* */ }
+      }
+      const furikaeCells = page.querySelectorAll('.furikae-cell')
+      const vals: string[] = []
+      furikaeCells.forEach((c) => { if (isHtmlElement(c)) vals.push(c.innerHTML) })
+      try { localStorage.setItem(`${prefix}_furikae`, JSON.stringify(vals)) } catch { /* */ }
+    }
+    doc.querySelectorAll('.notes-individual').forEach((node) => {
+      if (!isHtmlElement(node)) return
+      const handler = () => {
+        const page = node.closest('.page')
+        if (page) saveStudentData(page)
+      }
+      node.addEventListener('input', handler)
+      node.addEventListener('blur', handler)
+    })
+    doc.querySelectorAll('.furikae-cell').forEach((node) => {
+      if (!isHtmlElement(node)) return
+      const handler = () => {
+        const page = node.closest('.page')
+        if (page) saveStudentData(page)
+      }
+      node.addEventListener('input', handler)
+      node.addEventListener('blur', handler)
+    })
+  }
 }
 
 /** Generate the HTML content for all student schedules */
 export function openStudentScheduleHtml(params: StudentScheduleParams): void {
-  const { data } = params
+  const { data, sessionId } = params
   const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
     alert('講習期間が未設定です')
@@ -349,14 +385,28 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     }
     lectureTableHtml += '</table>'
 
+    // Restore saved individual notes and furikae from localStorage (session-scoped)
+    let savedIndividual = ''
+    let savedFurikaeVals: string[] = []
+    if (sessionId) {
+      const prefix = `studentSchedule_${sessionId}_${student.id}`
+      try {
+        savedIndividual = localStorage.getItem(`${prefix}_individual`) ?? ''
+        const raw = localStorage.getItem(`${prefix}_furikae`)
+        if (raw) savedFurikaeVals = JSON.parse(raw) as string[]
+      } catch { /* */ }
+    }
+
     // 振替授業 table - pre-fill with actual makeup data, editable
     const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
     const furikaeRowCount = Math.max(5, furikaeEntries.length)
     let furikaeRowsHtml = ''
     for (let i = 0; i < furikaeRowCount; i++) {
       const entry = furikaeEntries[i]
-      const fromVal = entry ? escapeHtml(entry.fromLabel) : ''
-      const toVal = entry ? escapeHtml(entry.toLabel) : ''
+      const savedFrom = savedFurikaeVals[i * 2] ?? ''
+      const savedTo = savedFurikaeVals[i * 2 + 1] ?? ''
+      const fromVal = savedFrom || (entry ? escapeHtml(entry.fromLabel) : '')
+      const toVal = savedTo || (entry ? escapeHtml(entry.toLabel) : '')
       furikaeRowsHtml += `<tr><td class="furikae-cell" contenteditable="true">${fromVal}</td><td class="furikae-arrow">→</td><td class="furikae-cell" contenteditable="true">${toVal}</td></tr>`
     }
     const furikaeTableHtml = `<table class="furikae-table"><tr><th colspan="3">振替授業</th></tr>${furikaeRowsHtml}</table>`
@@ -364,7 +414,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     const pageBreak = idx < students.length - 1 ? ' page-break' : ''
 
     return `
-      <div class="page${pageBreak}">
+      <div class="page${pageBreak}" data-student-id="${student.id}">
         <div class="header-row">
           <div class="header-left">
             <div class="logo-box" data-shared="logo-box" onclick="window.pickLogo()">${savedLogo}</div>
@@ -398,7 +448,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
             </div>
             <div class="notes-col">
               <div class="notes-label">個別欄</div>
-              <div class="notes-individual" contenteditable="true">${escapeHtml(student.memo || '')}</div>
+              <div class="notes-individual" contenteditable="true">${savedIndividual || escapeHtml(student.memo || '')}</div>
             </div>
           </div>
           <div class="bottom-right">
@@ -675,7 +725,7 @@ function saveHtml() {
   }
   newWindow.document.write(html)
   newWindow.document.close()
-  setupStudentScheduleWindow(newWindow)
+  setupStudentScheduleWindow(newWindow, sessionId)
 }
 
 /** Export student schedules as Excel workbook (one sheet per student) */
