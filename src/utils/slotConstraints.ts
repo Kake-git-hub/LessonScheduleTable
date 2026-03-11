@@ -26,7 +26,8 @@ export const CONSTRAINT_CARD_LABELS: Record<ConstraintCardType, string> = {
   twoWithGap: '2コマ連続(一コマ空け)',
   groupContinuous: '集団後2コマ連続',
   regularLink: '通常授業連結',
-  preferRegularTeacher: '通常講師優先',
+  forceRegularTeacher: '通常講師強制',
+  priorityAssign: '優先割振',
   lateSlotNonExam: '受験生以外の後半コマ優先',
   earlySlotPreference: '小学生は2限寄り',
   lateSlotPreference: '中高生は5限寄り',
@@ -42,7 +43,8 @@ export const CONSTRAINT_CARD_DESCRIPTIONS: Record<ConstraintCardType, string> = 
   twoWithGap: '[絶対] 生徒を2コマ連続で配置するが、間に1コマ入れる（複数科目の残コマがある場合、科目は前後のコマで分ける）',
   groupContinuous: '[絶対] 集団授業がある日の中3は、午前の後に早いコマから2コマ連続で配置',
   regularLink: '[絶対] 通常授業の前後に特別講習のコマをつなげ2コマ連続とする（複数科目の残コマがある場合、科目は前後のコマで分ける）',
-  preferRegularTeacher: '[推奨] 通常授業の講師を優先して配置',
+  forceRegularTeacher: '[絶対] 通常授業の講師以外への配置を不可にする',
+  priorityAssign: '[推奨] 他の生徒より優先して割り振る（中3デフォルト）',
   lateSlotNonExam: '[推奨] 高3・中3以外は3限以降に配置しやすくし、2人ペアの形成を促進',
   earlySlotPreference: '[推奨] 小学生を2限優先で配置しやすくする（2限 > 3限 > 4限 > 5限、1限はなるべく避ける）',
   lateSlotPreference: '[推奨] 中高生を5限以降優先で配置しやすくする（5限以降 > 4限 > 3限 > 2限 > 1限）',
@@ -60,6 +62,7 @@ export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] =
   }
   if (grade === '中3') {
     cards.push('groupContinuous')
+    cards.push('priorityAssign')
   }
   // Slot preference defaults
   if (grade.startsWith('小')) {
@@ -72,7 +75,7 @@ export const getDefaultConstraintCards = (grade: string): ConstraintCardType[] =
 }
 
 /** Static fallback (used when grade is unknown). */
-export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous', 'lateSlotPreference', 'avoidSlot1']
+export const DEFAULT_CONSTRAINT_CARDS: ConstraintCardType[] = ['twoSlotLimit', 'lateSlotNonExam', 'groupContinuous', 'priorityAssign', 'lateSlotPreference', 'avoidSlot1']
 
 /** All constraint card types in display order. */
 export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
@@ -83,7 +86,8 @@ export const ALL_CONSTRAINT_CARDS: ConstraintCardType[] = [
   'twoWithGap',
   'groupContinuous',
   'regularLink',
-  'preferRegularTeacher',
+  'forceRegularTeacher',
+  'priorityAssign',
   'lateSlotNonExam',
   'earlySlotPreference',
   'lateSlotPreference',
@@ -162,9 +166,9 @@ export interface ConstraintEvalResult {
  * @param candidateSlot  The slot key being considered (e.g. "2026-03-15_2")
  * @param assignments    Current assignment state
  * @param slotsPerDay    Total slots per day (from session settings)
- * @param regularLessons Regular lessons (for 'regularLink' and 'preferRegularTeacher')
+ * @param regularLessons Regular lessons (for 'regularLink' and 'forceRegularTeacher')
  * @param groupLessons   Group lessons (for 'groupContinuous')
- * @param teacherId      The teacher being considered (for 'preferRegularTeacher')
+ * @param teacherId      The teacher being considered (for 'forceRegularTeacher')
  */
 export const evaluateConstraintCards = (
   student: Student,
@@ -227,16 +231,26 @@ export const evaluateConstraintCards = (
         break
       }
 
-      case 'preferRegularTeacher': {
-        // Bonus if this teacher is the student's regular teacher
+      case 'forceRegularTeacher': {
+        // Hard block: only allow the student's regular teacher
         if (teacherId) {
-          const isRegular = regularLessons.some(
-            (rl) => rl.teacherId === teacherId && rl.studentIds.includes(student.id),
-          )
-          if (isRegular) {
+          const hasRegularLesson = regularLessons.some((rl) => rl.studentIds.includes(student.id))
+          if (hasRegularLesson) {
+            const isRegular = regularLessons.some(
+              (rl) => rl.teacherId === teacherId && rl.studentIds.includes(student.id),
+            )
+            if (!isRegular) {
+              return { score: -99999, blocked: true, blockReason: '通常講師強制: 通常授業の講師ではありません' }
+            }
             score += 1500
           }
         }
+        break
+      }
+
+      case 'priorityAssign': {
+        // Large bonus to prioritize this student over others
+        score += 3000
         break
       }
 

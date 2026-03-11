@@ -10,7 +10,8 @@ export type RegularLessonAttendanceStatus = 'absent' | 'completed'
 export type ConstraintCardType =
   | 'lateSlotNonExam'       // 受験生以外の後半コマ優先 (default)
   | 'groupContinuous'       // 集団後2コマ連続 (default)
-  | 'preferRegularTeacher'  // 通常講師優先
+  | 'forceRegularTeacher'   // 通常講師強制
+  | 'priorityAssign'        // 優先割振 (default for 中3)
   | 'twoConsecutive'        // 2コマ連続
   | 'twoWithGap'            // 2コマ連続(一コマ空け)
   | 'oneSlotOnly'           // 1コマ上限

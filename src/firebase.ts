@@ -66,9 +66,21 @@ const normalizeTeacherList = <T extends { teachers: Array<{ subjects: string[] }
   })),
 })
 
-const normalizeMasterData = (data: MasterData): MasterData => normalizeTeacherList(data)
+const migrateConstraintCards = <T extends { students: Array<{ constraintCards?: import('./types').ConstraintCardType[] }> }>(value: T): T => ({
+  ...value,
+  students: value.students.map((s) => {
+    if (!s.constraintCards) return s
+    const idx = (s.constraintCards as string[]).indexOf('preferRegularTeacher')
+    if (idx < 0) return s
+    const cards = [...s.constraintCards] as import('./types').ConstraintCardType[]
+    cards[idx] = 'forceRegularTeacher'
+    return { ...s, constraintCards: cards }
+  }),
+})
 
-const normalizeSessionData = (data: SessionData): SessionData => normalizeTeacherList(data)
+const normalizeMasterData = (data: MasterData): MasterData => migrateConstraintCards(normalizeTeacherList(data))
+
+const normalizeSessionData = (data: SessionData): SessionData => migrateConstraintCards(normalizeTeacherList(data))
 
 // ---------- Anonymous Auth ----------
 
