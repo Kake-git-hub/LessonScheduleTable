@@ -1331,6 +1331,149 @@
 .range-cal-dow.sun { color: #ef4444; }
 .range-cal-dow.sat { color: #3b82f6; }
 .range-cal-day {
+}
+
+/* ===== Slot Adjust View ===== */
+.slot-adjust-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.slot-adjust-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  flex-shrink: 0;
+}
+.slot-adjust-selection-badge {
+  display: inline-flex;
+  align-items: center;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-weight: 600;
+  font-size: 0.9em;
+}
+.slot-adjust-grid {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+}
+.slot-adjust-grid table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  font-size: 11px;
+}
+.slot-adjust-grid th,
+.slot-adjust-grid td {
+  border: 1px solid #cbd5e1;
+  padding: 2px 4px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sa-time-col {
+  width: 88px;
+}
+.sa-day-header {
+  background: #f1f5f9;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 4px 2px;
+}
+.sa-day-header.sa-day-inactive {
+  background: #f9fafb;
+  color: #94a3b8;
+}
+.sa-sub-header {
+  background: #f8fafc;
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+  width: 70px;
+  min-width: 60px;
+}
+.sa-sub-header.sa-day-inactive {
+  color: #cbd5e1;
+}
+.sa-time-cell {
+  background: #f1f5f9;
+  font-weight: 700;
+  font-size: 11px;
+  vertical-align: middle;
+  text-align: center;
+}
+tr.sa-slot-first td {
+  border-top: 2px solid #94a3b8;
+}
+.sa-teacher {
+  background: #f8fafc;
+  color: #334155;
+  font-size: 10px;
+}
+.sa-teacher-unassigned {
+  color: #94a3b8;
+  font-style: italic;
+}
+.sa-student {
+  cursor: default;
+  min-height: 22px;
+  transition: background 0.15s;
+}
+.sa-student:hover:not(.sa-inactive) {
+  background: #f1f5f9;
+}
+.sa-student.sa-selected {
+  background: #3b82f6 !important;
+  color: #fff;
+}
+.sa-student.sa-avail {
+  background: #dcfce7;
+}
+.sa-student.sa-dest {
+  cursor: pointer;
+  background: #bbf7d0;
+  outline: 2px solid #22c55e;
+  outline-offset: -2px;
+}
+.sa-student.sa-dest:hover {
+  background: #86efac;
+}
+.sa-inactive {
+  background: #f9fafb;
+  color: #d1d5db;
+}
+.sa-student-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+.sa-student-name {
+  font-weight: 600;
+  font-size: 10px;
+  line-height: 1.2;
+}
+.sa-student-detail {
+  font-size: 8px;
+  color: #64748b;
+  line-height: 1.2;
+}
+.sa-student.sa-selected .sa-student-detail {
+  color: #dbeafe;
+}
   font-size: 13px;
   padding: 5px 0;
   border-radius: 6px;

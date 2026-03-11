@@ -32,6 +32,7 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
+import SlotAdjustView from './components/SlotAdjustView'
 
 const APP_VERSION = '1.4.5'
 
@@ -3227,6 +3228,7 @@ const AdminPage = () => {
   // --- Salary calculation ---
   const [showSalary, setShowSalary] = useState(false)
   const [showScheduleSettingsEditor, setShowScheduleSettingsEditor] = useState(false)
+  const [showSlotAdjust, setShowSlotAdjust] = useState(false)
   const [editSessionStartDate, setEditSessionStartDate] = useState('')
   const [editSessionEndDate, setEditSessionEndDate] = useState('')
   const [editSubmissionStartDate, setEditSubmissionStartDate] = useState('')
@@ -3247,6 +3249,7 @@ const AdminPage = () => {
   })
   const pendingProposalStatusRefreshRef = useRef(false)
   const dataRef = useRef<SessionData | null>(null)
+  const studentScheduleWindowRef = useRef<Window | null>(null)
   // Track slots manually modified since the last auto-assign to decide whether rerunning is meaningful.
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // Track slots that should stay protected from regular auto-fill even after auto-assign reruns.
@@ -3627,6 +3630,19 @@ const AdminPage = () => {
     {},
     sessionTableSorts.students,
   ), [data?.students, sessionTableSorts.students])
+
+  // Refresh student schedule window when assignments change (real-time sync)
+  useEffect(() => {
+    const win = studentScheduleWindowRef.current
+    if (!win || win.closed || !data) return
+    openStudentScheduleHtml({
+      data,
+      getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
+      sessionId,
+      sortedStudents: sessionStudentRows,
+      targetWindow: win,
+    })
+  }, [data?.assignments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const persist = async (next: SessionData): Promise<void> => {
     const now = Date.now()
@@ -8164,6 +8180,7 @@ const AdminPage = () => {
     studentId: string,
     targetSlot: string,
     targetIdx?: number, // if provided, add to existing assignment; otherwise create new
+    options?: { skipAvailCheck?: boolean },
   ): Promise<void> => {
     await updateAssignments((current) => {
       const srcAssignments = [...(current.assignments[sourceSlot] ?? [])]
@@ -8173,7 +8190,7 @@ const AdminPage = () => {
 
       // Check student/parent availability in target slot
       const student = current.students.find((s) => s.id === studentId)
-      if (student && (isMendan
+      if (!options?.skipAvailCheck && student && (isMendan
         ? !isParentAvailableForMendan(current.availability, student.id, targetSlot)
         : !isStudentAvailable(student, targetSlot))) return current
 
@@ -8452,6 +8469,18 @@ service cloud.firestore {
 
   return (
     <div className="app-shell">
+      {showSlotAdjust && (
+        <SlotAdjustView
+          data={data}
+          instructors={instructors}
+          instructorPersonType={instructorPersonType}
+          isMendan={isMendan}
+          onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx) =>
+            moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true })
+          }
+          onClose={() => setShowSlotAdjust(false)}
+        />
+      )}
       <div className="panel">
         <div className="admin-header-row">
           <h2 style={{ margin: 0 }}>管理画面: {data.settings.name} ({sessionId})</h2>
@@ -8851,10 +8880,13 @@ service cloud.firestore {
               >
                 PDF出力
               </button>
+              <button className="btn secondary" type="button" onClick={() => setShowSlotAdjust(true)}>
+                🔀 コマ調整
+              </button>
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId, sortedStudents: sessionStudentRows })}
+                onClick={() => { studentScheduleWindowRef.current = openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId, sortedStudents: sessionStudentRows }) }}
               >
                 📄 生徒日程表
               </button>

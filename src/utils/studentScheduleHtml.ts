@@ -300,12 +300,12 @@ function setupStudentScheduleWindow(targetWindow: Window, sessionId?: string): v
 }
 
 /** Generate the HTML content for all student schedules */
-export function openStudentScheduleHtml(params: StudentScheduleParams): void {
-  const { data, sessionId } = params
+export function openStudentScheduleHtml(params: StudentScheduleParams & { targetWindow?: Window | null }): Window | null {
+  const { data, sessionId, targetWindow } = params
   const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
-    alert('講習期間が未設定です')
-    return
+    if (!targetWindow) alert('講習期間が未設定です')
+    return null
   }
 
   const holidaySet = new Set(data.settings.holidays)
@@ -738,14 +738,16 @@ window.pickLogo = function() {
 </body>
 </html>`
 
-  const newWindow = window.open('', '_blank')
-  if (!newWindow) {
+  const win = targetWindow && !targetWindow.closed ? targetWindow : window.open('', '_blank')
+  if (!win) {
     alert('ポップアップがブロックされました。ブラウザの設定を確認してください。')
-    return
+    return null
   }
-  newWindow.document.write(html)
-  newWindow.document.close()
-  setupStudentScheduleWindow(newWindow, sessionId)
+  win.document.open()
+  win.document.write(html)
+  win.document.close()
+  setupStudentScheduleWindow(win, sessionId)
+  return win
 }
 
 /** Export student schedules as Excel workbook (one sheet per student) */
