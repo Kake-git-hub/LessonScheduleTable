@@ -3213,6 +3213,7 @@ const AdminPage = () => {
   const [, setTransferSlot] = useState<string | null>(null)
   const [showRules, setShowRules] = useState(false)
   const [gridFilter, setGridFilter] = useState('')
+  const [warningPairFilter, setWarningPairFilter] = useState(false)
   const [emailSendLog, setEmailSendLog] = useState<Record<string, { time: string; type: string }>>({})
   const [currentClassroomName, setCurrentClassroomName] = useState(classroomId)
   // --- Actual result recording ---
@@ -8669,7 +8670,7 @@ service cloud.firestore {
               )}
             </div>
             <p className="muted">{isMendan ? 'マネージャー1人 + 保護者1人の面談を先着順で自動割当。' : '通常授業は日付確定時に自動配置。特別講習は自動提案で割当。講師1人 + 生徒1〜2人。'}</p>
-            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　薄桃★=通常講師代行　紫★=担当外科目の通常講師代行　⚠=制約不可　クリックでペア/生徒を別コマへ移動可'}</p>
+            <p className="muted" style={{ fontSize: '12px' }}>{isMendan ? 'クリックで別コマへ移動可' : '青★=通常　黄★=振替　薄桃★=通常講師代行　紫★=担当外科目の通常講師代行　⚠=制約不可　担当外=担当科目外　クリックでペア/生徒を別コマへ移動可'}</p>
             {/* Salary calculation panel */}
             {showSalary && (() => {
               const rates = data.tierRates ?? { ...defaultTierRates }
@@ -8805,7 +8806,16 @@ service cloud.firestore {
               </div>
             )}
             {/* Filter bar */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px', gap: '6px', alignItems: 'center' }}>
+              <button
+                type="button"
+                className={warningPairFilter ? 'btn' : 'btn secondary'}
+                style={{ fontSize: '0.8em', padding: '4px 10px', whiteSpace: 'nowrap', background: warningPairFilter ? '#f59e0b' : undefined, borderColor: warningPairFilter ? '#f59e0b' : undefined }}
+                onClick={() => setWarningPairFilter((v) => !v)}
+                title="注意バッジのあるペアをハイライト"
+              >
+                ⚠ 注意ペア
+              </button>
               <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
                 <input
                   type="text"
@@ -8924,13 +8934,34 @@ service cloud.firestore {
                   return false
                 })()
 
-                const slotMatchesFilter = !gridFilter.trim() || (() => {
-                  const ft = gridFilter.trim().toLowerCase()
-                  return displayAssignments.some((a) => {
-                    const tn = instructors.find((t) => t.id === a.teacherId)?.name?.toLowerCase() ?? ''
-                    const sn = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
-                    return tn.includes(ft) || sn.some((n) => n.includes(ft))
-                  })
+                const slotMatchesFilter = (() => {
+                  const textMatch = !gridFilter.trim() || (() => {
+                    const ft = gridFilter.trim().toLowerCase()
+                    return displayAssignments.some((a) => {
+                      const tn = instructors.find((t) => t.id === a.teacherId)?.name?.toLowerCase() ?? ''
+                      const sn = a.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
+                      return tn.includes(ft) || sn.some((n) => n.includes(ft))
+                    })
+                  })()
+                  if (!textMatch) return false
+                  if (warningPairFilter) {
+                    return displayAssignments.some((a) => {
+                      if (!a.teacherId || a.studentIds.length === 0) return false
+                      const teacher = instructors.find((t) => t.id === a.teacherId)
+                      const incomp = a.teacherId && data.students.filter((s) => a.studentIds.includes(s.id)).some((s) => constraintFor(data.constraints, a.teacherId, s.id) === 'incompatible')
+                        || (a.studentIds.length === 2 && constraintFor(data.constraints, a.studentIds[0], a.studentIds[1]) === 'incompatible')
+                      const subjMismatch = teacher && a.studentIds.some((sid) => {
+                        const st = data.students.find((s) => s.id === sid)
+                        if (!st) return false
+                        const subj = getStudentSubject(a, sid)
+                        return subj ? !canTeachSubject(teacher.subjects ?? [], st.grade, subj) : false
+                      })
+                      const constraintWarn = !isRecorded && getManualConstraintWarnings(slot, a, displayAssignments.indexOf(a)).length > 0
+                      const teacherUn = !a.teacherId && !!a.teacherUnassignedReason
+                      return !!(incomp || subjMismatch || constraintWarn || teacherUn)
+                    })
+                  }
+                  return true
                 })()
 
                 return (
@@ -9162,6 +9193,12 @@ service cloud.firestore {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
                           return pt === 'incompatible'
                         }) || (!isMendan && assignment.studentIds.length === 2 && constraintFor(data.constraints, assignment.studentIds[0], assignment.studentIds[1]) === 'incompatible')
+                        const hasSubjectMismatch = !isMendan && !!assignment.teacherId && selectedTeacher && assignment.studentIds.length > 0 && assignment.studentIds.some((studentId) => {
+                          const student = data.students.find((s) => s.id === studentId)
+                          if (!student) return false
+                          const subj = getStudentSubject(assignment, studentId)
+                          return subj ? !canTeachSubject(selectedTeacher.subjects ?? [], student.grade, subj) : false
+                        })
                         const sig = assignmentSignature(assignment)
                         const hl = data.autoAssignHighlights ?? {}
                         const originalHighlightedAssignment = isRecorded
@@ -9216,10 +9253,15 @@ service cloud.firestore {
 
                         // Filter match check
                         const filterTerm = gridFilter.trim().toLowerCase()
-                        const matchesFilter = !filterTerm || (() => {
-                          const teacherName = selectedTeacher?.name?.toLowerCase() ?? ''
-                          const studentNames = assignment.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
-                          return teacherName.includes(filterTerm) || studentNames.some((n) => n.includes(filterTerm))
+                        const hasAnyWarning = !!(isIncompatiblePair || hasSubjectMismatch || hasManualConstraintWarning || hasTeacherUnassignedWarning)
+                        const matchesFilter = (() => {
+                          const textMatch = !filterTerm || (() => {
+                            const teacherName = selectedTeacher?.name?.toLowerCase() ?? ''
+                            const studentNames = assignment.studentIds.map((sid) => data.students.find((s) => s.id === sid)?.name?.toLowerCase() ?? '')
+                            return teacherName.includes(filterTerm) || studentNames.some((n) => n.includes(filterTerm))
+                          })()
+                          if (warningPairFilter) return textMatch && hasAnyWarning
+                          return textMatch
                         })()
 
                         // Group lesson: show compact non-editable block with ■ marker
@@ -9267,9 +9309,10 @@ service cloud.firestore {
                               </button>
                             )}
                             {/* Badges row above teacher */}
-                            {(isIncompatiblePair || hasManualConstraintWarning || hasTeacherUnassignedWarning || isAutoAdded || isAutoChanged) && (
+                            {(isIncompatiblePair || hasSubjectMismatch || hasManualConstraintWarning || hasTeacherUnassignedWarning || isAutoAdded || isAutoChanged) && (
                               <div style={{ display: 'flex', gap: '4px', marginBottom: '2px', flexWrap: 'wrap' }}>
                                 {isIncompatiblePair && <span className="badge incompatible-badge" title="制約不可">⚠</span>}
+                                {hasSubjectMismatch && <span className="badge" style={{ background: '#f59e0b', color: '#fff', fontSize: '0.72em', padding: '2px 6px', borderRadius: '4px' }} title="担当科目外のペア">担当外</span>}
                                 {hasManualConstraintWarning && <span className="badge manual-constraint-badge" title={manualConstraintWarnings.join('\n')}>注意</span>}
                                 {hasTeacherUnassignedWarning && <span className="badge manual-constraint-badge" title={teacherUnassignedWarning}>注意</span>}
                                 {isAutoAdded && !isAutoMakeup && !hasMakeupInfo && <span className="badge auto-diff-badge auto-diff-badge-new" title={formatAutoDiffTooltip('new', changeDetail)}>新規</span>}
