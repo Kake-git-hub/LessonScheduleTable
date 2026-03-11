@@ -8528,6 +8528,15 @@ service cloud.firestore {
           undoCount={undoCount}
           redoCount={redoCount}
           onClose={() => setShowSlotAdjust(false)}
+          onCreateStudent={async (name, grade) => {
+            const id = createId()
+            const student: Student = {
+              id, name, email: '', grade,
+              regularOnly: false, subjects: [], subjectSlots: {}, unavailableDates: [], preferredSlots: [], unavailableSlots: [], memo: '', submittedAt: 0,
+            }
+            await update((current) => ({ ...current, students: [...current.students, student] }))
+            return id
+          }}
           onSelectionChange={(sel) => {
             const win = teacherScheduleWindowRef.current
             if (!win || win.closed) return

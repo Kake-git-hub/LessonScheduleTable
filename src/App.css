@@ -1590,6 +1590,11 @@ tr.sa-slot-first td {
   background: #fef3c7;
   color: #92400e;
 }
+.sa-picker-new {
+  color: #2563eb;
+  font-weight: 600;
+  border-bottom: 1px solid #e2e8f0;
+}
 .range-cal-day {
   font-size: 13px;
   padding: 5px 0;

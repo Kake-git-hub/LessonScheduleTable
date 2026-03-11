@@ -20,6 +20,7 @@ type SlotAdjustViewProps = {
     targetTeacherId?: string,
   ) => Promise<void>
   onAddStudent: (slot: string, idx: number, studentId: string, teacherId?: string, subject?: string) => Promise<void>
+  onCreateStudent: (name: string, grade: string) => Promise<string>
   onUndo: () => Promise<void>
   onRedo: () => Promise<void>
   undoCount: number
@@ -40,7 +41,11 @@ type StudentPickerInfo = {
   deskIdx: number
   /** When set, picker shows subject selection for this student */
   selectedStudentId?: string
+  /** When true, picker shows new student creation form */
+  creatingStudent?: boolean
 }
+
+const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
 
 // ---- helpers ----
 
@@ -193,6 +198,7 @@ export default function SlotAdjustView({
   isMendan,
   onMove,
   onAddStudent,
+  onCreateStudent,
   onUndo,
   onRedo,
   undoCount,
@@ -204,6 +210,8 @@ export default function SlotAdjustView({
   const [weekIdx, setWeekIdx] = useState(0)
   const [busy, setBusy] = useState(false)
   const [studentPicker, setStudentPicker] = useState<StudentPickerInfo | null>(null)
+  const [newStudentName, setNewStudentName] = useState('')
+  const [newStudentGrade, setNewStudentGrade] = useState('中1')
   const pickerRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -573,7 +581,48 @@ export default function SlotAdjustView({
                             {/* Student picker dropdown — only rendered once per desk */}
                             {shouldRenderPicker && (
                               <div className="sa-picker" ref={pickerRef} onClick={(e) => e.stopPropagation()}>
-                                {pickerSelectedStudent ? (
+                                {studentPicker?.creatingStudent ? (
+                                  <>
+                                    <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                      <button type="button" className="sa-picker-back" onClick={() => { setStudentPicker({ slot: slotKey, deskIdx }); setNewStudentName(''); setNewStudentGrade('中1') }}>◀</button>
+                                      新規生徒追加
+                                    </div>
+                                    <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <input
+                                        type="text"
+                                        placeholder="生徒名"
+                                        value={newStudentName}
+                                        onChange={(e) => setNewStudentName(e.target.value)}
+                                        style={{ fontSize: 11, padding: '3px 6px', border: '1px solid #cbd5e1', borderRadius: 4, width: '100%' }}
+                                        autoFocus
+                                        onKeyDown={(e) => { if (e.key === 'Enter' && newStudentName.trim()) { void (async () => { await onCreateStudent(newStudentName.trim(), newStudentGrade); setNewStudentName(''); setNewStudentGrade('中1'); setStudentPicker({ slot: slotKey, deskIdx }) })() } }}
+                                      />
+                                      <select
+                                        value={newStudentGrade}
+                                        onChange={(e) => setNewStudentGrade(e.target.value)}
+                                        style={{ fontSize: 11, padding: '3px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }}
+                                      >
+                                        {GRADE_OPTIONS.map(g => <option key={g} value={g}>{g}</option>)}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        disabled={!newStudentName.trim() || busy}
+                                        style={{ fontSize: 11, padding: '4px 8px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}
+                                        onClick={() => {
+                                          if (!newStudentName.trim()) return
+                                          void (async () => {
+                                            await onCreateStudent(newStudentName.trim(), newStudentGrade)
+                                            setNewStudentName('')
+                                            setNewStudentGrade('中1')
+                                            setStudentPicker({ slot: slotKey, deskIdx })
+                                          })()
+                                        }}
+                                      >
+                                        追加
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : pickerSelectedStudent ? (
                                   <>
                                     <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                                       <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx })}>◀</button>
@@ -596,6 +645,12 @@ export default function SlotAdjustView({
                                   <>
                                     <div className="sa-picker-title">生徒を追加</div>
                                     <div className="sa-picker-list">
+                                      <div
+                                        className="sa-picker-item sa-picker-new"
+                                        onClick={() => setStudentPicker({ slot: slotKey, deskIdx, creatingStudent: true })}
+                                      >
+                                        ＋ 新規生徒追加
+                                      </div>
                                       {pickerStudents.map((st) => {
                                         const slotDow = getSlotDayOfWeek(slotKey)
                                         const slotNum = getSlotNumber(slotKey)
