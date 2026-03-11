@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.89'
+const APP_VERSION = '1.3.90'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -8707,7 +8707,6 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                style={{ display: 'none' }}
                 onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId })}
               >
                 📄 生徒日程表
@@ -8715,7 +8714,6 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                style={{ display: 'none' }}
                 onClick={() => openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '' })}
               >
                 📄 講師日程表

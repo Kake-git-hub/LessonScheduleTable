@@ -693,7 +693,6 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 <body>
 <div class="toolbar no-print">
   <button onclick="window.print()">🖨 印刷 / PDF保存</button>
-  <button onclick="saveHtml()">💾 HTMLを保存</button>
   <span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>
 </div>
 <input id="logo-file-input" class="no-print" type="file" accept="image/*" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none">
@@ -733,33 +732,6 @@ window.pickLogo = function() {
   });
 })();
 
-function saveHtml() {
-  var clone = document.documentElement.cloneNode(true);
-  var toolbar = clone.querySelector('.toolbar');
-  if (toolbar) toolbar.remove();
-  var scripts = clone.querySelectorAll('script');
-  scripts.forEach(function(s) { s.remove(); });
-  var html = '<!DOCTYPE html>\\n<html lang="ja">' + clone.innerHTML + '</html>';
-  var bodyTag = html.indexOf('</body>');
-  var inject = '<div class="toolbar no-print">'
-    + '<button onclick="window.print()">🖨 印刷 / PDF保存</button>'
-    + '<button onclick="saveHtml()">💾 HTMLを保存</button>'
-    + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
-    + '</div>'
-    + '<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none">'
-    + '<script>\\n'
-    + 'window.syncShared=' + window.syncShared.toString() + ';\n'
-    + 'window.pickLogo=' + window.pickLogo.toString() + ';\n'
-    + '(function(){var input=document.getElementById("logo-file-input");if(!input)return;input.addEventListener("change",function(){var file=input.files&&input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(ev){var src=ev&&ev.target?ev.target.result:"";if(!src)return;document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(other){other.innerHTML=\'<img src="\'+src+\'" alt="logo">\';});};reader.readAsDataURL(file);});})();\n'
-    + saveHtml.toString() + '\\n<\\/script>';
-  if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
-  var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-  var a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = document.title + '.html';
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
 </script>
 </body>
 </html>`
