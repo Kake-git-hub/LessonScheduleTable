@@ -1,5 +1,5 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
-import { getDatesInRange, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import { getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -16,6 +16,22 @@ type StudentScheduleParams = {
   getTeacherName: (id: string) => string
 }
 
+/** Get all dates in the range INCLUDING holidays (for display purposes) */
+function getAllDatesInRange(settings: SessionData['settings']): string[] {
+  if (!settings.startDate || !settings.endDate) return []
+  const start = new Date(`${settings.startDate}T00:00:00`)
+  const end = new Date(`${settings.endDate}T00:00:00`)
+  const dates: string[] = []
+  for (let cursor = new Date(start); cursor <= end; ) {
+    const y = cursor.getFullYear()
+    const m = String(cursor.getMonth() + 1).padStart(2, '0')
+    const d = String(cursor.getDate()).padStart(2, '0')
+    dates.push(`${y}-${m}-${d}`)
+    cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000)
+  }
+  return dates
+}
+
 /** Build a per-date+slot map of assignments for a given student */
 function buildStudentAssignmentMap(
   student: Student,
@@ -24,7 +40,7 @@ function buildStudentAssignmentMap(
   groupLessons: GroupLesson[],
   dates: string[],
 ) {
-  const map: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean }> = {}
+  const map: Record<string, { subject: string; isRegular: boolean; isGroupLesson: boolean; isMakeup: boolean; makeupDate?: string }> = {}
   const dateSet = new Set(dates)
 
   for (const [slotKey, pairs] of Object.entries(assignments)) {
@@ -35,10 +51,13 @@ function buildStudentAssignmentMap(
       if (!a.studentIds.includes(student.id)) continue
       const subject = getStudentSubject(a, student.id)
       const key = `${date}_${slotNumber}`
+      const makeupInfo = a.regularMakeupInfo?.[student.id]
       map[key] = {
         subject,
         isRegular: !!a.isRegular,
         isGroupLesson: !!a.isGroupLesson,
+        isMakeup: !!makeupInfo,
+        makeupDate: makeupInfo?.date,
       }
     }
   }
@@ -49,13 +68,44 @@ function buildStudentAssignmentMap(
       if (gl.dayOfWeek === dayOfWeek && gl.studentIds.includes(student.id)) {
         const key = `${date}_${gl.slotNumber}`
         if (!map[key]) {
-          map[key] = { subject: gl.subject, isRegular: false, isGroupLesson: true }
+          map[key] = { subject: gl.subject, isRegular: false, isGroupLesson: true, isMakeup: false }
         }
       }
     }
   }
 
   return map
+}
+
+/** Collect furikae (makeup) entries for a student */
+function collectFurikaeEntries(
+  student: Student,
+  assignments: Record<string, Assignment[]>,
+  dates: string[],
+): { fromLabel: string; toLabel: string }[] {
+  const dateSet = new Set(dates)
+  const entries: { fromLabel: string; toLabel: string }[] = []
+
+  for (const [slotKey, pairs] of Object.entries(assignments)) {
+    const [date] = slotKey.split('_')
+    if (!dateSet.has(date)) continue
+    const slotNumber = getSlotNumber(slotKey)
+    for (const a of pairs) {
+      if (!a.studentIds.includes(student.id)) continue
+      const makeupInfo = a.regularMakeupInfo?.[student.id]
+      if (!makeupInfo) continue
+      const fromDate = makeupInfo.date
+      const fromDow = DAY_OF_WEEK_LABELS[makeupInfo.dayOfWeek]
+      const fromSlot = makeupInfo.slotNumber
+      const fromLabel = fromDate
+        ? `${Number(fromDate.split('-')[1])}/${Number(fromDate.split('-')[2])}(${fromDow})${fromSlot}限`
+        : `${fromDow}${fromSlot}限`
+      const toDow = DAY_OF_WEEK_LABELS[getIsoDayOfWeek(date)]
+      const toLabel = `${Number(date.split('-')[1])}/${Number(date.split('-')[2])}(${toDow})${slotNumber}限`
+      entries.push({ fromLabel, toLabel })
+    }
+  }
+  return entries
 }
 
 /** Count regular, lecture (individual), and group lesson counts by subject */
@@ -83,28 +133,22 @@ function buildUnavailableSet(student: Student, dates: string[], slotsPerDay: num
   const set = new Set<string>()
   const holidaySet = new Set(holidays)
 
-  // Student-marked unavailable dates → all slots on that date
   for (const date of student.unavailableDates) {
     for (let s = 0; s <= slotsPerDay; s++) {
       set.add(`${date}_${s}`)
     }
   }
 
-  // Student-marked unavailable individual slots
   for (const slotKey of (student.unavailableSlots ?? [])) {
     set.add(slotKey)
   }
 
-  // Holidays that fall within the full date range (already excluded from getDatesInRange,
-  // but we still want to show them grayed if the table includes surrounding dates)
   for (const h of holidaySet) {
     for (let s = 0; s <= slotsPerDay; s++) {
       set.add(`${h}_${s}`)
     }
   }
 
-  // Also gray out all slots for dates where student is unavailable (entire date)
-  // Check per-date unavailability: if student has not submitted, all slots are unavailable
   if (!student.submittedAt) {
     for (const date of dates) {
       for (let s = 0; s <= slotsPerDay; s++) {
@@ -123,12 +167,13 @@ function escapeHtml(str: string): string {
 /** Generate the HTML content for all student schedules */
 export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   const { data } = params
-  const dates = getDatesInRange(data.settings)
+  const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
     alert('講習期間が未設定です')
     return
   }
 
+  const holidaySet = new Set(data.settings.holidays)
   const students = [...data.students].sort((a, b) => a.name.localeCompare(b.name, 'ja'))
   const sessionName = data.settings.name || ''
   const baseYear = new Date(data.settings.startDate).getFullYear()
@@ -170,12 +215,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       headerRow1 += `<th colspan="${group.dates.length}" class="month-header">${Number(mm)}月</th>`
       for (const date of group.dates) {
         const day = Number(date.split('-')[2])
-        headerRow2 += `<th class="date-header">${day}</th>`
+        const isHoliday = holidaySet.has(date)
+        headerRow2 += `<th class="date-header${isHoliday ? ' holiday-col' : ''}">${day}</th>`
         const dow = getIsoDayOfWeek(date)
         const dowLabel = DAY_OF_WEEK_LABELS[dow]
         const isSun = dow === 0
         const isSat = dow === 6
-        headerRow3 += `<th class="dow-header${isSun ? ' sun' : ''}${isSat ? ' sat' : ''}">${dowLabel}</th>`
+        headerRow3 += `<th class="dow-header${isSun ? ' sun' : ''}${isSat ? ' sat' : ''}${isHoliday ? ' holiday-col' : ''}">${dowLabel}</th>`
       }
     }
 
@@ -241,19 +287,30 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     }
     lectureTableHtml += '</table>'
 
-    // 振替授業 table (5 empty arrow rows)
-    const furikaeRows = Array.from({ length: 5 }, () => '<tr><td class="furikae-cell"></td><td class="furikae-arrow">→</td></tr>').join('')
-    const furikaeTableHtml = `<table class="furikae-table"><tr><th colspan="2">振替授業</th></tr>${furikaeRows}</table>`
+    // 振替授業 table - pre-fill with actual makeup data, editable
+    const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
+    const furikaeRowCount = Math.max(5, furikaeEntries.length)
+    let furikaeRowsHtml = ''
+    for (let i = 0; i < furikaeRowCount; i++) {
+      const entry = furikaeEntries[i]
+      const fromVal = entry ? escapeHtml(entry.fromLabel) : ''
+      const toVal = entry ? escapeHtml(entry.toLabel) : ''
+      furikaeRowsHtml += `<tr><td class="furikae-cell" contenteditable="true">${fromVal}</td><td class="furikae-arrow">→</td><td class="furikae-cell" contenteditable="true">${toVal}</td></tr>`
+    }
+    const furikaeTableHtml = `<table class="furikae-table"><tr><th colspan="3">振替授業</th></tr>${furikaeRowsHtml}</table>`
 
     const pageBreak = idx < students.length - 1 ? ' page-break' : ''
 
     return `
       <div class="page${pageBreak}">
-        <div class="title-area">
-          <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
-          <div class="meta-row">
-            <span class="period">期間: ${escapeHtml(periodStr)}</span>
-            <span class="student-name">生徒名: ${escapeHtml(student.name)} (${escapeHtml(student.grade)})</span>
+        <div class="header-row">
+          <div class="school-info" contenteditable="true" data-shared="school-info"></div>
+          <div class="title-center">
+            <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
+          </div>
+          <div class="student-info">
+            <div>期間: ${escapeHtml(periodStr)}</div>
+            <div class="student-name">生徒名: ${escapeHtml(student.name)} (${escapeHtml(student.grade)})</div>
           </div>
         </div>
 
@@ -309,10 +366,28 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   }
 
   .title-area { margin-bottom: 6px; }
-  h1 { font-size: 16px; text-align: center; margin-bottom: 4px; }
+  h1 { font-size: 16px; text-align: center; margin-bottom: 0; }
+  .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; }
+  .school-info {
+    flex: 0 0 160px;
+    min-height: 36px;
+    border: 1px dashed #aaa;
+    padding: 3px 5px;
+    font-size: 9px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    outline: none;
+  }
+  .school-info:empty::before {
+    content: 'ロゴ・校舎名・TEL等';
+    color: #aaa;
+  }
+  .school-info:focus { border-color: #2563eb; }
+  .title-center { flex: 1; text-align: center; }
+  .student-info { flex: 0 0 auto; text-align: right; font-size: 11px; font-weight: bold; }
+  .student-name { font-size: 14px; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
   .period { font-weight: bold; }
-  .student-name { font-weight: bold; font-size: 14px; }
 
   .schedule-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9px; }
   .schedule-table th, .schedule-table td { border: 1px solid #333; text-align: center; padding: 1px 2px; }
@@ -325,18 +400,18 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .slot-label { background: #f5f5f5; font-size: 8px; white-space: nowrap; text-align: left; padding-left: 3px; }
   .cell { height: 22px; vertical-align: middle; font-size: 8px; color: #000; }
   .unavailable { background: #d1d5db; }
+  .holiday-col { background: #e5e7eb; }
   .regular-tag { font-size: 7px; color: #000; }
   .group-cell { background: #fef3c7; font-size: 7px; }
 
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 
   .notes-box {
-    flex: 0 1 auto;
-    width: 180px;
-    min-height: 40px;
-    max-height: 80px;
+    flex: 1 1 50%;
+    min-height: 50px;
+    max-height: 100px;
     border: 2px dashed #999;
-    padding: 4px;
+    padding: 4px 6px;
     font-size: 9px;
     line-height: 1.4;
     white-space: pre-wrap;
@@ -358,8 +433,9 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .furikae-table { border-collapse: collapse; font-size: 9px; }
   .furikae-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .furikae-table td { border: 1px solid #333; padding: 1px 4px; text-align: center; }
-  .furikae-cell { width: 50px; height: 18px; }
-  .furikae-arrow { width: 24px; font-weight: bold; }
+  .furikae-cell { width: 70px; height: 18px; font-size: 8px; }
+  .furikae-cell:focus { outline: 1px solid #2563eb; }
+  .furikae-arrow { width: 20px; font-weight: bold; }
 
   .toolbar {
     position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: #fff;
@@ -381,10 +457,21 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 <div class="toolbar no-print">
   <button onclick="window.print()">🖨 印刷 / PDF保存</button>
   <button onclick="saveHtml()">💾 HTMLを保存</button>
-  <span>点線枠内をクリックして自由に編集できます。保存後もブラウザで開いて再編集可能です。</span>
+  <span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>
 </div>
 ${pagesHtml}
 <script>
+// Sync school-info across all pages
+(function() {
+  var infos = document.querySelectorAll('[data-shared="school-info"]');
+  infos.forEach(function(el) {
+    el.addEventListener('input', function() {
+      var val = el.innerHTML;
+      infos.forEach(function(other) { if (other !== el) other.innerHTML = val; });
+    });
+  });
+})();
+
 function saveHtml() {
   var clone = document.documentElement.cloneNode(true);
   var toolbar = clone.querySelector('.toolbar');
@@ -392,14 +479,15 @@ function saveHtml() {
   var scripts = clone.querySelectorAll('script');
   scripts.forEach(function(s) { s.remove(); });
   var html = '<!DOCTYPE html>\\n<html lang="ja">' + clone.innerHTML + '</html>';
-  // Re-inject toolbar and save script into the saved file so it can be saved again
   var bodyTag = html.indexOf('</body>');
   var inject = '<div class="toolbar no-print">'
     + '<button onclick="window.print()">🖨 印刷 / PDF保存</button>'
     + '<button onclick="saveHtml()">💾 HTMLを保存</button>'
-    + '<span>点線枠内をクリックして自由に編集できます。保存後もブラウザで開いて再編集可能です。</span>'
+    + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
-    + '<script>\\n' + saveHtml.toString() + '\\n<\\/script>';
+    + '<script>\\n'
+    + '(function(){var infos=document.querySelectorAll(\\'[data-shared="school-info"]\\');infos.forEach(function(el){el.addEventListener("input",function(){var val=el.innerHTML;infos.forEach(function(o){if(o!==el)o.innerHTML=val;});});});})();\\n'
+    + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   var a = document.createElement('a');
