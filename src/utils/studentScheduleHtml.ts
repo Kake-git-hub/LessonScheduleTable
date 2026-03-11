@@ -419,7 +419,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     }
 
     // 通常回数 table (always show, add empty row if no data)
-    let regularTableHtml = '<table class="count-table"><tr><th colspan="2">通常回数</th></tr>'
+    let regularTableHtml = '<table class="count-table"><tr><th colspan="2">通常回数(希望数)</th></tr>'
     if (regularSubjects.length > 0) {
       for (const sub of regularSubjects) {
         const actual = regularCounts[sub] ?? 0
@@ -433,7 +433,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     regularTableHtml += '</table>'
 
     // 講習回数 table (individual subjects + 個別計 + group lessons)
-    let lectureTableHtml = '<table class="count-table"><tr><th colspan="2">講習回数</th></tr>'
+    let lectureTableHtml = '<table class="count-table"><tr><th colspan="2">講習回数(希望数)</th></tr>'
     let hasLectureRows = false
     let lectureTotalDesired = 0
     for (const sub of lectureSubjects) {
@@ -987,11 +987,11 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
     bottomHeader[2] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
     merges.push({ s: { r: bottomStartRow, c: 0 }, e: { r: bottomStartRow, c: 2 } })
     bottomHeader[3] = { v: '', t: 's' }
-    bottomHeader[4] = { v: '通常回数', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[4] = { v: '通常回数(希望数)', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
     bottomHeader[5] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
     merges.push({ s: { r: bottomStartRow, c: 4 }, e: { r: bottomStartRow, c: 5 } })
     bottomHeader[6] = { v: '', t: 's' }
-    bottomHeader[7] = { v: '講習回数', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[7] = { v: '講習回数(希望数)', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
     bottomHeader[8] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
     merges.push({ s: { r: bottomStartRow, c: 7 }, e: { r: bottomStartRow, c: 8 } })
     rows.push(bottomHeader)
