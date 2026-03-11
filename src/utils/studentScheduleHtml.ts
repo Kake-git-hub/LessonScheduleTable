@@ -382,11 +382,11 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
         const isUnavailable = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
           const regularLabel = (entry.isRegular || entry.isMakeup) ? '<br><span class="regular-tag">通常</span>' : ''
-          slotRows += `<td class="cell">${escapeHtml(entry.subject)}${regularLabel}</td>`
+          slotRows += `<td class="cell" data-slot="${key}">${escapeHtml(entry.subject)}${regularLabel}</td>`
         } else if (isUnavailable) {
-          slotRows += '<td class="cell unavailable"></td>'
+          slotRows += `<td class="cell unavailable" data-slot="${key}"></td>`
         } else {
-          slotRows += '<td class="cell"></td>'
+          slotRows += `<td class="cell" data-slot="${key}"></td>`
         }
       }
       slotRows += '</tr>'
@@ -688,7 +688,9 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
   .toolbar button:hover { background: #1d4ed8; }
   .toolbar span { font-size: 13px; }
 
-  @media print { .toolbar { display: none; } body { padding: 0; background: #fff; } }
+  .sa-hl-source { background: #fef08a !important; outline: 2px solid #eab308 !important; outline-offset: -1px; }
+  .sa-hl-student { background: #dbeafe !important; outline: 2px solid #3b82f6 !important; outline-offset: -1px; }
+  @media print { .toolbar { display: none; } body { padding: 0; background: #fff; } .sa-hl-source, .sa-hl-student { background: inherit !important; outline: none !important; } }
   @media screen { body { padding-top: 48px; } }
 </style>
 </head>

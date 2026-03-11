@@ -8538,24 +8538,32 @@ service cloud.firestore {
             return id
           }}
           onSelectionChange={(sel) => {
-            const win = teacherScheduleWindowRef.current
-            if (!win || win.closed) return
-            const doc = win.document
-            doc.querySelectorAll('.sa-hl-source, .sa-hl-student').forEach(el => {
-              el.classList.remove('sa-hl-source', 'sa-hl-student')
-            })
-            if (!sel) return
-            // Highlight source slot
-            doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => {
-              el.classList.add('sa-hl-source')
-            })
-            // Highlight all cells containing the selected student
-            doc.querySelectorAll('td[data-student-ids]').forEach(el => {
-              const ids = (el.getAttribute('data-student-ids') ?? '').split(',')
-              if (ids.includes(sel.studentId)) {
+            // Helper to apply highlights to a window's document
+            const applyHighlights = (win: Window | null) => {
+              if (!win || win.closed) return
+              const doc = win.document
+              doc.querySelectorAll('.sa-hl-source, .sa-hl-student').forEach(el => {
+                el.classList.remove('sa-hl-source', 'sa-hl-student')
+              })
+              if (!sel) return
+              // Highlight source slot
+              doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => {
+                el.classList.add('sa-hl-source')
+              })
+              // Highlight all cells containing the selected student (teacher schedule)
+              doc.querySelectorAll('td[data-student-ids]').forEach(el => {
+                const ids = (el.getAttribute('data-student-ids') ?? '').split(',')
+                if (ids.includes(sel.studentId)) {
+                  el.classList.add('sa-hl-student')
+                }
+              })
+              // Highlight the selected student's page cells (student schedule)
+              doc.querySelectorAll(`.page[data-student-id="${sel.studentId}"] td[data-slot]`).forEach(el => {
                 el.classList.add('sa-hl-student')
-              }
-            })
+              })
+            }
+            applyHighlights(teacherScheduleWindowRef.current)
+            applyHighlights(studentScheduleWindowRef.current)
           }}
         />
         </WindowPortal>
