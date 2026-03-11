@@ -298,8 +298,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       <div class="page${pageBreak}">
         <div class="header-row">
           <div class="header-left">
-            <div class="logo-box" data-shared="logo-box"></div>
-            <div class="school-text" contenteditable="true" data-shared="school-text"></div>
+            <div class="logo-box" data-shared="logo-box" onclick="pickLogo(this)"></div>
+            <div class="school-text" contenteditable="true" data-shared="school-text" oninput="syncShared(this)"></div>
           </div>
           <div class="title-center">
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
@@ -325,7 +325,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
           <div class="notes-area">
             <div class="notes-col">
               <div class="notes-label">共通欄（全生徒に反映）</div>
-              <div class="notes-shared" contenteditable="true" data-shared="shared-notes"></div>
+              <div class="notes-shared" contenteditable="true" data-shared="shared-notes" oninput="syncShared(this)"></div>
             </div>
             <div class="notes-col">
               <div class="notes-label">個別欄</div>
@@ -373,10 +373,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   h1 { font-size: 16px; text-align: center; margin-bottom: 0; }
   .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; position: relative; }
   .header-left {
-    flex: 1;
+    flex: 0 0 34%;
+    max-width: 34%;
     display: flex;
     gap: 4px;
     align-items: flex-start;
+    position: relative;
+    z-index: 2;
   }
   .logo-box {
     flex: 1;
@@ -410,8 +413,23 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     .school-text { border: none !important; }
     .school-text:empty::before { content: none; }
   }
-  .title-center { position: absolute; left: 0; right: 0; text-align: center; pointer-events: none; z-index: 1; }
-  .student-info { flex: 0 0 auto; text-align: right; font-size: 11px; font-weight: bold; }
+  .title-center {
+    position: absolute;
+    left: 34%;
+    right: 190px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .student-info {
+    flex: 0 0 190px;
+    margin-left: auto;
+    text-align: right;
+    font-size: 11px;
+    font-weight: bold;
+    position: relative;
+    z-index: 2;
+  }
   .student-name { font-size: 14px; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
   .period { font-weight: bold; }
@@ -496,42 +514,35 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 </div>
 ${pagesHtml}
 <script>
-// Sync shared elements using event delegation (more reliable with document.write)
-document.addEventListener('input', function(e) {
-  var el = e.target;
-  var key = el.getAttribute && el.getAttribute('data-shared');
+function syncShared(el) {
+  var key = el && el.getAttribute && el.getAttribute('data-shared');
   if (!key) return;
   var val = el.innerHTML;
   document.querySelectorAll('[data-shared="' + key + '"]').forEach(function(other) {
     if (other !== el) other.innerHTML = val;
   });
-});
+}
 
-// Logo image insertion using event delegation
-document.addEventListener('click', function(e) {
-  var box = e.target.closest && e.target.closest('.logo-box');
+function pickLogo(box) {
   if (!box) return;
-  if (box.querySelector('img')) return;
   var input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/*';
   input.onchange = function() {
-    var file = input.files[0];
+    var file = input.files && input.files[0];
     if (!file) return;
     var reader = new FileReader();
     reader.onload = function(ev) {
-      var img = document.createElement('img');
-      img.src = ev.target.result;
-      box.innerHTML = '';
-      box.appendChild(img);
-      document.querySelectorAll('[data-shared="logo-box"]').forEach(function(o) {
-        if (o !== box) { o.innerHTML = ''; o.appendChild(img.cloneNode(true)); }
+      var src = ev && ev.target ? ev.target.result : '';
+      if (!src) return;
+      document.querySelectorAll('[data-shared="logo-box"]').forEach(function(other) {
+        other.innerHTML = '<img src="' + src + '" alt="logo">';
       });
     };
     reader.readAsDataURL(file);
   };
   input.click();
-});
+}
 
 function saveHtml() {
   var clone = document.documentElement.cloneNode(true);
@@ -547,8 +558,8 @@ function saveHtml() {
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
     + '<script>\\n'
-    + 'document.addEventListener("input",function(e){var el=e.target;var k=el.getAttribute&&el.getAttribute("data-shared");if(!k)return;var v=el.innerHTML;document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  ).forEach(function(o){if(o!==el)o.innerHTML=v;});});\n'
-    + 'document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".logo-box");if(!b||b.querySelector("img"))return;var i=document.createElement("input");i.type="file";i.accept="image/*";i.onchange=function(){var f=i.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var img=document.createElement("img");img.src=ev.target.result;b.innerHTML="";b.appendChild(img);document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(o){if(o!==b){o.innerHTML="";o.appendChild(img.cloneNode(true));}});};r.readAsDataURL(f);};i.click();});\n'
+    + syncShared.toString() + '\n'
+    + pickLogo.toString() + '\n'
     + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
