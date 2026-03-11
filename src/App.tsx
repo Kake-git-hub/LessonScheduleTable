@@ -9193,12 +9193,16 @@ service cloud.firestore {
                           const pt = constraintFor(data.constraints, assignment.teacherId, s.id)
                           return pt === 'incompatible'
                         }) || (!isMendan && assignment.studentIds.length === 2 && constraintFor(data.constraints, assignment.studentIds[0], assignment.studentIds[1]) === 'incompatible')
-                        const hasSubjectMismatch = !isMendan && !!assignment.teacherId && selectedTeacher && assignment.studentIds.length > 0 && assignment.studentIds.some((studentId) => {
-                          const student = data.students.find((s) => s.id === studentId)
-                          if (!student) return false
-                          const subj = getStudentSubject(assignment, studentId)
-                          return subj ? !canTeachSubject(selectedTeacher.subjects ?? [], student.grade, subj) : false
-                        })
+                        const subjectMismatchDetails: string[] = !isMendan && !!assignment.teacherId && selectedTeacher && assignment.studentIds.length > 0
+                          ? assignment.studentIds.flatMap((studentId) => {
+                              const student = data.students.find((s) => s.id === studentId)
+                              if (!student) return []
+                              const subj = getStudentSubject(assignment, studentId)
+                              if (!subj || canTeachSubject(selectedTeacher.subjects ?? [], student.grade, subj)) return []
+                              return [`${selectedTeacher.name}は${student.name}(${subj})担当外`]
+                            })
+                          : []
+                        const hasSubjectMismatch = subjectMismatchDetails.length > 0
                         const sig = assignmentSignature(assignment)
                         const hl = data.autoAssignHighlights ?? {}
                         const originalHighlightedAssignment = isRecorded
@@ -9546,10 +9550,18 @@ service cloud.firestore {
 
                             {(hasManualConstraintWarning || hasTeacherUnassignedWarning) && (
                               <div className="manual-constraint-note">
-                                <strong>{hasTeacherUnassignedWarning ? '講師未割当' : '手動割当で制約カードを超過中'}</strong>
+                                <strong>{hasTeacherUnassignedWarning ? '講師未割当' : '制約違反中'}</strong>
                                 {hasTeacherUnassignedWarning && <div>{teacherUnassignedWarning}</div>}
                                 {manualConstraintWarnings.map((warning) => (
                                   <div key={warning}>{warning}</div>
+                                ))}
+                              </div>
+                            )}
+                            {hasSubjectMismatch && (
+                              <div className="manual-constraint-note" style={{ borderColor: '#f59e0b', background: '#fffbeb' }}>
+                                <strong>担当科目外ペア</strong>
+                                {subjectMismatchDetails.map((detail) => (
+                                  <div key={detail}>{detail}</div>
                                 ))}
                               </div>
                             )}
