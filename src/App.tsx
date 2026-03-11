@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.82'
+const APP_VERSION = '1.3.83'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7903,15 +7903,22 @@ const AdminPage = () => {
 
   /** Toggle manual regular/makeup mark for a student in an assignment */
   const toggleManualBadge = async (slot: string, idx: number, studentId: string): Promise<void> => {
+    const slotAssignmentsCurrent = data?.assignments[slot] ?? []
+    const assignmentCurrent = slotAssignmentsCurrent[idx]
+    if (!assignmentCurrent || !assignmentCurrent.studentIds.includes(studentId)) return
+    const currentMark = assignmentCurrent.manualRegularMark?.[studentId]
+    if (!currentMark) {
+      if (!window.confirm('この生徒に通常マーク(★)を付与しますか？')) return
+    }
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
       const assignment = slotAssignments[idx]
       if (!assignment || !assignment.studentIds.includes(studentId)) return current
-      const currentMark = assignment.manualRegularMark?.[studentId]
+      const mark = assignment.manualRegularMark?.[studentId]
       const newMarks = { ...(assignment.manualRegularMark ?? {}) }
-      if (!currentMark) {
+      if (!mark) {
         newMarks[studentId] = 'regular'
-      } else if (currentMark === 'regular') {
+      } else if (mark === 'regular') {
         newMarks[studentId] = 'makeup'
       } else {
         delete newMarks[studentId]
