@@ -165,6 +165,10 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function isHtmlElement(node: unknown): node is HTMLElement {
+  return !!node && typeof node === 'object' && 'nodeType' in node && 'innerHTML' in node
+}
+
 function setupStudentScheduleWindow(targetWindow: Window): void {
   const scheduleWindow = targetWindow as Window & {
     syncShared?: (el: HTMLElement) => void
@@ -178,7 +182,7 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
     if (!key) return
     const value = el.innerHTML
     doc.querySelectorAll(`[data-shared="${key}"]`).forEach((other) => {
-      if (other !== el && other instanceof HTMLElement) {
+      if (other !== el && isHtmlElement(other)) {
         other.innerHTML = value
       }
     })
@@ -199,7 +203,7 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
         const src = typeof ev.target?.result === 'string' ? ev.target.result : ''
         if (!src) return
         doc.querySelectorAll('[data-shared="logo-box"]').forEach((other) => {
-          if (other instanceof HTMLElement) {
+          if (isHtmlElement(other)) {
             other.innerHTML = `<img src="${src}" alt="logo">`
           }
         })
@@ -209,7 +213,7 @@ function setupStudentScheduleWindow(targetWindow: Window): void {
   }
 
   doc.querySelectorAll('[data-shared]').forEach((node) => {
-    if (!(node instanceof HTMLElement)) return
+    if (!isHtmlElement(node)) return
     const sync = () => scheduleWindow.syncShared?.(node)
     node.addEventListener('input', sync)
     node.addEventListener('keyup', sync)
@@ -504,11 +508,17 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 
   .notes-area {
-    flex: 1;
+    flex: 0 0 384px;
+    width: 384px;
     display: flex;
     gap: 4px;
   }
-  .notes-col { flex: 1; display: flex; flex-direction: column; }
+  .notes-col {
+    flex: 0 0 190px;
+    width: 190px;
+    display: flex;
+    flex-direction: column;
+  }
   .notes-shared, .notes-individual {
     flex: 1;
     min-height: 50px;
