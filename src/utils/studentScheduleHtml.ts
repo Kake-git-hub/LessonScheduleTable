@@ -298,8 +298,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       <div class="page${pageBreak}">
         <div class="header-row">
           <div class="header-left">
-            <div class="logo-box" data-shared="logo-box" onclick="pickLogo(this)"></div>
-            <div class="school-text" contenteditable="true" data-shared="school-text" oninput="syncShared(this)"></div>
+            <div class="logo-box" data-shared="logo-box" onclick="window.pickLogo()"></div>
+            <div class="school-text" contenteditable="true" data-shared="school-text" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)"></div>
           </div>
           <div class="title-center">
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
@@ -325,7 +325,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
           <div class="notes-area">
             <div class="notes-col">
               <div class="notes-label">共通欄（全生徒に反映）</div>
-              <div class="notes-shared" contenteditable="true" data-shared="shared-notes" oninput="syncShared(this)"></div>
+              <div class="notes-shared" contenteditable="true" data-shared="shared-notes" oninput="window.syncShared(this)" onkeyup="window.syncShared(this)" onblur="window.syncShared(this)"></div>
             </div>
             <div class="notes-col">
               <div class="notes-label">個別欄</div>
@@ -512,23 +512,29 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   <button onclick="saveHtml()">💾 HTMLを保存</button>
   <span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>
 </div>
+<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="display:none">
 ${pagesHtml}
 <script>
-function syncShared(el) {
+window.syncShared = function(el) {
   var key = el && el.getAttribute && el.getAttribute('data-shared');
   if (!key) return;
   var val = el.innerHTML;
   document.querySelectorAll('[data-shared="' + key + '"]').forEach(function(other) {
     if (other !== el) other.innerHTML = val;
   });
-}
+};
 
-function pickLogo(box) {
-  if (!box) return;
-  var input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/*';
-  input.onchange = function() {
+window.pickLogo = function() {
+  var input = document.getElementById('logo-file-input');
+  if (!input) return;
+  input.value = '';
+  input.click();
+};
+
+(function() {
+  var input = document.getElementById('logo-file-input');
+  if (!input) return;
+  input.addEventListener('change', function() {
     var file = input.files && input.files[0];
     if (!file) return;
     var reader = new FileReader();
@@ -540,9 +546,8 @@ function pickLogo(box) {
       });
     };
     reader.readAsDataURL(file);
-  };
-  input.click();
-}
+  });
+})();
 
 function saveHtml() {
   var clone = document.documentElement.cloneNode(true);
@@ -557,9 +562,11 @@ function saveHtml() {
     + '<button onclick="saveHtml()">💾 HTMLを保存</button>'
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
+    + '<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="display:none">'
     + '<script>\\n'
-    + syncShared.toString() + '\n'
-    + pickLogo.toString() + '\n'
+    + 'window.syncShared=' + window.syncShared.toString() + ';\n'
+    + 'window.pickLogo=' + window.pickLogo.toString() + ';\n'
+    + '(function(){var input=document.getElementById("logo-file-input");if(!input)return;input.addEventListener("change",function(){var file=input.files&&input.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(ev){var src=ev&&ev.target?ev.target.result:"";if(!src)return;document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(other){other.innerHTML=\'<img src="\'+src+\'" alt="logo">\';});};reader.readAsDataURL(file);});})();\n'
     + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
