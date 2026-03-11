@@ -8523,6 +8523,35 @@ service cloud.firestore {
               return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
             })
           }}
+          onRemoveStudent={async (slot, assignmentIdx, studentId) => {
+            await updateAssignments((current) => {
+              const slotAssignments = [...(current.assignments[slot] ?? [])]
+              const assignment = slotAssignments[assignmentIdx]
+              if (!assignment) return current
+              const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
+              if (remainingIds.length === 0) {
+                slotAssignments.splice(assignmentIdx, 1)
+              } else {
+                const nextSubjects = { ...assignment.studentSubjects }
+                delete nextSubjects[studentId]
+                const nextMakeup = { ...assignment.regularMakeupInfo }
+                delete nextMakeup[studentId]
+                const nextSubstitute = { ...assignment.regularSubstituteInfo }
+                delete nextSubstitute[studentId]
+                const nextManual = { ...assignment.manualRegularMark }
+                delete nextManual[studentId]
+                slotAssignments[assignmentIdx] = {
+                  ...assignment,
+                  studentIds: remainingIds,
+                  studentSubjects: nextSubjects,
+                  regularMakeupInfo: Object.keys(nextMakeup).length ? nextMakeup : undefined,
+                  regularSubstituteInfo: Object.keys(nextSubstitute).length ? nextSubstitute : undefined,
+                  manualRegularMark: Object.keys(nextManual).length ? nextManual : undefined,
+                }
+              }
+              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
+            })
+          }}
           onUndo={handleUndo}
           onRedo={handleRedo}
           undoCount={undoCount}

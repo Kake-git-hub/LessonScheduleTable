@@ -25,6 +25,7 @@ type SlotAdjustViewProps = {
   onRedo: () => Promise<void>
   undoCount: number
   redoCount: number
+  onRemoveStudent: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
   onClose: () => void
   onSelectionChange?: (sel: { slot: string; studentId: string } | null) => void
 }
@@ -203,6 +204,7 @@ export default function SlotAdjustView({
   onRedo,
   undoCount,
   redoCount,
+  onRemoveStudent,
   onClose,
   onSelectionChange,
 }: SlotAdjustViewProps) {
@@ -559,6 +561,17 @@ export default function SlotAdjustView({
                                 void handleDestinationClick(slotKey, assignment ? deskIdx : undefined, !assignment ? unassignedTeacherId || undefined : undefined)
                               } else if (showPicker) {
                                 setStudentPicker(isPickerOpen ? null : { slot: slotKey, deskIdx })
+                              }
+                            }}
+                            onContextMenu={(e) => {
+                              if (!sId || !student || busy || !assignment) return
+                              e.preventDefault()
+                              const ok = confirm(`${student.name} をこのコマから削除しますか？`)
+                              if (ok) {
+                                void runBusy(async () => {
+                                  await onRemoveStudent(slotKey, deskIdx, sId)
+                                  setSelection(null)
+                                })
                               }
                             }}
                             title={student ? `${student.name} (${student.grade}) ${subject}` : selection && canAcceptHere ? 'ここに移動' : showPicker ? 'クリックで生徒を追加' : ''}
