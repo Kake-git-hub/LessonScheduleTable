@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.97'
+const APP_VERSION = '1.3.98'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -5345,12 +5345,13 @@ const AdminPage = () => {
     availableSlots: string[],
     student: Student,
     subject: string,
+    options?: { makeupDemand?: PendingMakeupDemand },
   ): PlacementAnalysis => {
     const compatibleTeachers = data?.teachers.filter((teacher) =>
       canTeachSubject(teacher.subjects, student.grade, subject)
       && constraintFor(data.constraints, teacher.id, student.id) !== 'incompatible',
     ) ?? []
-    return analyzePlacementOptions(assignmentState, effectiveAssignments, availableSlots, student, subject, compatibleTeachers)
+    return analyzePlacementOptions(assignmentState, effectiveAssignments, availableSlots, student, subject, compatibleTeachers, options)
   }
 
   type TeacherShortageItem = {
@@ -6931,7 +6932,7 @@ const AdminPage = () => {
         }
         const statusAssignments = materializeUnavailableRegularShortages(mergedForEval)
         const effectiveForProposals = buildEffectiveAssignments(statusAssignments, liveActual)
-        const { studentsWithRemaining } = buildStudentsWithRemaining(
+        const { studentsWithRemaining, currentPendingMakeupDemands: phase5MakeupDemands } = buildStudentsWithRemaining(
           statusAssignments, effectiveForProposals, liveActual, [],
         )
 
@@ -6958,9 +6959,12 @@ const AdminPage = () => {
           const student = data.students.find((s) => s.id === summary.studentId)
           if (!student) continue
 
+          const missingSubjSet = new Set(
+            Object.entries(summary.missingBySubj).filter(([, c]) => c > 0).map(([subj]) => subj),
+          )
           const subjects = [
             ...summary.remaining.filter((e) => e.rem > 0).map((e) => e.subj),
-            ...Object.entries(summary.missingBySubj).filter(([, c]) => c > 0).map(([subj]) => subj),
+            ...missingSubjSet,
           ]
           const uniqueSubjects = [...new Set(subjects)]
 
@@ -6972,7 +6976,13 @@ const AdminPage = () => {
             }
             const latestStatus = materializeUnavailableRegularShortages(latestMerged)
             const latestEffective = buildEffectiveAssignments(latestStatus, liveActual)
-            const analysis = buildRemainingSuggestions(latestStatus, latestEffective, availableSlotKeys, student, subj)
+            // If this subject is a makeup demand, find the matching PendingMakeupDemand
+            // so that the resulting ForceAssignAction carries makeupInfo for 振替★ badge
+            const makeupDemand = missingSubjSet.has(subj)
+              ? phase5MakeupDemands.find((d) => d.studentId === student.id && d.subject === subj)
+              : undefined
+            const analysis = buildRemainingSuggestions(latestStatus, latestEffective, availableSlotKeys, student, subj,
+              makeupDemand ? { makeupDemand } : undefined)
 
             // Only non-constraint-violating force proposals (protected slots are now allowed)
             const validForce = analysis.force.filter((p) => {
