@@ -566,7 +566,8 @@ export default function SlotAdjustView({
                             onContextMenu={(e) => {
                               if (!sId || !student || busy || !assignment) return
                               e.preventDefault()
-                              const ok = confirm(`${student.name} をこのコマから削除しますか？`)
+                              const win = containerRef.current?.ownerDocument?.defaultView ?? window
+                              const ok = win.confirm(`${student.name} をこのコマから削除しますか？`)
                               if (ok) {
                                 void runBusy(async () => {
                                   await onRemoveStudent(slotKey, deskIdx, sId)
