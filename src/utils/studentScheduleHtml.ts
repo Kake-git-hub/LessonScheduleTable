@@ -130,6 +130,28 @@ function countLessons(assignmentMap: Record<string, { subject: string; isRegular
   return { regularCounts, lectureCounts, groupCounts, individualTotal }
 }
 
+/** Count expected regular lesson occurrences per subject for a student */
+function countExpectedRegularLessons(
+  student: Student,
+  regularLessons: RegularLesson[],
+  dates: string[],
+  holidays: string[],
+): Record<string, number> {
+  const holidaySet = new Set(holidays)
+  const expected: Record<string, number> = {}
+  const studentRegulars = regularLessons.filter(r => r.studentIds.includes(student.id))
+  for (const r of studentRegulars) {
+    const subject = r.studentSubjects?.[student.id] ?? r.subject
+    for (const date of dates) {
+      if (holidaySet.has(date)) continue
+      if (getIsoDayOfWeek(date) === r.dayOfWeek) {
+        expected[subject] = (expected[subject] ?? 0) + 1
+      }
+    }
+  }
+  return expected
+}
+
 /** Build set of unavailable slot keys for a student */
 function buildUnavailableSet(student: Student, dates: string[], slotsPerDay: number, holidays: string[]): Set<string> {
   const set = new Set<string>()
@@ -301,7 +323,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   const pagesHtml = students.map((student, idx) => {
     const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates)
     const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
-    const regularSubjects = [...new Set(Object.keys(regularCounts))].sort()
+    const expectedRegularCounts = countExpectedRegularLessons(student, data.regularLessons, dates, data.settings.holidays)
+    const regularSubjects = [...new Set([...Object.keys(regularCounts), ...Object.keys(expectedRegularCounts)])].sort()
     const lectureSubjects = [...new Set([...Object.keys(lectureCounts), ...Object.keys(groupCounts)])].sort()
 
     const unavailableSet = buildUnavailableSet(student, dates, slotsPerDay, data.settings.holidays)
@@ -356,7 +379,10 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     let regularTableHtml = '<table class="count-table"><tr><th colspan="2">通常回数</th></tr>'
     if (regularSubjects.length > 0) {
       for (const sub of regularSubjects) {
-        regularTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${regularCounts[sub] ?? 0}</td></tr>`
+        const actual = regularCounts[sub] ?? 0
+        const expected = expectedRegularCounts[sub]
+        const expectedLabel = expected != null ? `(${expected})` : ''
+        regularTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${actual}${expectedLabel}</td></tr>`
       }
     } else {
       regularTableHtml += '<tr><td class="count-label">&nbsp;</td><td class="count-val"></td></tr>'
@@ -366,14 +392,19 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     // 講習回数 table (individual subjects + 個別計 + group lessons)
     let lectureTableHtml = '<table class="count-table"><tr><th colspan="2">講習回数</th></tr>'
     let hasLectureRows = false
+    let lectureTotalDesired = 0
     for (const sub of lectureSubjects) {
       if (lectureCounts[sub]) {
-        lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${lectureCounts[sub]}</td></tr>`
+        const desired = student.subjectSlots[sub]
+        const desiredLabel = desired != null ? `(${desired})` : ''
+        if (desired != null) lectureTotalDesired += desired
+        lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${lectureCounts[sub]}${desiredLabel}</td></tr>`
         hasLectureRows = true
       }
     }
     if (individualTotal > 0) {
-      lectureTableHtml += `<tr><td class="count-label">個別計</td><td class="count-val">${individualTotal}</td></tr>`
+      const totalDesiredLabel = lectureTotalDesired > 0 ? `(${lectureTotalDesired})` : ''
+      lectureTableHtml += `<tr><td class="count-label">個別計</td><td class="count-val">${individualTotal}${totalDesiredLabel}</td></tr>`
       hasLectureRows = true
     }
     for (const sub of Object.keys(groupCounts).sort()) {
@@ -770,7 +801,8 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
   for (const student of students) {
     const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates)
     const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
-    const regularSubjects = [...new Set(Object.keys(regularCounts))].sort()
+    const expectedRegularCounts = countExpectedRegularLessons(student, data.regularLessons, dates, data.settings.holidays)
+    const regularSubjects = [...new Set([...Object.keys(regularCounts), ...Object.keys(expectedRegularCounts)])].sort()
     const lectureSubjects = [...new Set([...Object.keys(lectureCounts), ...Object.keys(groupCounts)])].sort()
     const unavailableSet = buildUnavailableSet(student, dates, slotsPerDay, data.settings.holidays)
     const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
@@ -879,15 +911,24 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
     // Columns: 0=振替from, 1=→, 2=振替to, 3=gap, 4=通常label, 5=通常val, 6=gap, 7=講習label, 8=講習val
     const furikaeCount = Math.max(5, furikaeEntries.length)
     const regularCount = Math.max(1, regularSubjects.length)
-    const lectureRows: { label: string; val: number }[] = []
+    const lectureRows: { label: string; val: string }[] = []
+    let lectureTotalDesiredXls = 0
     for (const sub of lectureSubjects) {
-      if (lectureCounts[sub]) lectureRows.push({ label: sub, val: lectureCounts[sub] })
+      if (lectureCounts[sub]) {
+        const desired = student.subjectSlots[sub]
+        const desiredLabel = desired != null ? `(${desired})` : ''
+        if (desired != null) lectureTotalDesiredXls += desired
+        lectureRows.push({ label: sub, val: `${lectureCounts[sub]}${desiredLabel}` })
+      }
     }
-    if (individualTotal > 0) lectureRows.push({ label: '個別計', val: individualTotal })
+    if (individualTotal > 0) {
+      const totalDesiredLabel = lectureTotalDesiredXls > 0 ? `(${lectureTotalDesiredXls})` : ''
+      lectureRows.push({ label: '個別計', val: `${individualTotal}${totalDesiredLabel}` })
+    }
     for (const sub of Object.keys(groupCounts).sort()) {
-      lectureRows.push({ label: `${sub}(集団)`, val: groupCounts[sub] })
+      lectureRows.push({ label: `${sub}(集団)`, val: `${groupCounts[sub]}` })
     }
-    if (lectureRows.length === 0) lectureRows.push({ label: '', val: 0 })
+    if (lectureRows.length === 0) lectureRows.push({ label: '', val: '' })
 
     const bottomRowCount = Math.max(furikaeCount + 1, regularCount + 1, lectureRows.length + 1)
 
@@ -925,8 +966,12 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
       row[3] = { v: '', t: 's' }
       // 通常回数
       if (i < regularSubjects.length) {
-        row[4] = { v: regularSubjects[i], t: 's', s: cellStyle }
-        row[5] = { v: regularCounts[regularSubjects[i]] ?? 0, t: 'n', s: cellStyle }
+        const sub = regularSubjects[i]
+        const actual = regularCounts[sub] ?? 0
+        const expected = expectedRegularCounts[sub]
+        const valStr = expected != null ? `${actual}(${expected})` : `${actual}`
+        row[4] = { v: sub, t: 's', s: cellStyle }
+        row[5] = { v: valStr, t: 's', s: cellStyle }
       } else if (i < regularCount) {
         row[4] = { v: '', t: 's', s: cellStyle }
         row[5] = { v: '', t: 's', s: cellStyle }
@@ -937,7 +982,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
       // 講習回数
       if (i < lectureRows.length) {
         row[7] = { v: lectureRows[i].label, t: 's', s: cellStyle }
-        row[8] = { v: lectureRows[i].val || '', t: lectureRows[i].val ? 'n' : 's', s: cellStyle }
+        row[8] = { v: lectureRows[i].val || '', t: 's', s: cellStyle }
       } else {
         row[7] = { v: '', t: 's' }; row[8] = { v: '', t: 's' }
       }
