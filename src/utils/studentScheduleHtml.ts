@@ -165,6 +165,58 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function setupStudentScheduleWindow(targetWindow: Window): void {
+  const scheduleWindow = targetWindow as Window & {
+    syncShared?: (el: HTMLElement) => void
+    pickLogo?: () => void
+  }
+  const doc = targetWindow.document
+  const logoInput = doc.getElementById('logo-file-input') as HTMLInputElement | null
+
+  scheduleWindow.syncShared = (el: HTMLElement) => {
+    const key = el?.getAttribute?.('data-shared')
+    if (!key) return
+    const value = el.innerHTML
+    doc.querySelectorAll(`[data-shared="${key}"]`).forEach((other) => {
+      if (other !== el && other instanceof HTMLElement) {
+        other.innerHTML = value
+      }
+    })
+  }
+
+  scheduleWindow.pickLogo = () => {
+    if (!logoInput) return
+    logoInput.value = ''
+    logoInput.click()
+  }
+
+  if (logoInput) {
+    logoInput.addEventListener('change', () => {
+      const file = logoInput.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        const src = typeof ev.target?.result === 'string' ? ev.target.result : ''
+        if (!src) return
+        doc.querySelectorAll('[data-shared="logo-box"]').forEach((other) => {
+          if (other instanceof HTMLElement) {
+            other.innerHTML = `<img src="${src}" alt="logo">`
+          }
+        })
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
+  doc.querySelectorAll('[data-shared]').forEach((node) => {
+    if (!(node instanceof HTMLElement)) return
+    const sync = () => scheduleWindow.syncShared?.(node)
+    node.addEventListener('input', sync)
+    node.addEventListener('keyup', sync)
+    node.addEventListener('blur', sync)
+  })
+}
+
 /** Generate the HTML content for all student schedules */
 export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   const { data } = params
@@ -512,7 +564,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   <button onclick="saveHtml()">💾 HTMLを保存</button>
   <span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>
 </div>
-<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="display:none">
+<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none">
 ${pagesHtml}
 <script>
 window.syncShared = function(el) {
@@ -562,7 +614,7 @@ function saveHtml() {
     + '<button onclick="saveHtml()">💾 HTMLを保存</button>'
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
-    + '<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="display:none">'
+    + '<input id="logo-file-input" class="no-print" type="file" accept="image/*" style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none">'
     + '<script>\\n'
     + 'window.syncShared=' + window.syncShared.toString() + ';\n'
     + 'window.pickLogo=' + window.pickLogo.toString() + ';\n'
@@ -587,6 +639,7 @@ function saveHtml() {
   }
   newWindow.document.write(html)
   newWindow.document.close()
+  setupStudentScheduleWindow(newWindow)
 }
 
 /** Export student schedules as Excel workbook (one sheet per student) */
