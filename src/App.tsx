@@ -26,7 +26,7 @@ import type {
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
 import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject, normalizeTeacherSubject, normalizeTeacherSubjects } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
-import { openStudentScheduleHtml } from './utils/studentScheduleHtml'
+import { openStudentScheduleHtml, exportStudentScheduleExcel } from './utils/studentScheduleHtml'
 import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
@@ -8631,6 +8631,13 @@ service cloud.firestore {
                 onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id })}
               >
                 📄 生徒日程表
+              </button>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => exportStudentScheduleExcel({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id })}
+              >
+                📊 生徒日程Excel
               </button>
               <button className="btn secondary" type="button" onClick={copyAssignmentAnalysis}>
                 📊 解析データ

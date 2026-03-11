@@ -1,5 +1,6 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
 import { getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import XLSX from 'xlsx-js-style'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -262,28 +263,36 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       slotRows += '</tr>'
     }
 
-    // 通常回数 table
-    let regularTableHtml = ''
+    // 通常回数 table (always show, add empty row if no data)
+    let regularTableHtml = '<table class="count-table"><tr><th colspan="2">通常回数</th></tr>'
     if (regularSubjects.length > 0) {
-      regularTableHtml = '<table class="count-table"><tr><th colspan="2">通常回数</th></tr>'
       for (const sub of regularSubjects) {
         regularTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${regularCounts[sub] ?? 0}</td></tr>`
       }
-      regularTableHtml += '</table>'
+    } else {
+      regularTableHtml += '<tr><td class="count-label">&nbsp;</td><td class="count-val"></td></tr>'
     }
+    regularTableHtml += '</table>'
 
     // 講習回数 table (individual subjects + 個別計 + group lessons)
     let lectureTableHtml = '<table class="count-table"><tr><th colspan="2">講習回数</th></tr>'
+    let hasLectureRows = false
     for (const sub of lectureSubjects) {
       if (lectureCounts[sub]) {
         lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${lectureCounts[sub]}</td></tr>`
+        hasLectureRows = true
       }
     }
     if (individualTotal > 0) {
       lectureTableHtml += `<tr><td class="count-label">個別計</td><td class="count-val">${individualTotal}</td></tr>`
+      hasLectureRows = true
     }
     for (const sub of Object.keys(groupCounts).sort()) {
       lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}<br><span class="small">集団</span></td><td class="count-val">${groupCounts[sub]}</td></tr>`
+      hasLectureRows = true
+    }
+    if (!hasLectureRows) {
+      lectureTableHtml += '<tr><td class="count-label">&nbsp;</td><td class="count-val"></td></tr>'
     }
     lectureTableHtml += '</table>'
 
@@ -423,14 +432,14 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .bottom-right { flex: 1; display: flex; justify-content: flex-end; }
   .bottom-right-top { display: flex; gap: 6px; align-items: flex-start; }
 
-  .count-table { border-collapse: collapse; font-size: 9px; }
+  .count-table { border-collapse: collapse; font-size: 9px; width: 90px; }
   .count-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .count-table td { border: 1px solid #333; padding: 1px 6px; text-align: center; }
   .count-label { text-align: left !important; white-space: nowrap; }
   .count-val { width: 28px; }
   .small { font-size: 7px; }
 
-  .furikae-table { border-collapse: collapse; font-size: 9px; }
+  .furikae-table { border-collapse: collapse; font-size: 9px; width: 170px; }
   .furikae-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .furikae-table td { border: 1px solid #333; padding: 1px 4px; text-align: center; }
   .furikae-cell { width: 70px; height: 18px; font-size: 8px; }
@@ -507,4 +516,247 @@ function saveHtml() {
   }
   newWindow.document.write(html)
   newWindow.document.close()
+}
+
+/** Export student schedules as Excel workbook (one sheet per student) */
+export function exportStudentScheduleExcel(params: StudentScheduleParams): void {
+  const { data } = params
+  const dates = getAllDatesInRange(data.settings)
+  if (dates.length === 0) {
+    alert('講習期間が未設定です')
+    return
+  }
+
+  const holidaySet = new Set(data.settings.holidays)
+  const students = [...data.students].sort((a, b) => a.name.localeCompare(b.name, 'ja'))
+  const sessionName = data.settings.name || ''
+  const baseYear = new Date(data.settings.startDate).getFullYear()
+  const reiwaYear = baseYear - 2018
+  const slotsPerDay = data.settings.slotsPerDay || 5
+
+  // Group dates by month
+  const datesByMonth: { month: string; dates: string[] }[] = []
+  let currentMonth = ''
+  for (const date of dates) {
+    const m = date.slice(0, 7)
+    if (m !== currentMonth) {
+      currentMonth = m
+      datesByMonth.push({ month: m, dates: [] })
+    }
+    datesByMonth[datesByMonth.length - 1].dates.push(date)
+  }
+
+  const wb = XLSX.utils.book_new()
+
+  // Style definitions
+  const headerStyle = { font: { bold: true, sz: 10 }, alignment: { horizontal: 'center' as const, vertical: 'center' as const }, border: thinBorder() }
+  const cellStyle = { font: { sz: 8 }, alignment: { horizontal: 'center' as const, vertical: 'center' as const }, border: thinBorder() }
+  const unavailableStyle = { ...cellStyle, fill: { fgColor: { rgb: 'D1D5DB' } } }
+
+  const groupStyle = { ...cellStyle, fill: { fgColor: { rgb: 'FEF3C7' } } }
+  const sunStyle = { ...headerStyle, font: { bold: true, sz: 8, color: { rgb: 'DC2626' } } }
+  const satStyle = { ...headerStyle, font: { bold: true, sz: 8, color: { rgb: '2563EB' } } }
+
+  for (const student of students) {
+    const assignmentMap = buildStudentAssignmentMap(student, data.assignments, data.regularLessons, data.groupLessons ?? [], dates)
+    const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
+    const regularSubjects = [...new Set(Object.keys(regularCounts))].sort()
+    const lectureSubjects = [...new Set([...Object.keys(lectureCounts), ...Object.keys(groupCounts)])].sort()
+    const unavailableSet = buildUnavailableSet(student, dates, slotsPerDay, data.settings.holidays)
+    const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
+
+    const startParts = data.settings.startDate.split('-')
+    const endParts = data.settings.endDate.split('-')
+    const periodStr = `${Number(startParts[1])}月${Number(startParts[2])}日 ～ ${Number(endParts[1])}月${Number(endParts[2])}日`
+
+    const rows: XLSX.CellObject[][] = []
+    const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = []
+    const colCount = 1 + dates.length // label col + date cols
+
+    // Row 0: Title (merged)
+    const titleRow: XLSX.CellObject[] = []
+    titleRow[0] = { v: `R${reiwaYear}.${sessionName} 授業日程表`, t: 's', s: { font: { bold: true, sz: 14 }, alignment: { horizontal: 'center' as const } } }
+    for (let c = 1; c < colCount; c++) titleRow[c] = { v: '', t: 's' }
+    rows.push(titleRow)
+    merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: colCount - 1 } })
+
+    // Row 1: Period + Student info (merged)
+    const infoRow: XLSX.CellObject[] = []
+    infoRow[0] = { v: `期間: ${periodStr}　　生徒名: ${student.name} (${student.grade})`, t: 's', s: { font: { bold: true, sz: 11 }, alignment: { horizontal: 'center' as const } } }
+    for (let c = 1; c < colCount; c++) infoRow[c] = { v: '', t: 's' }
+    rows.push(infoRow)
+    merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: colCount - 1 } })
+
+    // Row 2: Month headers
+    const monthRow: XLSX.CellObject[] = [{ v: '', t: 's', s: headerStyle }]
+    let colIdx = 1
+    for (const group of datesByMonth) {
+      const [, mm] = group.month.split('-')
+      monthRow[colIdx] = { v: `${Number(mm)}月`, t: 's', s: { font: { bold: true, sz: 10 }, alignment: { horizontal: 'center' as const }, fill: { fgColor: { rgb: 'E8E8E8' } }, border: thinBorder() } }
+      if (group.dates.length > 1) {
+        merges.push({ s: { r: 2, c: colIdx }, e: { r: 2, c: colIdx + group.dates.length - 1 } })
+      }
+      for (let i = 1; i < group.dates.length; i++) {
+        monthRow[colIdx + i] = { v: '', t: 's', s: { border: thinBorder() } }
+      }
+      colIdx += group.dates.length
+    }
+    rows.push(monthRow)
+
+    // Row 3: Date numbers
+    const dateRow: XLSX.CellObject[] = [{ v: '', t: 's', s: headerStyle }]
+    for (const date of dates) {
+      const day = Number(date.split('-')[2])
+      const isHol = holidaySet.has(date)
+      dateRow.push({ v: day, t: 'n', s: isHol ? { ...headerStyle, fill: { fgColor: { rgb: 'E5E7EB' } } } : headerStyle })
+    }
+    rows.push(dateRow)
+
+    // Row 4: Day-of-week
+    const dowRow: XLSX.CellObject[] = [{ v: '', t: 's', s: headerStyle }]
+    for (const date of dates) {
+      const dow = getIsoDayOfWeek(date)
+      const label = DAY_OF_WEEK_LABELS[dow]
+      const isHol = holidaySet.has(date)
+      let style: Record<string, unknown> = headerStyle
+      if (dow === 0) style = sunStyle
+      else if (dow === 6) style = satStyle
+      if (isHol) style = { ...style, fill: { fgColor: { rgb: 'E5E7EB' } } }
+      dowRow.push({ v: label, t: 's', s: style })
+    }
+    rows.push(dowRow)
+
+    // Row 5: 集団授業
+    const groupRow: XLSX.CellObject[] = [{ v: '集団授業', t: 's', s: headerStyle }]
+    for (const date of dates) {
+      const greyKey = `${date}_0`
+      const isGrey = unavailableSet.has(greyKey)
+      const dayOfWeek = getIsoDayOfWeek(date)
+      const gls = (data.groupLessons ?? []).filter(gl => gl.dayOfWeek === dayOfWeek && gl.studentIds.includes(student.id))
+      if (gls.length > 0) {
+        groupRow.push({ v: gls.map(gl => gl.subject).join(', '), t: 's', s: isGrey ? { ...groupStyle, fill: { fgColor: { rgb: 'D1D5DB' } } } : groupStyle })
+      } else {
+        groupRow.push({ v: '', t: 's', s: isGrey ? unavailableStyle : cellStyle })
+      }
+    }
+    rows.push(groupRow)
+
+    // Rows 6..5+slotsPerDay: Slot rows
+    for (let s = 1; s <= slotsPerDay; s++) {
+      const timeLabel = SLOT_TIME_LABELS[s - 1] ?? `${s}限`
+      const slotRow: XLSX.CellObject[] = [{ v: timeLabel, t: 's', s: { ...headerStyle, font: { bold: true, sz: 7 }, alignment: { horizontal: 'left' as const, vertical: 'center' as const } } }]
+      for (const date of dates) {
+        const key = `${date}_${s}`
+        const entry = assignmentMap[key]
+        const isUnavail = unavailableSet.has(key)
+        if (entry && !entry.isGroupLesson) {
+          const label = entry.isRegular ? `${entry.subject}(通常)` : entry.subject
+          slotRow.push({ v: label, t: 's', s: cellStyle })
+        } else if (isUnavail) {
+          slotRow.push({ v: '', t: 's', s: unavailableStyle })
+        } else {
+          slotRow.push({ v: '', t: 's', s: cellStyle })
+        }
+      }
+      rows.push(slotRow)
+    }
+
+    // Blank row
+    rows.push([{ v: '', t: 's' }])
+    const bottomStartRow = rows.length
+
+    // 振替授業 / 通常回数 / 講習回数 side by side
+    // Columns: 0=振替from, 1=→, 2=振替to, 3=gap, 4=通常label, 5=通常val, 6=gap, 7=講習label, 8=講習val
+    const furikaeCount = Math.max(5, furikaeEntries.length)
+    const regularCount = Math.max(1, regularSubjects.length)
+    const lectureRows: { label: string; val: number }[] = []
+    for (const sub of lectureSubjects) {
+      if (lectureCounts[sub]) lectureRows.push({ label: sub, val: lectureCounts[sub] })
+    }
+    if (individualTotal > 0) lectureRows.push({ label: '個別計', val: individualTotal })
+    for (const sub of Object.keys(groupCounts).sort()) {
+      lectureRows.push({ label: `${sub}(集団)`, val: groupCounts[sub] })
+    }
+    if (lectureRows.length === 0) lectureRows.push({ label: '', val: 0 })
+
+    const bottomRowCount = Math.max(furikaeCount + 1, regularCount + 1, lectureRows.length + 1)
+
+    // Header row for bottom tables
+    const bottomHeader: XLSX.CellObject[] = []
+    bottomHeader[0] = { v: '振替授業', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[1] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[2] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    merges.push({ s: { r: bottomStartRow, c: 0 }, e: { r: bottomStartRow, c: 2 } })
+    bottomHeader[3] = { v: '', t: 's' }
+    bottomHeader[4] = { v: '通常回数', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[5] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    merges.push({ s: { r: bottomStartRow, c: 4 }, e: { r: bottomStartRow, c: 5 } })
+    bottomHeader[6] = { v: '', t: 's' }
+    bottomHeader[7] = { v: '講習回数', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    bottomHeader[8] = { v: '', t: 's', s: { ...headerStyle, fill: { fgColor: { rgb: 'F5F5F5' } } } }
+    merges.push({ s: { r: bottomStartRow, c: 7 }, e: { r: bottomStartRow, c: 8 } })
+    rows.push(bottomHeader)
+
+    // Data rows
+    for (let i = 0; i < bottomRowCount - 1; i++) {
+      const row: XLSX.CellObject[] = []
+      // 振替
+      if (i < furikaeEntries.length) {
+        row[0] = { v: furikaeEntries[i].fromLabel, t: 's', s: cellStyle }
+        row[1] = { v: '→', t: 's', s: { ...cellStyle, font: { bold: true, sz: 8 } } }
+        row[2] = { v: furikaeEntries[i].toLabel, t: 's', s: cellStyle }
+      } else if (i < furikaeCount) {
+        row[0] = { v: '', t: 's', s: cellStyle }
+        row[1] = { v: '→', t: 's', s: { ...cellStyle, font: { bold: true, sz: 8 } } }
+        row[2] = { v: '', t: 's', s: cellStyle }
+      } else {
+        row[0] = { v: '', t: 's' }; row[1] = { v: '', t: 's' }; row[2] = { v: '', t: 's' }
+      }
+      row[3] = { v: '', t: 's' }
+      // 通常回数
+      if (i < regularSubjects.length) {
+        row[4] = { v: regularSubjects[i], t: 's', s: cellStyle }
+        row[5] = { v: regularCounts[regularSubjects[i]] ?? 0, t: 'n', s: cellStyle }
+      } else if (i < regularCount) {
+        row[4] = { v: '', t: 's', s: cellStyle }
+        row[5] = { v: '', t: 's', s: cellStyle }
+      } else {
+        row[4] = { v: '', t: 's' }; row[5] = { v: '', t: 's' }
+      }
+      row[6] = { v: '', t: 's' }
+      // 講習回数
+      if (i < lectureRows.length) {
+        row[7] = { v: lectureRows[i].label, t: 's', s: cellStyle }
+        row[8] = { v: lectureRows[i].val || '', t: lectureRows[i].val ? 'n' : 's', s: cellStyle }
+      } else {
+        row[7] = { v: '', t: 's' }; row[8] = { v: '', t: 's' }
+      }
+      rows.push(row)
+    }
+
+    // 備考 row
+    rows.push([])
+    rows.push([{ v: '備考:', t: 's', s: { font: { bold: true, sz: 9 } } }, { v: student.memo || '', t: 's', s: { font: { sz: 9 } } }])
+
+    // Create worksheet
+    const ws = XLSX.utils.aoa_to_sheet(rows)
+    ws['!merges'] = merges
+
+    // Column widths
+    const cols: { wch: number }[] = [{ wch: 12 }]
+    for (let i = 0; i < dates.length; i++) cols.push({ wch: 4.5 })
+    ws['!cols'] = cols
+
+    // Sheet name (max 31 chars, no invalid chars)
+    const sheetName = student.name.replace(/[\\/*?[\]:]/g, '').slice(0, 31) || `Student${students.indexOf(student) + 1}`
+    XLSX.utils.book_append_sheet(wb, ws, sheetName)
+  }
+
+  const fileName = `生徒日程表_R${reiwaYear}_${sessionName}.xlsx`
+  XLSX.writeFile(wb, fileName)
+}
+
+function thinBorder() {
+  const side = { style: 'thin' as const, color: { rgb: '333333' } }
+  return { top: side, bottom: side, left: side, right: side }
 }
