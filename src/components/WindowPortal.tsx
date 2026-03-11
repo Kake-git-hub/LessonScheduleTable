@@ -5,16 +5,12 @@ type WindowPortalProps = {
   children: ReactNode
   onClose: () => void
   title?: string
-  width?: number
-  height?: number
 }
 
 export default function WindowPortal({
   children,
   onClose,
   title = 'コマ調整',
-  width = 1400,
-  height = 800,
 }: WindowPortalProps) {
   const [container, setContainer] = useState<HTMLElement | null>(null)
   const externalWindowRef = useRef<Window | null>(null)
