@@ -688,7 +688,8 @@ export const buildIncrementalAutoAssignments = async (
           const requested = (best.subjectSlots ?? {})[baseSubj] ?? 0
           const allocated = countStudentSubjectLoad(result, best.id, baseSubj, data.regularLessons)
           return allocated < requested || hasMakeupForTeacher(best.id, teacher.id, baseSubj, bestSlotDate)
-        }) ?? assignment.subject
+        })
+        if (!bestSubj) continue
         // Reconstruct studentSubjects
         const studentSubjects: Record<string, string> = {}
         for (const sid of assignment.studentIds) {
@@ -873,7 +874,7 @@ export const buildIncrementalAutoAssignments = async (
         const viableCommonSubjects = commonBaseSubjects.filter((baseSubj) =>
           combo.every((student) => {
             const requested = (student.subjectSlots ?? {})[baseSubj] ?? 0
-            const allocated = countStudentSubjectLoad(result, student.id, baseSubj)
+            const allocated = countStudentSubjectLoad(result, student.id, baseSubj, data.regularLessons)
             return allocated < requested || hasMakeupForTeacher(student.id, teacher.id, baseSubj, currentDate)
           }),
         )

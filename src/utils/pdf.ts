@@ -89,6 +89,7 @@ type StudentPdfCell = {
   text: string
   compareKey: string
   fillColor?: [number, number, number]
+  fillColor2?: [number, number, number]
   textColor?: [number, number, number]
 }
 
@@ -137,43 +138,49 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const studentSubject = normalizePdfDisplayText(getStudentSubject(assignment, studentId))
     const text = `${studentName}\n${studentGrade}${studentSubject}`
 
+    // Star1 (slot type): green=regular, yellow=makeup
+    let star1Fill: [number, number, number] | undefined
+    const manualMark = assignment.manualRegularMark?.[studentId]
+    if (manualMark === 'regular') star1Fill = colorNormal.fill
+    else if (manualMark === 'makeup') star1Fill = colorMakeup.fill
+    else if (assignment.regularMakeupInfo?.[studentId]) star1Fill = colorMakeup.fill
+    else if (assignment.isRegular) star1Fill = colorNormal.fill
+
+    // Star2 (teacher status): pink=substitute, purple=unsupported substitute
+    let star2Fill: [number, number, number] | undefined
     if (assignment.regularSubstituteInfo?.[studentId]) {
-      const info = assignment.regularSubstituteInfo[studentId]
       const isUnsupported = isUnsupportedSubstituteStudent?.(assignment, studentId) ?? false
-      return {
-        text,
-        compareKey: `${studentId}|${studentSubject}|${isUnsupported ? 'substitute-unsupported' : 'substitute'}|${info.regularTeacherId}|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
-        fillColor: isUnsupported ? colorSubstituteUnsupported.fill : colorSubstitute.fill,
-        textColor: isUnsupported ? colorSubstituteUnsupported.text : colorSubstitute.text,
-      }
+      star2Fill = isUnsupported ? colorSubstituteUnsupported.fill : colorSubstitute.fill
     }
-    if (assignment.regularMakeupInfo?.[studentId]) {
-      const info = assignment.regularMakeupInfo[studentId]
-      return {
-        text,
-        compareKey: `${studentId}|${studentSubject}|makeup|${info.dayOfWeek}|${info.slotNumber}|${info.date ?? ''}`,
-        fillColor: colorMakeup.fill,
-        textColor: colorMakeup.text,
-      }
+
+    // Compare key for change detection
+    const subInfo = assignment.regularSubstituteInfo?.[studentId]
+    const makeupInfo = assignment.regularMakeupInfo?.[studentId]
+    let typeKey: string
+    if (subInfo) {
+      const isUnsupported = isUnsupportedSubstituteStudent?.(assignment, studentId) ?? false
+      typeKey = `${isUnsupported ? 'substitute-unsupported' : 'substitute'}|${subInfo.regularTeacherId}|${subInfo.dayOfWeek}|${subInfo.slotNumber}|${subInfo.date ?? ''}`
+    } else if (makeupInfo) {
+      typeKey = `makeup|${makeupInfo.dayOfWeek}|${makeupInfo.slotNumber}|${makeupInfo.date ?? ''}`
+    } else if (manualMark) {
+      typeKey = `manual-${manualMark}`
+    } else if (assignment.isRegular) {
+      typeKey = 'regular'
+    } else {
+      typeKey = 'normal'
     }
-    if (assignment.manualRegularMark?.[studentId]) {
-      const mark = assignment.manualRegularMark[studentId]
-      return {
-        text,
-        compareKey: `${studentId}|${studentSubject}|manual-${mark}`,
-        fillColor: mark === 'regular' ? colorNormal.fill : colorMakeup.fill,
-        textColor: pdfTextBlack,
-      }
+    const compareKey = `${studentId}|${studentSubject}|${typeKey}`
+
+    const fillColor = star1Fill ?? star2Fill
+    const fillColor2 = star1Fill && star2Fill ? star2Fill : undefined
+
+    return {
+      text,
+      compareKey,
+      fillColor,
+      fillColor2,
+      textColor: fillColor ? pdfTextBlack : undefined,
     }
-    if (assignment.isRegular) {
-      return {
-        text,
-        compareKey: `${studentId}|${studentSubject}|regular`,
-        fillColor: colorNormal.fill,
-        textColor: colorNormal.text,
-      }
-    }
-    return { text, compareKey: `${studentId}|${studentSubject}|normal` }
   }
 
   const buildDeskPdfCell = (
@@ -608,6 +615,40 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
         if (daySubCol === 0) return
 
         const deskCell = buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, assignments)
+
+        // Handle 2-color student cells (star1 + star2)
+        if (daySubCol === 2 || daySubCol === 3) {
+          const studentCell = daySubCol === 2 ? deskCell.student1 : deskCell.student2
+          if (studentCell.fillColor && studentCell.fillColor2) {
+            const { x, y, width, height } = hookData.cell
+            // Draw right half with second color (left half already filled by didParseCell)
+            doc.setFillColor(...studentCell.fillColor2)
+            doc.rect(x + width / 2, y, width / 2, height, 'F')
+            // Redraw cell border
+            doc.setDrawColor(0, 0, 0)
+            doc.setLineWidth(0.2)
+            doc.rect(x, y, width, height, 'S')
+            if (deskIdx === 0) {
+              doc.setLineWidth(0.75)
+              doc.line(x, y, x + width, y)
+            }
+            // Redraw text on top
+            doc.setTextColor(...(studentCell.textColor ?? pdfTextBlack))
+            doc.setFont('NotoSansJP', 'normal')
+            doc.setFontSize(studentFontSize)
+            const lines = hookData.cell.text
+            if (Array.isArray(lines) && lines.length > 0) {
+              const lineHeightMm = studentFontSize * mmPerPt * pdfLineHeightFactor
+              const totalTextHeight = lines.length * lineHeightMm
+              const textX = x + width / 2
+              const textStartY = y + (height - totalTextHeight) / 2 + lineHeightMm * 0.75
+              for (let i = 0; i < lines.length; i++) {
+                doc.text(lines[i], textX, textStartY + i * lineHeightMm, { align: 'center' })
+              }
+            }
+          }
+        }
+
         const baselineDeskCell = baselineAssignments
           ? buildDeskPdfCell(dayDate, slotNumber, deskIdx, lectureDateSet, baselineAssignments)
           : null
