@@ -371,7 +371,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 
   .title-area { margin-bottom: 6px; }
   h1 { font-size: 16px; text-align: center; margin-bottom: 0; }
-  .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; }
+  .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; position: relative; }
   .header-left {
     flex: 1;
     display: flex;
@@ -410,7 +410,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     .school-text { border: none !important; }
     .school-text:empty::before { content: none; }
   }
-  .title-center { flex: 0 0 auto; text-align: center; }
+  .title-center { position: absolute; left: 0; right: 0; text-align: center; pointer-events: none; z-index: 1; }
   .student-info { flex: 0 0 auto; text-align: right; font-size: 11px; font-weight: bold; }
   .student-name { font-size: 14px; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
@@ -419,7 +419,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   .schedule-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9px; }
   .schedule-table th, .schedule-table td { border: 1px solid #333; text-align: center; padding: 1px 2px; }
   .corner { width: 70px; min-width: 70px; background: #fff; }
-  .month-header { background: #e8e8e8; font-weight: bold; font-size: 10px; }
+  .month-header { background: #fff; font-weight: bold; font-size: 10px; }
   .date-header { background: #fff; font-size: 9px; }
   .dow-header { background: #fff; font-size: 8px; }
   .dow-header.sun { color: #dc2626; }
@@ -496,48 +496,42 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 </div>
 ${pagesHtml}
 <script>
-// Sync shared elements across all pages
-(function() {
-  ['logo-box','school-text','shared-notes'].forEach(function(key) {
-    var els = document.querySelectorAll('[data-shared="' + key + '"]');
-    els.forEach(function(el) {
-      el.addEventListener('input', function() {
-        var val = el.innerHTML;
-        els.forEach(function(other) { if (other !== el) other.innerHTML = val; });
-      });
-    });
+// Sync shared elements using event delegation (more reliable with document.write)
+document.addEventListener('input', function(e) {
+  var el = e.target;
+  var key = el.getAttribute && el.getAttribute('data-shared');
+  if (!key) return;
+  var val = el.innerHTML;
+  document.querySelectorAll('[data-shared="' + key + '"]').forEach(function(other) {
+    if (other !== el) other.innerHTML = val;
   });
-})();
+});
 
-// Logo image insertion
-(function() {
-  document.querySelectorAll('.logo-box').forEach(function(box) {
-    box.addEventListener('click', function() {
-      if (box.querySelector('img')) return;
-      var input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = function() {
-        var file = input.files[0];
-        if (!file) return;
-        var reader = new FileReader();
-        reader.onload = function(e) {
-          var img = document.createElement('img');
-          img.src = e.target.result;
-          box.innerHTML = '';
-          box.appendChild(img);
-          // Sync to all other logo boxes
-          var others = document.querySelectorAll('[data-shared="logo-box"]');
-          others.forEach(function(o) {
-            if (o !== box) { o.innerHTML = ''; var c = img.cloneNode(true); o.appendChild(c); }
-          });
-        };
-        reader.readAsDataURL(file);
-      };
-      input.click();
-    });
-  });
-})();
+// Logo image insertion using event delegation
+document.addEventListener('click', function(e) {
+  var box = e.target.closest && e.target.closest('.logo-box');
+  if (!box) return;
+  if (box.querySelector('img')) return;
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.onchange = function() {
+    var file = input.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var img = document.createElement('img');
+      img.src = ev.target.result;
+      box.innerHTML = '';
+      box.appendChild(img);
+      document.querySelectorAll('[data-shared="logo-box"]').forEach(function(o) {
+        if (o !== box) { o.innerHTML = ''; o.appendChild(img.cloneNode(true)); }
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+  input.click();
+});
 
 function saveHtml() {
   var clone = document.documentElement.cloneNode(true);
@@ -553,8 +547,8 @@ function saveHtml() {
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
     + '<script>\\n'
-    + '(function(){["logo-box","school-text","shared-notes"].forEach(function(k){var els=document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  );els.forEach(function(el){el.addEventListener("input",function(){var v=el.innerHTML;els.forEach(function(o){if(o!==el)o.innerHTML=v;});});});});})();\n'
-    + '(function(){document.querySelectorAll(".logo-box").forEach(function(b){b.addEventListener("click",function(){if(b.querySelector("img"))return;var i=document.createElement("input");i.type="file";i.accept="image/*";i.onchange=function(){var f=i.files[0];if(!f)return;var r=new FileReader();r.onload=function(e){var img=document.createElement("img");img.src=e.target.result;b.innerHTML="";b.appendChild(img);document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(o){if(o!==b){o.innerHTML="";o.appendChild(img.cloneNode(true));}});};r.readAsDataURL(f);};i.click();});});})();\n'
+    + 'document.addEventListener("input",function(e){var el=e.target;var k=el.getAttribute&&el.getAttribute("data-shared");if(!k)return;var v=el.innerHTML;document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  ).forEach(function(o){if(o!==el)o.innerHTML=v;});});\n'
+    + 'document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest(".logo-box");if(!b||b.querySelector("img"))return;var i=document.createElement("input");i.type="file";i.accept="image/*";i.onchange=function(){var f=i.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){var img=document.createElement("img");img.src=ev.target.result;b.innerHTML="";b.appendChild(img);document.querySelectorAll(\'[data-shared="logo-box"]\').forEach(function(o){if(o!==b){o.innerHTML="";o.appendChild(img.cloneNode(true));}});};r.readAsDataURL(f);};i.click();});\n'
     + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
