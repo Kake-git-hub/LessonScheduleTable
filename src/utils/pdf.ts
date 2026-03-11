@@ -275,10 +275,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
   })
 
   const fitBodyRowHeightToPage = (totalBodyRowUnits: number, availableTableHeight: number): number => {
-    let low = 2.6
+      let low = 2.4
     let high = 8.5
     let best = low
-    const safeHeight = Math.max(40, availableTableHeight - 6)
+      const safeHeight = Math.max(40, availableTableHeight - 8.5)
 
     while (high - low > 0.01) {
       const mid = (low + high) / 2
@@ -292,7 +292,7 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
       }
     }
 
-    return clamp(best, 2.6, 8.5)
+    return clamp(best, 2.4, 8.5)
   }
 
   const dowOrder = [1, 2, 3, 4, 5, 6, 0]
