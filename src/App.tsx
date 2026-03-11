@@ -8478,6 +8478,15 @@ service cloud.firestore {
           onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx) =>
             moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true })
           }
+          onAddStudent={(slot, idx, studentId) => {
+            const assign = (data.assignments[slot] ?? [])[idx]
+            const pos = assign ? assign.studentIds.length : 0
+            return setSlotStudent(slot, idx, pos, studentId)
+          }}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          undoCount={undoCount}
+          redoCount={redoCount}
           onClose={() => setShowSlotAdjust(false)}
         />
       )}

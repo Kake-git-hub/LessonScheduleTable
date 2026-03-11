@@ -1474,6 +1474,97 @@ tr.sa-slot-first td {
 .sa-student.sa-selected .sa-student-detail {
   color: #dbeafe;
 }
+/* Star badges in slot adjust */
+.sa-badge-row {
+  display: flex;
+  gap: 1px;
+  justify-content: center;
+  line-height: 1;
+}
+.sa-star {
+  display: inline-block;
+  font-size: 7px;
+  padding: 0 2px;
+  border-radius: 2px;
+  line-height: 1.3;
+  vertical-align: middle;
+}
+/* Busy overlay */
+.sa-busy-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 999;
+  background: rgba(255,255,255,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: wait;
+}
+.sa-busy-spinner {
+  background: #1e293b;
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+/* Student picker */
+.sa-pickable {
+  cursor: pointer;
+}
+.sa-add-hint {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 600;
+}
+.sa-pickable:hover .sa-add-hint {
+  color: #3b82f6;
+}
+.sa-picker {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  min-width: 160px;
+  max-height: 260px;
+  display: flex;
+  flex-direction: column;
+}
+.sa-picker-title {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  border-bottom: 1px solid #e2e8f0;
+}
+.sa-picker-list {
+  overflow-y: auto;
+  max-height: 230px;
+}
+.sa-picker-item {
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sa-picker-item:hover {
+  background: #eff6ff;
+}
+.sa-picker-grade {
+  color: #94a3b8;
+  font-size: 10px;
+}
+.sa-picker-empty {
+  padding: 8px;
+  color: #94a3b8;
+  font-size: 10px;
+  text-align: center;
+}
+.range-cal-day {
   font-size: 13px;
   padding: 5px 0;
   border-radius: 6px;

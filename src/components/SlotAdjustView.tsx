@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
-import type { SessionData, Teacher } from '../types'
-import { getSlotNumber, getIsoDayOfWeek, getStudentSubject } from '../utils/assignments'
+import type { Assignment, SessionData, Student, Teacher } from '../types'
+import { findRegularLessonsForSlot, getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, getStudentSubject } from '../utils/assignments'
 import { hasAvailability, isStudentAvailable } from '../utils/constraints'
 
 // ---- types ----
@@ -17,6 +17,11 @@ type SlotAdjustViewProps = {
     targetSlot: string,
     targetIdx?: number,
   ) => Promise<void>
+  onAddStudent: (slot: string, idx: number, studentId: string) => Promise<void>
+  onUndo: () => Promise<void>
+  onRedo: () => Promise<void>
+  undoCount: number
+  redoCount: number
   onClose: () => void
 }
 
@@ -25,6 +30,11 @@ type SelectionInfo = {
   assignmentIdx: number
   studentId: string
   studentName: string
+}
+
+type StudentPickerInfo = {
+  slot: string
+  deskIdx: number
 }
 
 // ---- helpers ----
@@ -112,6 +122,63 @@ function hasInstructorAvailabilityLocal(
   )
 }
 
+/** Compute star badge for a student in an assignment (same rules as main grid) */
+function getStudentBadge(
+  data: SessionData,
+  assignment: Assignment,
+  studentId: string,
+  slot: string,
+  isMendan: boolean,
+): { star1Color: string; star1Bg: string; star2Color?: string; star2Bg?: string } | null {
+  if (isMendan || !studentId) return null
+
+  const isRegAtSlot = assignment.isRegular && findRegularLessonsForSlot(data.regularLessons, slot).some(r => r.studentIds.includes(studentId))
+  const mkInfo = assignment.regularMakeupInfo?.[studentId]
+  const subInfo = assignment.regularSubstituteInfo?.[studentId]
+  const manualMark = assignment.manualRegularMark?.[studentId]
+
+  // Star 1: green=通常, orange=振替
+  let hasStar1 = false
+  let star1Bg = '#22c55e'
+  let star1Color = '#052e16'
+  if (isRegAtSlot) {
+    hasStar1 = true // green
+  } else if (mkInfo) {
+    hasStar1 = true
+    star1Bg = '#eab308'
+    star1Color = '#422006'
+  } else if (manualMark === 'regular') {
+    hasStar1 = true
+  } else if (manualMark === 'makeup') {
+    hasStar1 = true
+    star1Bg = '#eab308'
+    star1Color = '#422006'
+  }
+
+  if (!hasStar1) return null
+
+  // Star 2: substitute teacher
+  let regTeacherId: string | undefined
+  if (subInfo) {
+    regTeacherId = subInfo.regularTeacherId
+  } else {
+    const slotDow = getSlotDayOfWeek(slot)
+    const slotNum = getSlotNumber(slot)
+    const regLesson = data.regularLessons.find(r => r.studentIds.includes(studentId) && r.dayOfWeek === slotDow && r.slotNumber === slotNum)
+    if (regLesson) regTeacherId = regLesson.teacherId
+  }
+
+  let star2Bg: string | undefined
+  let star2Color: string | undefined
+  if (regTeacherId && assignment.teacherId && assignment.teacherId !== regTeacherId) {
+    // pink=代行, purple=担当外
+    star2Bg = '#fbcfe8'
+    star2Color = '#9d174d'
+  }
+
+  return { star1Color, star1Bg, star2Color, star2Bg }
+}
+
 // ---- component ----
 
 export default function SlotAdjustView({
@@ -120,11 +187,18 @@ export default function SlotAdjustView({
   instructorPersonType,
   isMendan,
   onMove,
+  onAddStudent,
+  onUndo,
+  onRedo,
+  undoCount,
+  redoCount,
   onClose,
 }: SlotAdjustViewProps) {
   const [selection, setSelection] = useState<SelectionInfo | null>(null)
   const [weekIdx, setWeekIdx] = useState(0)
-  const [moving, setMoving] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [studentPicker, setStudentPicker] = useState<StudentPickerInfo | null>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const holidays = useMemo(() => new Set(data.settings.holidays), [data.settings.holidays])
@@ -146,7 +220,6 @@ export default function SlotAdjustView({
       const student = data.students.find((s) => s.id === studentId)
       if (!student) return false
       if (isMendan) {
-        // For mendan, check parent availability
         const key = `student:${studentId}`
         return (data.availability[key] ?? []).includes(slot)
       }
@@ -168,7 +241,7 @@ export default function SlotAdjustView({
 
   const handleStudentClick = useCallback(
     (slot: string, assignmentIdx: number, studentId: string) => {
-      if (moving) return
+      if (busy) return
       const student = data.students.find((s) => s.id === studentId)
       if (selection?.studentId === studentId && selection?.slot === slot && selection?.assignmentIdx === assignmentIdx) {
         setSelection(null)
@@ -180,32 +253,74 @@ export default function SlotAdjustView({
           studentName: student?.name ?? studentId,
         })
       }
+      setStudentPicker(null)
     },
-    [data.students, selection, moving],
+    [data.students, selection, busy],
   )
+
+  const runBusy = useCallback(async (fn: () => Promise<void>) => {
+    setBusy(true)
+    try {
+      await fn()
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
   const handleDestinationClick = useCallback(
     async (targetSlot: string, targetIdx?: number) => {
-      if (!selection || moving) return
-      setMoving(true)
-      try {
+      if (!selection || busy) return
+      await runBusy(async () => {
         await onMove(selection.slot, selection.assignmentIdx, selection.studentId, targetSlot, targetIdx)
         setSelection(null)
-      } finally {
-        setMoving(false)
-      }
+      })
     },
-    [selection, moving, onMove],
+    [selection, busy, onMove, runBusy],
   )
 
-  // Escape key to cancel selection
+  const handleAddStudent = useCallback(
+    async (slot: string, deskIdx: number, studentId: string) => {
+      setStudentPicker(null)
+      await runBusy(async () => {
+        await onAddStudent(slot, deskIdx, studentId)
+      })
+    },
+    [onAddStudent, runBusy],
+  )
+
+  // Escape key to cancel selection / close picker
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelection(null)
+      if (e.key === 'Escape') {
+        if (studentPicker) setStudentPicker(null)
+        else setSelection(null)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [studentPicker])
+
+  // Build list of students for the picker
+  const pickerStudents: Student[] = useMemo(() => {
+    if (!studentPicker) return []
+    const slot = studentPicker.slot
+    const existingIds = new Set(
+      (data.assignments[slot] ?? []).flatMap(a => a.studentIds),
+    )
+    return data.students.filter(s => !existingIds.has(s.id))
+  }, [studentPicker, data.assignments, data.students])
+
+  // Click outside to close student picker
+  useEffect(() => {
+    if (!studentPicker) return
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setStudentPicker(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [studentPicker])
 
   if (weeks.length === 0) return null
 
@@ -214,18 +329,26 @@ export default function SlotAdjustView({
 
   return (
     <div className="slot-adjust-overlay" ref={containerRef}>
+      {/* Busy overlay */}
+      {busy && <div className="sa-busy-overlay"><span className="sa-busy-spinner">処理中...</span></div>}
+
       {/* Header bar */}
       <div className="slot-adjust-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button className="btn secondary" type="button" onClick={onClose}>✕ 閉じる</button>
           <h2 style={{ margin: 0, fontSize: '1.1em' }}>コマ調整</h2>
+          <button className="btn secondary" type="button" disabled={undoCount === 0 || busy} onClick={() => void runBusy(onUndo)} title="元に戻す">
+            ↩ 戻す
+          </button>
+          <button className="btn secondary" type="button" disabled={redoCount === 0 || busy} onClick={() => void runBusy(onRedo)} title="やり直し">
+            ↪ やり直し
+          </button>
           {selection && (
             <span className="slot-adjust-selection-badge">
               {selection.studentName} を移動中
               <button type="button" onClick={() => setSelection(null)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
             </span>
           )}
-          {moving && <span style={{ color: '#6b7280', fontSize: '0.9em' }}>移動中...</span>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <button
@@ -300,7 +423,8 @@ export default function SlotAdjustView({
                     {fullWeek.map((date) => {
                       const isLecture = lectureDateSet.has(date) && !holidays.has(date)
                       const slotKey = `${date}_${slotNumber}`
-                      const assignment = isLecture ? (data.assignments[slotKey] ?? [])[deskIdx] : undefined
+                      const slotAssigns = data.assignments[slotKey] ?? []
+                      const assignment = isLecture ? slotAssigns[deskIdx] : undefined
                       const teacher = assignment?.teacherId
                         ? instructors.find((t) => t.id === assignment.teacherId)
                         : undefined
@@ -310,10 +434,9 @@ export default function SlotAdjustView({
                       let unassignedTeacher = ''
                       if (isLecture && !assignment?.teacherId) {
                         const assignedIds = new Set(
-                          (data.assignments[slotKey] ?? []).map((a) => a.teacherId).filter(Boolean),
+                          slotAssigns.map((a) => a.teacherId).filter(Boolean),
                         )
-                        // Find the deskIdx-th unassigned teacher
-                        const assignedCount = (data.assignments[slotKey] ?? []).filter((a) => a.teacherId).length
+                        const assignedCount = slotAssigns.filter((a) => a.teacherId).length
                         const unassignedOffset = deskIdx - assignedCount
                         if (unassignedOffset >= 0) {
                           const unassignedList = instructors.filter(
@@ -333,6 +456,10 @@ export default function SlotAdjustView({
                       const s1Subject = assignment && s1Id ? getStudentSubject(assignment, s1Id) : ''
                       const s2Subject = assignment && s2Id ? getStudentSubject(assignment, s2Id) : ''
 
+                      // Star badges
+                      const s1Badge = assignment && s1Id ? getStudentBadge(data, assignment, s1Id, slotKey, isMendan) : null
+                      const s2Badge = assignment && s2Id ? getStudentBadge(data, assignment, s2Id, slotKey, isMendan) : null
+
                       // Highlight logic for selected student
                       const isSourceSlot = selection && selection.slot === slotKey
                       const isS1Source = isSourceSlot && selection.assignmentIdx === deskIdx && selection.studentId === s1Id
@@ -343,22 +470,91 @@ export default function SlotAdjustView({
                       let canAcceptHere = false
                       if (selection && isLecture) {
                         isAvailDest = isStudentAvailableForSlot(selection.studentId, slotKey)
-                        // Can accept if: this slot has room and student is not already here
                         const alreadyInSlot = isStudentInSlot(selection.studentId, slotKey, selection.slot, selection.assignmentIdx)
                         if (!alreadyInSlot) {
                           if (assignment && studentIds.length < 2 && !assignment.isGroupLesson) {
                             canAcceptHere = true
                           } else if (!assignment) {
-                            // Empty desk - can create new assignment if slot has room
-                            const slotAssigns = data.assignments[slotKey] ?? []
+                            // Empty desk (including unassigned-teacher ghost desks) - allow move
                             const deskLimit = data.settings.deskCount ?? 0
                             canAcceptHere = deskLimit <= 0 || slotAssigns.length < deskLimit
                           }
                         }
                       }
 
+                      // Can open student picker: assignment has teacher, has room, no selection active
+                      const hasTeacherAssigned = !!assignment?.teacherId
+                      const canPickStudent = isLecture && hasTeacherAssigned && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
+                      const isPickerOpen = studentPicker?.slot === slotKey && studentPicker?.deskIdx === deskIdx
+
                       const inactiveClass = !isLecture ? ' sa-inactive' : ''
                       const availClass = selection && isAvailDest && !isSourceSlot ? ' sa-avail' : ''
+
+                      const renderStudentCell = (
+                        sId: string | undefined,
+                        student: Student | undefined,
+                        subject: string,
+                        badge: ReturnType<typeof getStudentBadge>,
+                        isSource: boolean | null | 0 | undefined,
+                        cellKey: string,
+                        isSecondSlot: boolean,
+                      ) => {
+                        const isEmpty = !sId
+                        const showDest = selection && canAcceptHere && !isS1Source && !isS2Source && (isSecondSlot ? studentIds.length < 2 : studentIds.length <= 1)
+                        const showPicker = isEmpty && canPickStudent
+
+                        return (
+                          <td
+                            key={cellKey}
+                            className={`sa-student${inactiveClass}${availClass}${isSource ? ' sa-selected' : ''}${showDest ? ' sa-dest' : ''}${showPicker ? ' sa-pickable' : ''}`}
+                            onClick={() => {
+                              if (!isLecture || busy) return
+                              if (sId && !selection) {
+                                handleStudentClick(slotKey, deskIdx, sId)
+                              } else if (selection && canAcceptHere && !isSource) {
+                                void handleDestinationClick(slotKey, assignment ? deskIdx : undefined)
+                              } else if (showPicker) {
+                                setStudentPicker(isPickerOpen ? null : { slot: slotKey, deskIdx })
+                              }
+                            }}
+                            title={student ? `${student.name} (${student.grade}) ${subject}` : selection && canAcceptHere ? 'ここに移動' : showPicker ? 'クリックで生徒を追加' : ''}
+                            style={{ position: 'relative' }}
+                          >
+                            {student ? (
+                              <div className="sa-student-inner">
+                                {badge && (
+                                  <span className="sa-badge-row">
+                                    <span className="sa-star" style={{ background: badge.star1Bg, color: badge.star1Color }}>★</span>
+                                    {badge.star2Bg && <span className="sa-star" style={{ background: badge.star2Bg, color: badge.star2Color }}>★</span>}
+                                  </span>
+                                )}
+                                <span className="sa-student-name">{student.name}</span>
+                                <span className="sa-student-detail">{student.grade}{subject}</span>
+                              </div>
+                            ) : showPicker ? (
+                              <span className="sa-add-hint">＋</span>
+                            ) : null}
+                            {/* Student picker dropdown */}
+                            {isPickerOpen && (
+                              <div className="sa-picker" ref={pickerRef} onClick={(e) => e.stopPropagation()}>
+                                <div className="sa-picker-title">生徒を追加</div>
+                                <div className="sa-picker-list">
+                                  {pickerStudents.map((st) => (
+                                    <div
+                                      key={st.id}
+                                      className="sa-picker-item"
+                                      onClick={() => void handleAddStudent(slotKey, deskIdx, st.id)}
+                                    >
+                                      {st.name} <span className="sa-picker-grade">({st.grade})</span>
+                                    </div>
+                                  ))}
+                                  {pickerStudents.length === 0 && <div className="sa-picker-empty">追加可能な生徒がいません</div>}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        )
+                      }
 
                       return [
                         // Teacher column
@@ -369,47 +565,9 @@ export default function SlotAdjustView({
                           {teacherName || unassignedTeacher}
                         </td>,
                         // Student 1
-                        <td
-                          key={`${date}-${deskIdx}-s1`}
-                          className={`sa-student${inactiveClass}${availClass}${isS1Source ? ' sa-selected' : ''}${selection && canAcceptHere && studentIds.length <= 1 && !isS1Source && !isS2Source ? ' sa-dest' : ''}`}
-                          onClick={() => {
-                            if (!isLecture) return
-                            if (s1Id && !selection) {
-                              handleStudentClick(slotKey, deskIdx, s1Id)
-                            } else if (selection && canAcceptHere && !isS1Source) {
-                              void handleDestinationClick(slotKey, assignment ? deskIdx : undefined)
-                            }
-                          }}
-                          title={s1 ? `${s1.name} (${s1.grade}) ${s1Subject}` : selection && canAcceptHere ? 'ここに移動' : ''}
-                        >
-                          {s1 ? (
-                            <div className="sa-student-inner">
-                              <span className="sa-student-name">{s1.name}</span>
-                              <span className="sa-student-detail">{s1.grade}{s1Subject}</span>
-                            </div>
-                          ) : null}
-                        </td>,
+                        renderStudentCell(s1Id, s1, s1Subject, s1Badge, isS1Source, `${date}-${deskIdx}-s1`, false),
                         // Student 2
-                        <td
-                          key={`${date}-${deskIdx}-s2`}
-                          className={`sa-student${inactiveClass}${availClass}${isS2Source ? ' sa-selected' : ''}${selection && canAcceptHere && studentIds.length < 2 && !isS1Source && !isS2Source ? ' sa-dest' : ''}`}
-                          onClick={() => {
-                            if (!isLecture) return
-                            if (s2Id && !selection) {
-                              handleStudentClick(slotKey, deskIdx, s2Id)
-                            } else if (selection && canAcceptHere && !isS2Source) {
-                              void handleDestinationClick(slotKey, assignment ? deskIdx : undefined)
-                            }
-                          }}
-                          title={s2 ? `${s2.name} (${s2.grade}) ${s2Subject}` : selection && canAcceptHere ? 'ここに移動' : ''}
-                        >
-                          {s2 ? (
-                            <div className="sa-student-inner">
-                              <span className="sa-student-name">{s2.name}</span>
-                              <span className="sa-student-detail">{s2.grade}{s2Subject}</span>
-                            </div>
-                          ) : null}
-                        </td>,
+                        renderStudentCell(s2Id, s2, s2Subject, s2Badge, isS2Source, `${date}-${deskIdx}-s2`, true),
                       ]
                     })}
                   </tr>
