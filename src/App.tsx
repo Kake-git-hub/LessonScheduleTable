@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.88'
+const APP_VERSION = '1.3.89'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -1031,7 +1031,11 @@ const getProposalActionBlockReason = (
     if (slotAssignments.some((assignment) => assignment.studentIds.includes(proposal.studentId))) return '対象生徒が同コマで既に割当済みです'
 
     const targetAssignment = slotAssignments.find((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
-    if (targetAssignment) return `${teacher.name} は同コマで既に担当があります`
+    if (targetAssignment) {
+      if (targetAssignment.studentIds.length >= 2) return `${teacher.name} のペアが満席です`
+      if (targetAssignment.studentIds.some((sid) => constraintFor(sessionData.constraints, sid, proposal.studentId) === 'incompatible')) return '既存ペアの生徒と相性不可です'
+      return null
+    }
 
     const deskCount = sessionData.settings.deskCount ?? 0
     return deskCount <= 0 || slotAssignments.length < deskCount
@@ -6438,8 +6442,25 @@ const AdminPage = () => {
 
           const targetIndex = slotAssignments.findIndex((assignment) => assignment.teacherId === proposal.teacherId && !assignment.isGroupLesson)
           if (targetIndex >= 0) {
-            errorMessage = `${teacher.name} は既に ${slotLabel(proposal.slot, isMendan, mendanStart)} で別ペアに割当済みです。提案から既存ペアは変更できません。`
-            return current
+            const targetAssignment = slotAssignments[targetIndex]
+            if (targetAssignment.studentIds.length >= 2) {
+              errorMessage = `${teacher.name} のペアが満席のため、割当できませんでした。`
+              return current
+            }
+            // Merge into existing pair
+            const mergedStudentIds = [...targetAssignment.studentIds, proposal.studentId]
+            const mergedStudentSubjects = {
+              ...(targetAssignment.studentSubjects ?? {}),
+              [proposal.studentId]: proposal.subject,
+            }
+            slotAssignments[targetIndex] = {
+              ...targetAssignment,
+              studentIds: mergedStudentIds,
+              subject: mergedStudentSubjects[mergedStudentIds[0]] ?? targetAssignment.subject,
+              studentSubjects: mergedStudentSubjects,
+              ...(proposal.makeupInfo ? { regularMakeupInfo: { ...(targetAssignment.regularMakeupInfo ?? {}), [proposal.studentId]: proposal.makeupInfo } } : {}),
+              ...(proposal.substituteInfo ? { regularSubstituteInfo: { ...(targetAssignment.regularSubstituteInfo ?? {}), [proposal.studentId]: proposal.substituteInfo } } : {}),
+            }
           } else {
             const deskCount = current.settings.deskCount ?? 0
             if (deskCount > 0 && slotAssignments.length >= deskCount) {
