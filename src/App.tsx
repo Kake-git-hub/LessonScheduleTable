@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.87'
+const APP_VERSION = '1.3.88'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -5132,7 +5132,7 @@ const AdminPage = () => {
     student: Student,
     subject: string,
     candidateTeachers: Teacher[],
-    options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand; allowExistingTeacherPair?: boolean },
+    options?: { slotFilter?: (slot: string) => boolean; makeupDemand?: PendingMakeupDemand },
   ): PlacementAnalysis => {
     if (!data) return { force: [], substitute: [], teacher: [], student: [], rawTeacher: [], rawStudent: [], cards: [], blockers: [] }
 
@@ -5143,7 +5143,6 @@ const AdminPage = () => {
     const cardSuggestions = new Map<string, StatusProposal>()
     const blockerReasons = new Set<string>()
     const deskLimit = data.settings.deskCount ?? 0
-    const allowExistingTeacherPair = options?.allowExistingTeacherPair ?? false
 
     for (const slot of availableSlots) {
       if (getSlotNumber(slot) === 0) continue
@@ -5162,7 +5161,6 @@ const AdminPage = () => {
         const teacherStudentIncompatible = constraintFor(data.constraints, teacher.id, student.id) === 'incompatible'
         const existingStudentIncompatible = !!teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')
         const teacherPairFull = !!teacherAssignment && teacherAssignment.studentIds.length >= 2
-        const existingPairBlocked = !!teacherAssignment && !allowExistingTeacherPair
         const deskBlocked = !teacherAssignment && deskLimit > 0 && slotAssignments.length >= deskLimit
         const evalResult = evaluateConstraintCards(
           student,
@@ -5178,7 +5176,6 @@ const AdminPage = () => {
         if (teacherStudentIncompatible) hardReasons.push(`講師(${teacher.name})と生徒の相性不可`)
         if (existingStudentIncompatible) hardReasons.push(`講師(${teacher.name})ペア内の既存生徒と相性不可`)
         if (teacherPairFull) hardReasons.push(`講師(${teacher.name})のペアが満席`)
-        if (existingPairBlocked) hardReasons.push(`講師(${teacher.name})は既に同コマの別ペアを担当済み`)
         if (deskBlocked) hardReasons.push('机数上限で新規ペア不可')
         if (evalResult.blocked && evalResult.blockReason) hardReasons.push(evalResult.blockReason)
 
@@ -5186,7 +5183,7 @@ const AdminPage = () => {
           for (const reason of hardReasons) blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: ${reason}`)
         }
 
-        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && !evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && !evalResult.blocked) {
           const verb = options?.makeupDemand ? '振替' : '割当'
           const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
@@ -5203,7 +5200,7 @@ const AdminPage = () => {
           continue
         }
 
-        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked && evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked && evalResult.blocked) {
           const verb = options?.makeupDemand ? '振替' : '割当'
           const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularReference = options?.makeupDemand ? formatRegularLessonReference(data, options.makeupDemand.teacherId, options.makeupDemand.makeupInfo) : ''
@@ -5220,7 +5217,7 @@ const AdminPage = () => {
           forceSuggestions.set(`${slot}|${teacher.id}|${student.id}|${subject}|${options?.makeupDemand ? 'makeup' : 'normal'}`, toStatusProposal(label, action))
         }
 
-        if (!teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
+        if (!teacherAvailable && studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
           const key = `${teacher.id}|${subject}`
           const existing = teacherSuggestions.get(key)
           if (existing) {
@@ -5229,7 +5226,7 @@ const AdminPage = () => {
             teacherSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
           }
         }
-        if (teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
+        if (teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
           const key = `${teacher.id}|${subject}`
           const existing = studentSuggestions.get(key)
           if (existing) {
@@ -5238,15 +5235,15 @@ const AdminPage = () => {
             studentSuggestions.set(key, { teacherName: teacher.name, subject, slots: [slotLabel(slot, isMendan, mendanStart)] })
           }
         }
-        if (teacherAvailable && studentAvailable && !existingPairBlocked && evalResult.blocked) {
+        if (teacherAvailable && studentAvailable && evalResult.blocked) {
           const suggestion = buildConstraintSuggestion(student, evalResult.blockReason ?? '', slot, teacher.name)
           if (suggestion) cardSuggestions.set(suggestion.label, suggestion)
         }
-        if (!teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
+        if (!teacherAvailable && !studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})と生徒の両方が未出席`)
-        } else if (!teacherAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
+        } else if (!teacherAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 講師(${teacher.name})が未出席`)
-        } else if (!studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !existingPairBlocked && !deskBlocked) {
+        } else if (!studentAvailable && !teacherStudentIncompatible && !existingStudentIncompatible && !teacherPairFull && !deskBlocked) {
           blockerReasons.add(`${slotLabel(slot, isMendan, mendanStart)}: 生徒が出席不可`)
         }
       }
@@ -5284,8 +5281,6 @@ const AdminPage = () => {
           if (!teacherAssignment && deskBlocked) continue
           if (teacherAssignment?.studentIds.length && teacherAssignment.studentIds.some((sid) => constraintFor(data.constraints, sid, student.id) === 'incompatible')) continue
           if (teacherAssignment && teacherAssignment.studentIds.length >= 2) continue
-
-          if (teacherAssignment && !allowExistingTeacherPair) continue
 
           const targetText = teacherAssignment ? '既存ペア' : '新規ペア'
           const regularTeacher = data.teachers.find((item) => item.id === makeupDemand.teacherId)
@@ -8691,6 +8686,7 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
+                style={{ display: 'none' }}
                 onClick={() => openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId })}
               >
                 📄 生徒日程表
@@ -8698,6 +8694,7 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
+                style={{ display: 'none' }}
                 onClick={() => openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '' })}
               >
                 📄 講師日程表
