@@ -32,7 +32,8 @@ import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStuden
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
-import SlotAdjustView from './components/SlotAdjustView'\nimport WindowPortal from './components/WindowPortal'
+import SlotAdjustView from './components/SlotAdjustView'
+import WindowPortal from './components/WindowPortal'
 
 const APP_VERSION = '1.4.5'
 
