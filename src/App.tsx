@@ -7799,7 +7799,7 @@ const AdminPage = () => {
     slot: string,
     oldSig: string,
     newSig: string | null, // null = assignment was deleted
-  ): SessionData['autoAssignHighlights'] => {
+  ): NonNullable<SessionData['autoAssignHighlights']> => {
     if (oldSig === newSig) return hl
     const added = { ...(hl.added ?? {}) }
     const changed = { ...(hl.changed ?? {}) }
