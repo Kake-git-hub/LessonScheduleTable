@@ -226,22 +226,6 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
       }
     }
 
-    // 集団授業 row
-    let groupRow = ''
-    for (const date of dates) {
-      const greyKey = `${date}_0`
-      const isGrey = unavailableSet.has(greyKey)
-      const dayOfWeek = getIsoDayOfWeek(date)
-      const groupLessonsOnDate = (data.groupLessons ?? []).filter(
-        (gl) => gl.dayOfWeek === dayOfWeek && gl.studentIds.includes(student.id),
-      )
-      if (groupLessonsOnDate.length > 0) {
-        groupRow += `<td class="cell group-cell${isGrey ? ' unavailable' : ''}">${escapeHtml(groupLessonsOnDate.map((gl) => gl.subject).join(', '))}</td>`
-      } else {
-        groupRow += `<td class="cell${isGrey ? ' unavailable' : ''}"></td>`
-      }
-    }
-
     // Slot rows
     let slotRows = ''
     for (let s = 1; s <= slotsPerDay; s++) {
@@ -330,13 +314,21 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
             <tr>${headerRow3}</tr>
           </thead>
           <tbody>
-            <tr><th class="slot-label">集団授業</th>${groupRow}</tr>
             ${slotRows}
           </tbody>
         </table>
 
         <div class="bottom-area">
-          <div class="notes-box" contenteditable="true">${escapeHtml(student.memo || '')}</div>
+          <div class="notes-area">
+            <div>
+              <div class="notes-label">共通欄（全生徒に反映）</div>
+              <div class="notes-shared" contenteditable="true" data-shared="shared-notes"></div>
+            </div>
+            <div>
+              <div class="notes-label">個別欄</div>
+              <div class="notes-individual" contenteditable="true">${escapeHtml(student.memo || '')}</div>
+            </div>
+          </div>
           <div class="bottom-right">
             <div class="bottom-right-top">
               ${furikaeTableHtml}
@@ -359,7 +351,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     margin: 8mm;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size: 10px; color: #333; }
+  body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size: 10px; color: #333; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   .page { padding: 8px; position: relative; }
   .page-break { page-break-after: always; }
@@ -378,7 +370,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
   h1 { font-size: 16px; text-align: center; margin-bottom: 0; }
   .header-row { display: flex; align-items: flex-start; margin-bottom: 6px; gap: 8px; }
   .school-info {
-    flex: 0 0 160px;
+    flex: 1;
     min-height: 36px;
     border: 1px dashed #aaa;
     padding: 3px 5px;
@@ -392,7 +384,11 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     color: #aaa;
   }
   .school-info:focus { border-color: #2563eb; }
-  .title-center { flex: 1; text-align: center; }
+  @media print {
+    .school-info { border: none !important; }
+    .school-info:empty::before { content: none; }
+  }
+  .title-center { flex: 0 0 auto; text-align: center; }
   .student-info { flex: 0 0 auto; text-align: right; font-size: 11px; font-weight: bold; }
   .student-name { font-size: 14px; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
@@ -415,11 +411,16 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 
-  .notes-box {
+  .notes-area {
     flex: 1 1 50%;
+    display: flex;
+    gap: 4px;
+  }
+  .notes-shared, .notes-individual {
+    flex: 1;
     min-height: 50px;
     max-height: 100px;
-    border: 2px dashed #999;
+    border: 1px solid #333;
     padding: 4px 6px;
     font-size: 9px;
     line-height: 1.4;
@@ -427,7 +428,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
     outline: none;
     overflow: auto;
   }
-  .notes-box:focus { border-color: #2563eb; }
+  .notes-shared:focus, .notes-individual:focus { border-color: #2563eb; }
+  .notes-label { font-size: 7px; color: #666; margin-bottom: 1px; }
 
   .bottom-right { flex: 1; display: flex; justify-content: flex-end; }
   .bottom-right-top { display: flex; gap: 6px; align-items: flex-start; }
@@ -472,11 +474,13 @@ ${pagesHtml}
 <script>
 // Sync school-info across all pages
 (function() {
-  var infos = document.querySelectorAll('[data-shared="school-info"]');
-  infos.forEach(function(el) {
-    el.addEventListener('input', function() {
-      var val = el.innerHTML;
-      infos.forEach(function(other) { if (other !== el) other.innerHTML = val; });
+  ['school-info','shared-notes'].forEach(function(key) {
+    var els = document.querySelectorAll('[data-shared="' + key + '"]');
+    els.forEach(function(el) {
+      el.addEventListener('input', function() {
+        var val = el.innerHTML;
+        els.forEach(function(other) { if (other !== el) other.innerHTML = val; });
+      });
     });
   });
 })();
@@ -495,7 +499,7 @@ function saveHtml() {
     + '<span>点線枠・振替欄をクリックして編集可。左上の校舎情報は全生徒に反映されます。</span>'
     + '</div>'
     + '<script>\\n'
-    + '(function(){var infos=document.querySelectorAll(\\'[data-shared="school-info"]\\');infos.forEach(function(el){el.addEventListener("input",function(){var val=el.innerHTML;infos.forEach(function(o){if(o!==el)o.innerHTML=val;});});});})();\\n'
+    + '(function(){["school-info","shared-notes"].forEach(function(k){var els=document.querySelectorAll(\'[data-shared="\'+k+\'"]\'  );els.forEach(function(el){el.addEventListener("input",function(){var v=el.innerHTML;els.forEach(function(o){if(o!==el)o.innerHTML=v;});});});});})();\n'
     + saveHtml.toString() + '\\n<\\/script>';
   if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
   var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
