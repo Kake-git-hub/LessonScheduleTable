@@ -380,9 +380,35 @@ export function openStudentScheduleHtml(params: StudentScheduleParams): void {
 <body>
 <div class="toolbar no-print">
   <button onclick="window.print()">🖨 印刷 / PDF保存</button>
-  <span>点線枠内をクリックして自由に編集できます。編集後に印刷してください。</span>
+  <button onclick="saveHtml()">💾 HTMLを保存</button>
+  <span>点線枠内をクリックして自由に編集できます。保存後もブラウザで開いて再編集可能です。</span>
 </div>
 ${pagesHtml}
+<script>
+function saveHtml() {
+  var clone = document.documentElement.cloneNode(true);
+  var toolbar = clone.querySelector('.toolbar');
+  if (toolbar) toolbar.remove();
+  var scripts = clone.querySelectorAll('script');
+  scripts.forEach(function(s) { s.remove(); });
+  var html = '<!DOCTYPE html>\\n<html lang="ja">' + clone.innerHTML + '</html>';
+  // Re-inject toolbar and save script into the saved file so it can be saved again
+  var bodyTag = html.indexOf('</body>');
+  var inject = '<div class="toolbar no-print">'
+    + '<button onclick="window.print()">🖨 印刷 / PDF保存</button>'
+    + '<button onclick="saveHtml()">💾 HTMLを保存</button>'
+    + '<span>点線枠内をクリックして自由に編集できます。保存後もブラウザで開いて再編集可能です。</span>'
+    + '</div>'
+    + '<script>\\n' + saveHtml.toString() + '\\n<\\/script>';
+  if (bodyTag !== -1) html = html.slice(0, bodyTag) + inject + html.slice(bodyTag);
+  var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = document.title + '.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
 </body>
 </html>`
 
