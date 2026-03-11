@@ -1,5 +1,6 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import { getStudentRegularLessonStatus } from './constraints'
 import { canTeachSubject } from './subjects'
 import XLSX from 'xlsx-js-style'
 
@@ -61,6 +62,8 @@ function buildStudentAssignmentMap(
       const subInfo = a.regularSubstituteInfo?.[student.id]
       const manualMark = a.manualRegularMark?.[student.id]
       const isRegAtSlot = !!a.isRegular && findRegularLessonsForSlot(regularLessons, slotKey).some(r => r.studentIds.includes(student.id))
+      // Skip regular lessons marked as completed (振替済)
+      if (isRegAtSlot && getStudentRegularLessonStatus(student, slotKey) === 'completed') continue
       const isRegular = isRegAtSlot || manualMark === 'regular'
       const isMakeup = !!makeupInfo || manualMark === 'makeup'
 
@@ -179,6 +182,9 @@ function countExpectedRegularLessons(
     for (const date of dates) {
       if (holidaySet.has(date)) continue
       if (getIsoDayOfWeek(date) === r.dayOfWeek) {
+        // Skip slots marked as completed (振替済)
+        const slotKey = `${date}_${r.slotNumber}`
+        if (getStudentRegularLessonStatus(student, slotKey) === 'completed') continue
         expected[subject] = (expected[subject] ?? 0) + 1
       }
     }

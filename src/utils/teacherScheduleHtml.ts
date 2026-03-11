@@ -1,5 +1,6 @@
-import type { Assignment, RegularLesson, SessionData, Teacher } from '../types'
-import { getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import type { Assignment, RegularLesson, SessionData, Student, Teacher } from '../types'
+import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import { getStudentRegularLessonStatus } from './constraints'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -43,8 +44,9 @@ type SlotEntry = {
 function buildTeacherAssignmentMap(
   teacher: Teacher,
   assignments: Record<string, Assignment[]>,
-  _regularLessons: RegularLesson[],
+  regularLessons: RegularLesson[],
   dates: string[],
+  allStudents: Student[],
   getStudentName: (id: string) => string,
   getStudentGrade: (id: string) => string,
 ): Record<string, SlotEntry> {
@@ -62,21 +64,35 @@ function buildTeacherAssignmentMap(
         map[key] = { students: [], isGroupLesson: true, groupSubject: a.subject }
         continue
       }
-      const students = a.studentIds.map(sid => {
-        const subject = getStudentSubject(a, sid)
-        const isRegular = !!a.isRegular
-        const isMakeup = !!a.regularMakeupInfo?.[sid]
-        const isSubstitute = !!a.regularSubstituteInfo?.[sid]
-        return {
-          name: getStudentName(sid),
-          grade: getStudentGrade(sid),
-          subject,
-          isRegular,
-          isMakeup,
-          isSubstitute,
-        }
-      })
-      map[key] = { students, isGroupLesson: false }
+      const students = a.studentIds
+        .filter(sid => {
+          // Skip students whose regular lesson at this slot is completed (振替済)
+          if (a.isRegular) {
+            const isRegAtSlot = findRegularLessonsForSlot(regularLessons, slotKey).some(r => r.studentIds.includes(sid))
+            if (isRegAtSlot) {
+              const student = allStudents.find(s => s.id === sid)
+              if (student && getStudentRegularLessonStatus(student, slotKey) === 'completed') return false
+            }
+          }
+          return true
+        })
+        .map(sid => {
+          const subject = getStudentSubject(a, sid)
+          const isRegular = !!a.isRegular
+          const isMakeup = !!a.regularMakeupInfo?.[sid]
+          const isSubstitute = !!a.regularSubstituteInfo?.[sid]
+          return {
+            name: getStudentName(sid),
+            grade: getStudentGrade(sid),
+            subject,
+            isRegular,
+            isMakeup,
+            isSubstitute,
+          }
+        })
+      if (students.length > 0) {
+        map[key] = { students, isGroupLesson: false }
+      }
     }
   }
 
@@ -160,7 +176,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams): void {
   }
 
   const pagesHtml = teachers.map((teacher, idx) => {
-    const assignmentMap = buildTeacherAssignmentMap(teacher, data.assignments, data.regularLessons, dates, getStudentName, getStudentGrade)
+    const assignmentMap = buildTeacherAssignmentMap(teacher, data.assignments, data.regularLessons, dates, data.students, getStudentName, getStudentGrade)
     const unavailableSet = buildTeacherUnavailableSet(teacher, data.availability, dates, slotsPerDay, data.settings.holidays)
     const counts = countTeacherSlots(assignmentMap)
 
