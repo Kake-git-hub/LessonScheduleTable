@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.3.99'
+const APP_VERSION = '1.4.0'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -9117,7 +9117,9 @@ service cloud.firestore {
                         className="btn"
                         type="button"
                         style={{ width: '100%', fontSize: '0.82em', padding: '4px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
-                        onClick={() => {
+                        onClick={(e) => {
+                          const card = (e.target as HTMLElement).closest('[data-slot]')
+                          const offsetY = card?.getBoundingClientRect().top ?? 0
                           const targetSlotId = slot
                           if (dragInfo.studentDragId) {
                             void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId, slot)
@@ -9127,8 +9129,8 @@ service cloud.firestore {
                           setDragInfo(null)
                           setTransferSlot(null)
                           requestAnimationFrame(() => {
-                            const card = document.querySelector(`[data-slot="${targetSlotId}"]`)
-                            if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                            const el = document.querySelector(`[data-slot="${targetSlotId}"]`)
+                            if (el) { const dy = el.getBoundingClientRect().top - offsetY; if (dy) window.scrollBy(0, dy) }
                           })
                         }}
                       >
@@ -9393,14 +9395,16 @@ service cloud.firestore {
                                 className="btn"
                                 type="button"
                                 style={{ width: '100%', fontSize: '0.78em', padding: '3px', marginBottom: '4px', background: '#dcfce7', border: '1px solid #22c55e', color: '#15803d' }}
-                                onClick={() => {
+                                onClick={(e) => {
+                                  const card = (e.target as HTMLElement).closest('[data-slot]')
+                                  const offsetY = card?.getBoundingClientRect().top ?? 0
                                   const targetSlotId = slot
                                   void moveStudentToSlot(dragInfo.sourceSlot, dragInfo.sourceIdx, dragInfo.studentDragId!, slot, idx)
                                   setDragInfo(null)
                                   setTransferSlot(null)
                                   requestAnimationFrame(() => {
-                                    const card = document.querySelector(`[data-slot="${targetSlotId}"]`)
-                                    if (card) card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                                    const el = document.querySelector(`[data-slot="${targetSlotId}"]`)
+                                    if (el) { const dy = el.getBoundingClientRect().top - offsetY; if (dy) window.scrollBy(0, dy) }
                                   })
                                 }}
                               >
@@ -9471,10 +9475,11 @@ service cloud.firestore {
                                     title="ペアを別コマへ移動"
                                     style={{ background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '4px', cursor: 'pointer', fontSize: '0.9em', color: '#2563eb', padding: '1px 5px', lineHeight: 1, flexShrink: 0 }}
                                     onClick={(e) => {
+                                      const card = (e.target as HTMLElement).closest('[data-slot]')
+                                      const offsetY = card?.getBoundingClientRect().top ?? 0
                                       setDragInfo({ sourceSlot: slot, sourceIdx: idx, teacherId: assignment.teacherId, studentIds: [...assignment.studentIds] })
                                       setTransferSlot(slot)
-                                      const card = (e.target as HTMLElement).closest('[data-slot]')
-                                      if (card) requestAnimationFrame(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+                                      if (card) requestAnimationFrame(() => { const dy = card.getBoundingClientRect().top - offsetY; if (dy) window.scrollBy(0, dy) })
                                     }}
                                   >
                                     ⇔
@@ -9653,6 +9658,8 @@ service cloud.firestore {
                                         title="生徒を別コマへ移動"
                                         style={{ cursor: 'pointer', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '0 4px', color: '#2563eb', fontSize: '0.8em', lineHeight: 1.4, flexShrink: 0, marginLeft: 2 }}
                                         onClick={(e) => {
+                                          const card = (e.target as HTMLElement).closest('[data-slot]')
+                                          const offsetY = card?.getBoundingClientRect().top ?? 0
                                           setDragInfo({
                                             sourceSlot: slot,
                                             sourceIdx: idx,
@@ -9662,8 +9669,7 @@ service cloud.firestore {
                                             studentDragSubject: studentSubject,
                                           })
                                           setTransferSlot(slot)
-                                          const card = (e.target as HTMLElement).closest('[data-slot]')
-                                          if (card) requestAnimationFrame(() => card.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+                                          if (card) requestAnimationFrame(() => { const dy = card.getBoundingClientRect().top - offsetY; if (dy) window.scrollBy(0, dy) })
                                         }}
                                       >
                                         ⇔
