@@ -33,7 +33,7 @@ import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignm
 import { buildIncrementalAutoAssignments, buildMendanAutoAssignments } from './utils/autoAssign'
 import { ALL_CONSTRAINT_CARDS, CONSTRAINT_CARD_LABELS, CONSTRAINT_CARD_DESCRIPTIONS, CONSTRAINT_CARD_CONFLICT_GROUPS, evaluateConstraintCards, getDefaultConstraintCards, summarizeConstraintCards, validateConstraintCards } from './utils/slotConstraints'
 
-const APP_VERSION = '1.4.3'
+const APP_VERSION = '1.4.4'
 
 type ForceAssignAction = {
   type: 'force-assign'
@@ -7995,19 +7995,21 @@ const AdminPage = () => {
       )) return current
 
       // When moving a regular assignment, convert to non-regular with regularMakeupInfo
+      // Only add regularMakeupInfo for students who actually have a regular lesson at the source slot
       const movedCopy = { ...moved }
       if (movedCopy.isRegular) {
         const srcDate = sourceSlot.split('_')[0]
         const srcDayOfWeek = getSlotDayOfWeek(sourceSlot)
         const srcSlotNum = getSlotNumber(sourceSlot)
+        const srcRegularLessons = findRegularLessonsForSlot(current.regularLessons, sourceSlot)
         const regularMakeupInfo: Record<string, { dayOfWeek: number; slotNumber: number; date?: string }> = { ...(movedCopy.regularMakeupInfo ?? {}) }
         for (const sid of movedCopy.studentIds) {
-          if (!regularMakeupInfo[sid]) {
+          if (!regularMakeupInfo[sid] && srcRegularLessons.some(r => r.studentIds.includes(sid))) {
             regularMakeupInfo[sid] = { dayOfWeek: srcDayOfWeek, slotNumber: srcSlotNum, date: srcDate }
           }
         }
         movedCopy.isRegular = false
-        movedCopy.regularMakeupInfo = regularMakeupInfo
+        movedCopy.regularMakeupInfo = Object.keys(regularMakeupInfo).length > 0 ? regularMakeupInfo : undefined
       }
 
       // Move
@@ -8073,11 +8075,12 @@ const AdminPage = () => {
       })) return current
 
       // Determine if this student is a regular student being moved (needs regularMakeupInfo)
-      const isRegularSource = srcAssignment.isRegular
+      // Only add regularMakeupInfo if the student actually has a regular lesson at the source slot
       const existingMakeupInfo = srcAssignment.regularMakeupInfo?.[studentId]
       const existingSubstituteInfo = srcAssignment.regularSubstituteInfo?.[studentId]
       const existingManualMark = srcAssignment.manualRegularMark?.[studentId]
-      const studentMakeupInfo = existingMakeupInfo ?? (isRegularSource ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot), date: sourceSlot.split('_')[0] } : undefined)
+      const isStudentRegularHere = srcAssignment.isRegular && findRegularLessonsForSlot(current.regularLessons, sourceSlot).some(r => r.studentIds.includes(studentId))
+      const studentMakeupInfo = existingMakeupInfo ?? (isStudentRegularHere ? { dayOfWeek: getSlotDayOfWeek(sourceSlot), slotNumber: getSlotNumber(sourceSlot), date: sourceSlot.split('_')[0] } : undefined)
 
       // Remove student from source assignment
       const updatedSrcStudentIds = srcAssignment.studentIds.filter((sid) => sid !== studentId)
