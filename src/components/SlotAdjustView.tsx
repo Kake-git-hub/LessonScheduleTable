@@ -18,7 +18,7 @@ type SlotAdjustViewProps = {
     targetIdx?: number,
     targetTeacherId?: string,
   ) => Promise<void>
-  onAddStudent: (slot: string, idx: number, studentId: string) => Promise<void>
+  onAddStudent: (slot: string, idx: number, studentId: string, teacherId?: string) => Promise<void>
   onUndo: () => Promise<void>
   onRedo: () => Promise<void>
   undoCount: number
@@ -280,10 +280,10 @@ export default function SlotAdjustView({
   )
 
   const handleAddStudent = useCallback(
-    async (slot: string, deskIdx: number, studentId: string) => {
+    async (slot: string, deskIdx: number, studentId: string, teacherId?: string) => {
       setStudentPicker(null)
       await runBusy(async () => {
-        await onAddStudent(slot, deskIdx, studentId)
+        await onAddStudent(slot, deskIdx, studentId, teacherId)
       })
     },
     [onAddStudent, runBusy],
@@ -485,9 +485,9 @@ export default function SlotAdjustView({
                         }
                       }
 
-                      // Can open student picker: assignment has teacher, has room, no selection active
-                      const hasTeacherAssigned = !!assignment?.teacherId
-                      const canPickStudent = isLecture && hasTeacherAssigned && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
+                      // Can open student picker: has teacher (assigned or available), has room, no selection active
+                      const hasTeacher = !!assignment?.teacherId || !!unassignedTeacherId
+                      const canPickStudent = isLecture && hasTeacher && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
                       const isPickerOpen = studentPicker?.slot === slotKey && studentPicker?.deskIdx === deskIdx
 
                       const inactiveClass = !isLecture ? ' sa-inactive' : ''
@@ -521,7 +521,7 @@ export default function SlotAdjustView({
                               }
                             }}
                             title={student ? `${student.name} (${student.grade}) ${subject}` : selection && canAcceptHere ? 'ここに移動' : showPicker ? 'クリックで生徒を追加' : ''}
-                            style={{ position: 'relative' }}
+                            style={{ position: 'relative', overflow: isPickerOpen ? 'visible' : undefined }}
                           >
                             {student ? (
                               <div className="sa-student-inner">
@@ -546,7 +546,7 @@ export default function SlotAdjustView({
                                     <div
                                       key={st.id}
                                       className="sa-picker-item"
-                                      onClick={() => void handleAddStudent(slotKey, deskIdx, st.id)}
+                                      onClick={() => void handleAddStudent(slotKey, deskIdx, st.id, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined)}
                                     >
                                       {st.name} <span className="sa-picker-grade">({st.grade})</span>
                                     </div>

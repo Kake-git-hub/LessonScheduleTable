@@ -8495,10 +8495,30 @@ service cloud.firestore {
           onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, targetTeacherId) =>
             moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true, preferTeacherId: targetTeacherId })
           }
-          onAddStudent={(slot, idx, studentId) => {
+          onAddStudent={(slot, idx, studentId, teacherId) => {
             const assign = (data.assignments[slot] ?? [])[idx]
-            const pos = assign ? assign.studentIds.length : 0
-            return setSlotStudent(slot, idx, pos, studentId)
+            if (assign) {
+              const pos = assign.studentIds.length
+              return setSlotStudent(slot, idx, pos, studentId)
+            }
+            // No existing assignment — create via moveStudentToSlot with a dummy source
+            // Use a direct assignment creation instead
+            return updateAssignments((current) => {
+              const slotAssignments = [...(current.assignments[slot] ?? [])]
+              const deskCount = current.settings.deskCount ?? 0
+              if (deskCount > 0 && slotAssignments.length >= deskCount) return current
+              const student = current.students.find(s => s.id === studentId)
+              const teacher = teacherId ? instructors.find(t => t.id === teacherId) : undefined
+              const viable = student && teacher ? teachableBaseSubjects((teacher as Teacher).subjects ?? [], student.grade) : []
+              const subject = viable[0] ?? ''
+              slotAssignments.push({
+                teacherId: teacherId ?? '',
+                studentIds: [studentId],
+                subject,
+                studentSubjects: { [studentId]: subject },
+              })
+              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
+            })
           }}
           onUndo={handleUndo}
           onRedo={handleRedo}
