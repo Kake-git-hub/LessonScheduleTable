@@ -592,6 +592,7 @@ export const buildIncrementalAutoAssignments = async (
 
   const reverseSlots = [...slots].reverse()
   for (const slot of reverseSlots) {
+    if (seededSlotKeys.has(slot)) continue
     const slotAssignments = result[slot]
     if (!slotAssignments || slotAssignments.length === 0) continue
 
@@ -641,6 +642,7 @@ export const buildIncrementalAutoAssignments = async (
 
   // Phase 2: Fill empty student positions in existing assignments (including regular with empty spots)
   for (const slot of slots) {
+    if (seededSlotKeys.has(slot)) continue
     if (!result[slot] || result[slot].length === 0) continue
     const slotAssignments = result[slot]
     for (let idx = 0; idx < slotAssignments.length; idx++) {
@@ -748,6 +750,7 @@ export const buildIncrementalAutoAssignments = async (
 
   let slotCounter = 0
   for (const slot of slots) {
+    if (seededSlotKeys.has(slot)) continue
     // Yield every 5 slots to keep the page responsive
     if (++slotCounter % 5 === 0) {
       await yieldToMain()
@@ -1127,6 +1130,7 @@ export const buildIncrementalAutoAssignments = async (
           let bestCandidate: Phase4Candidate | null = null
 
           for (const slot of slots) {
+            if (seededSlotKeys.has(slot)) continue
             const currentSlotNum = getSlotNumber(slot)
             if (currentSlotNum === 0) continue
             const [currentDate] = slot.split('_')
