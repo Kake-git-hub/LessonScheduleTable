@@ -8496,11 +8496,13 @@ service cloud.firestore {
           onMove={(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, targetTeacherId) =>
             moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true, preferTeacherId: targetTeacherId })
           }
-          onAddStudent={(slot, idx, studentId, teacherId) => {
+          onAddStudent={(slot, idx, studentId, teacherId, subjectOverride) => {
             const assign = (data.assignments[slot] ?? [])[idx]
             if (assign) {
               const pos = assign.studentIds.length
-              return setSlotStudent(slot, idx, pos, studentId)
+              return setSlotStudent(slot, idx, pos, studentId).then(() => {
+                if (subjectOverride) return setSlotSubject(slot, idx, subjectOverride, studentId)
+              })
             }
             // No existing assignment — create new
             return updateAssignments((current) => {
@@ -8510,7 +8512,7 @@ service cloud.firestore {
               const student = current.students.find(s => s.id === studentId)
               const teacher = teacherId ? instructors.find(t => t.id === teacherId) : undefined
               const viable = student && teacher ? teachableBaseSubjects((teacher as Teacher).subjects ?? [], student.grade) : []
-              const subject = viable[0] ?? ''
+              const subject = subjectOverride ?? viable[0] ?? ''
               slotAssignments.push({
                 teacherId: teacherId ?? '',
                 studentIds: [studentId],

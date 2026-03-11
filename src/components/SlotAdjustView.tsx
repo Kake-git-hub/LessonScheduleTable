@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import type { Assignment, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, getStudentSubject } from '../utils/assignments'
 import { hasAvailability, isStudentAvailable } from '../utils/constraints'
+import { teachableBaseSubjects } from '../utils/subjects'
 
 // ---- types ----
 
@@ -18,7 +19,7 @@ type SlotAdjustViewProps = {
     targetIdx?: number,
     targetTeacherId?: string,
   ) => Promise<void>
-  onAddStudent: (slot: string, idx: number, studentId: string, teacherId?: string) => Promise<void>
+  onAddStudent: (slot: string, idx: number, studentId: string, teacherId?: string, subject?: string) => Promise<void>
   onUndo: () => Promise<void>
   onRedo: () => Promise<void>
   undoCount: number
@@ -37,6 +38,8 @@ type SelectionInfo = {
 type StudentPickerInfo = {
   slot: string
   deskIdx: number
+  /** When set, picker shows subject selection for this student */
+  selectedStudentId?: string
 }
 
 // ---- helpers ----
@@ -282,10 +285,10 @@ export default function SlotAdjustView({
   )
 
   const handleAddStudent = useCallback(
-    async (slot: string, deskIdx: number, studentId: string, teacherId?: string) => {
+    async (slot: string, deskIdx: number, studentId: string, teacherId?: string, subject?: string) => {
       setStudentPicker(null)
       await runBusy(async () => {
-        await onAddStudent(slot, deskIdx, studentId, teacherId)
+        await onAddStudent(slot, deskIdx, studentId, teacherId, subject)
       })
     },
     [onAddStudent, runBusy],
@@ -504,6 +507,10 @@ export default function SlotAdjustView({
                       const hasTeacher = !!assignment?.teacherId || !!unassignedTeacherId
                       const canPickStudent = isLecture && hasTeacher && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
                       const isPickerOpen = studentPicker?.slot === slotKey && studentPicker?.deskIdx === deskIdx
+                      const effectiveTeacherId = assignment?.teacherId || unassignedTeacherId
+                      const effectiveTeacher = effectiveTeacherId ? instructors.find(t => t.id === effectiveTeacherId) : undefined
+                      // Track whether the first student cell has rendered the picker already
+                      let pickerRendered = false
 
                       const inactiveClass = !isLecture ? ' sa-inactive' : ''
                       const availClass = selection && isAvailDest && !isSourceSlot ? ' sa-avail' : ''
@@ -520,6 +527,17 @@ export default function SlotAdjustView({
                         const isEmpty = !sId
                         const showDest = selection && canAcceptHere && !isS1Source && !isS2Source && (isSecondSlot ? studentIds.length < 2 : studentIds.length <= 1)
                         const showPicker = isEmpty && canPickStudent
+                        // Only render the picker dropdown once per desk (on the first empty cell)
+                        const shouldRenderPicker = isPickerOpen && showPicker && !pickerRendered
+                        if (shouldRenderPicker) pickerRendered = true
+
+                        // Subject selection sub-picker
+                        const pickerSelectedStudent = studentPicker?.selectedStudentId
+                          ? data.students.find(s => s.id === studentPicker.selectedStudentId)
+                          : undefined
+                        const pickerSubjects = pickerSelectedStudent && effectiveTeacher
+                          ? teachableBaseSubjects(effectiveTeacher.subjects ?? [], pickerSelectedStudent.grade)
+                          : []
 
                         return (
                           <td
@@ -536,7 +554,7 @@ export default function SlotAdjustView({
                               }
                             }}
                             title={student ? `${student.name} (${student.grade}) ${subject}` : selection && canAcceptHere ? 'ここに移動' : showPicker ? 'クリックで生徒を追加' : ''}
-                            style={{ position: 'relative', overflow: isPickerOpen ? 'visible' : undefined }}
+                            style={{ position: 'relative', overflow: shouldRenderPicker ? 'visible' : undefined }}
                           >
                             {student ? (
                               <div className="sa-student-inner">
@@ -552,22 +570,62 @@ export default function SlotAdjustView({
                             ) : showPicker ? (
                               <span className="sa-add-hint">＋</span>
                             ) : null}
-                            {/* Student picker dropdown */}
-                            {isPickerOpen && (
+                            {/* Student picker dropdown — only rendered once per desk */}
+                            {shouldRenderPicker && (
                               <div className="sa-picker" ref={pickerRef} onClick={(e) => e.stopPropagation()}>
-                                <div className="sa-picker-title">生徒を追加</div>
-                                <div className="sa-picker-list">
-                                  {pickerStudents.map((st) => (
-                                    <div
-                                      key={st.id}
-                                      className="sa-picker-item"
-                                      onClick={() => void handleAddStudent(slotKey, deskIdx, st.id, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined)}
-                                    >
-                                      {st.name} <span className="sa-picker-grade">({st.grade})</span>
+                                {pickerSelectedStudent ? (
+                                  <>
+                                    <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                      <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx })}>◀</button>
+                                      {pickerSelectedStudent.name} の科目
                                     </div>
-                                  ))}
-                                  {pickerStudents.length === 0 && <div className="sa-picker-empty">追加可能な生徒がいません</div>}
-                                </div>
+                                    <div className="sa-picker-list">
+                                      {pickerSubjects.map(subj => (
+                                        <div
+                                          key={subj}
+                                          className="sa-picker-item"
+                                          onClick={() => void handleAddStudent(slotKey, deskIdx, pickerSelectedStudent.id, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, subj)}
+                                        >
+                                          {subj}
+                                        </div>
+                                      ))}
+                                      {pickerSubjects.length === 0 && <div className="sa-picker-empty">担当可能な科目がありません</div>}
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="sa-picker-title">生徒を追加</div>
+                                    <div className="sa-picker-list">
+                                      {pickerStudents.map((st) => {
+                                        const slotDow = getSlotDayOfWeek(slotKey)
+                                        const slotNum = getSlotNumber(slotKey)
+                                        const hasRegular = data.regularLessons.some(r => r.studentIds.includes(st.id) && r.dayOfWeek === slotDow && r.slotNumber === slotNum)
+                                        const hasRegularAny = data.regularLessons.some(r => r.studentIds.includes(st.id))
+                                        return (
+                                          <div
+                                            key={st.id}
+                                            className="sa-picker-item"
+                                            onClick={() => {
+                                              const subjects = effectiveTeacher ? teachableBaseSubjects(effectiveTeacher.subjects ?? [], st.grade) : []
+                                              if (subjects.length <= 1) {
+                                                void handleAddStudent(slotKey, deskIdx, st.id, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, subjects[0])
+                                              } else {
+                                                setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id })
+                                              }
+                                            }}
+                                          >
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                              {hasRegular && <span className="sa-picker-badge sa-picker-badge-slot">通常</span>}
+                                              {!hasRegular && hasRegularAny && <span className="sa-picker-badge sa-picker-badge-other">通常有</span>}
+                                              {st.name} <span className="sa-picker-grade">({st.grade})</span>
+                                            </span>
+                                          </div>
+                                        )
+                                      })}
+                                      {pickerStudents.length === 0 && <div className="sa-picker-empty">追加可能な生徒がいません</div>}
+                                    </div>
+                                  </>
+                                )}
                               </div>
                             )}
                           </td>
