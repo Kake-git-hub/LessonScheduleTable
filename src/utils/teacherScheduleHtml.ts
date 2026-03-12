@@ -1,6 +1,8 @@
 import type { Assignment, RegularLesson, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
-import { constraintFor, getStudentRegularLessonStatus, isStudentAvailable } from './constraints'
+import { constraintFor, getStudentRegularLessonStatus } from './constraints'
+import { evaluateConstraintCards } from './slotConstraints'
+import { canTeachSubject } from './subjects'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -214,21 +216,73 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
       }
     }
 
-    // Build constraint violation set for this teacher
-    const violationSlots = new Set<string>()
+    // Build constraint violation map for this teacher (slot key → violation messages)
+    const violationMap: Record<string, string[]> = {}
     for (const date of dates) {
       for (let s = 1; s <= slotsPerDay; s++) {
         const key = `${date}_${s}`
         const entry = assignmentMap[key]
         if (!entry || entry.isGroupLesson) continue
-        // Teacher unavailable but assigned
-        if (unavailableSet.has(key)) { violationSlots.add(key); continue }
-        // Check student availability and incompatible pairs
+        const msgs: string[] = []
+        const slotAssignments = data.assignments[key] ?? []
+        const assignmentIdx = slotAssignments.findIndex(a => a.teacherId === teacher.id && !a.isGroupLesson)
+        const assignment = assignmentIdx >= 0 ? slotAssignments[assignmentIdx] : undefined
+        if (!assignment) continue
+
         for (const st of entry.students) {
+          // Skip 振替 and 講師代行 students for constraint card evaluation
+          if (st.isMakeup || st.isSubstitute) continue
           const student = data.students.find(x => x.id === st.id)
-          if (student && !isStudentAvailable(student, key) && !holidaySet.has(date)) { violationSlots.add(key); break }
-          if (constraintFor(data.constraints, teacher.id, st.id) === 'incompatible') { violationSlots.add(key); break }
+          if (!student) continue
+
+          // Evaluate constraint cards (same approach as getManualConstraintWarnings)
+          const reducedSlotAssignments = slotAssignments.flatMap((item, index) => {
+            if (index !== assignmentIdx) return [item]
+            const remainingIds = item.studentIds.filter(id => id !== st.id)
+            if (remainingIds.length === 0) return []
+            const nextStudentSubjects = Object.entries(item.studentSubjects ?? {}).reduce<Record<string, string>>((acc, [id, subject]) => {
+              if (id !== st.id) acc[id] = subject
+              return acc
+            }, {})
+            const nextMakeupInfo = Object.entries(item.regularMakeupInfo ?? {}).reduce<Record<string, { dayOfWeek: number; slotNumber: number; date?: string }>>((acc, [id, info]) => {
+              if (id !== st.id) acc[id] = info
+              return acc
+            }, {})
+            return [{ ...item, studentIds: remainingIds, ...(Object.keys(nextStudentSubjects).length > 0 ? { studentSubjects: nextStudentSubjects } : {}), ...(Object.keys(nextMakeupInfo).length > 0 ? { regularMakeupInfo: nextMakeupInfo } : {}) }]
+          })
+
+          const evalResult = evaluateConstraintCards(
+            student, key,
+            { ...data.assignments, [key]: reducedSlotAssignments },
+            slotsPerDay, data.regularLessons, data.groupLessons ?? [], assignment.teacherId,
+          )
+          if (evalResult.blocked) {
+            msgs.push(`${st.name}: ${evalResult.blockReason ?? '制約カード違反'}`)
+          }
+
+          // Incompatible teacher-student pair
+          if (assignment.teacherId && constraintFor(data.constraints, assignment.teacherId, st.id) === 'incompatible') {
+            msgs.push(`${st.name}: 講師との相性NG`)
+          }
+
+          // Subject mismatch
+          const teacherObj = data.teachers.find(t => t.id === assignment.teacherId)
+          if (teacherObj && st.subject) {
+            if (!canTeachSubject(teacherObj.subjects ?? [], student.grade, st.subject)) {
+              msgs.push(`${st.name}: ${teacherObj.name}は${st.subject}担当外`)
+            }
+          }
         }
+
+        // Incompatible student-student pair (2 students)
+        if (entry.students.length === 2) {
+          const [s1, s2] = entry.students
+          if (constraintFor(data.constraints, s1.id, s2.id) === 'incompatible') {
+            msgs.push(`${s1.name}と${s2.name}: 生徒間相性NG`)
+          }
+        }
+
+        if (msgs.length > 0) violationMap[key] = msgs
       }
     }
 
@@ -242,7 +296,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
         const entry = assignmentMap[key]
         const isUnavailable = unavailableSet.has(key)
         const isHoliday = holidaySet.has(date)
-        const hasViolation = violationSlots.has(key)
+        const hasViolation = key in violationMap
         if (entry) {
           const studentIds = entry.students.map(st => st.id).join(',')
           if (entry.isGroupLesson) {
@@ -253,7 +307,8 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
               const subTag = st.isSubstitute ? '<span class="substitute-tag">\u4EE3\u884C</span>' : ''
               return `<span class="student-line">${escapeHtml(st.name)}<br>${escapeHtml(st.grade)}${escapeHtml(st.subject)}${tag}${subTag}</span>`
             }).join('<hr class="cell-divider">')
-            slotRows += `<td class="cell assigned-cell${hasViolation ? ' violation' : ''}" data-slot="${key}" data-student-ids="${studentIds}">${lines}</td>`
+            const titleAttr = hasViolation ? ` title="${escapeHtml(violationMap[key].join('\n'))}"` : ''
+            slotRows += `<td class="cell assigned-cell${hasViolation ? ' violation' : ''}"${titleAttr} data-slot="${key}" data-student-ids="${studentIds}">${lines}</td>`
           }
         } else if (isUnavailable || isHoliday) {
           slotRows += `<td class="cell unavailable" data-slot="${key}"></td>`
