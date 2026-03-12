@@ -3664,7 +3664,6 @@ const AdminPage = () => {
       getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id,
       sessionId,
       classroomId,
-      baseUrl: window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, ''),
       sortedStudents: sessionStudentRows,
       targetWindow: win,
     })
@@ -3681,7 +3680,6 @@ const AdminPage = () => {
       getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
       classroomId,
       sessionId,
-      baseUrl: window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, ''),
       targetWindow: win,
     })
     applyScheduleHighlights(win, slotAdjustSelectionRef.current)
@@ -9101,14 +9099,14 @@ service cloud.firestore {
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => { studentScheduleWindowRef.current = openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId, classroomId, baseUrl: window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, ''), sortedStudents: sessionStudentRows }) }}
+                onClick={() => { studentScheduleWindowRef.current = openStudentScheduleHtml({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sessionId, classroomId, sortedStudents: sessionStudentRows }) }}
               >
                 📄 生徒日程表
               </button>
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => { teacherScheduleWindowRef.current = openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '', classroomId, sessionId, baseUrl: window.location.origin + (import.meta.env.BASE_URL ?? '/').replace(/\/$/, '') }) }}
+                onClick={() => { teacherScheduleWindowRef.current = openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '', classroomId, sessionId }) }}
               >
                 📄 講師日程表
               </button>
