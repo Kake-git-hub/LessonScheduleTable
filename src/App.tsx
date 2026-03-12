@@ -3256,7 +3256,11 @@ const AdminPage = () => {
   // Track slots manually modified since the last auto-assign to decide whether rerunning is meaningful.
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // Track slots that should stay protected from regular auto-fill even after auto-assign reruns.
-  const [protectedManualSlots, setProtectedManualSlots] = useState<Set<string>>(new Set())
+  // Persisted in SessionData.protectedManualSlots; ref is the synchronous source of truth.
+  const protectedManualSlotsRef = useRef<Set<string>>(new Set())
+  const protectedManualSlots = useMemo(() => new Set(data?.protectedManualSlots ?? []), [data?.protectedManualSlots])
+  // Seed the ref from Firebase on initial session load
+  const protectedSlotsSessionRef = useRef('')
   // --- Slot constraint editing ---
   const [constraintEditStudentId, setConstraintEditStudentId] = useState<string | null>(null)
   const prevSnapshotRef = useRef<{ availability: Record<string, string[]>; studentSubmittedAt: Record<string, number> } | null>(null)
@@ -3266,6 +3270,14 @@ const AdminPage = () => {
   useEffect(() => {
     dataRef.current = data
   }, [data])
+
+  // Seed protectedManualSlots ref from Firebase on initial session load
+  useEffect(() => {
+    if (!data) return
+    if (protectedSlotsSessionRef.current === sessionId) return
+    protectedSlotsSessionRef.current = sessionId
+    protectedManualSlotsRef.current = new Set(data.protectedManualSlots ?? [])
+  }, [data, sessionId])
 
   useEffect(() => {
     if (!data || masterSyncDoneRef.current) return
@@ -3311,11 +3323,7 @@ const AdminPage = () => {
       for (const slot of slots) next.add(slot)
       return next
     })
-    setProtectedManualSlots((prev) => {
-      const next = new Set(prev)
-      for (const slot of slots) next.add(slot)
-      return next
-    })
+    for (const slot of slots) protectedManualSlotsRef.current.add(slot)
   }, [])
 
   const buildSessionDataFromMaster = useCallback((current: SessionData, master: MasterData): SessionData => {
@@ -3675,6 +3683,7 @@ const AdminPage = () => {
     const now = Date.now()
     const stampedNext: SessionData = {
       ...next,
+      protectedManualSlots: [...protectedManualSlotsRef.current],
       settings: {
         ...next.settings,
         createdAt: next.settings.createdAt ?? now,
@@ -4075,7 +4084,7 @@ const AdminPage = () => {
     if (changed) {
       void persist({ ...data, assignments: nextAssignments })
     }
-  }, [authorized, data, protectedManualSlots, slotKeys]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authorized, data, slotKeys]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Actual result recording helpers ---
   let editingResultUid = 0
@@ -7504,7 +7513,7 @@ const AdminPage = () => {
   const resetAssignments = async (): Promise<void> => {
     if (!window.confirm('コマ割りをリセットしますか？\n（手動割当・自動提案結果・実績記録を全てクリアします）')) return
     setManuallyModifiedSlots(new Set())
-    setProtectedManualSlots(new Set())
+    protectedManualSlotsRef.current = new Set()
     await updateAssignments((current) => buildResetSchedulingState(current))
   }
 
@@ -7753,7 +7762,7 @@ const AdminPage = () => {
     if (!confirmed) return
 
     setManuallyModifiedSlots(new Set())
-    setProtectedManualSlots(new Set())
+    protectedManualSlotsRef.current = new Set()
     closeStatusModal()
     setLatestStatusReport(null)
     await updateAssignments((current) => buildResetSchedulingState(current, nextSettings))

@@ -201,6 +201,8 @@ export type SessionData = {
   pdfComparisonBaseline?: PdfComparisonBaseline
   /** Global hourly rates per tier (A/B/C/D) for salary calculation. */
   tierRates?: { A: number; B: number; C: number; D: number }
+  /** Slots manually modified by the user — protected from regular-lesson auto-fill. */
+  protectedManualSlots?: string[]
 }
 
 export type MasterData = {
