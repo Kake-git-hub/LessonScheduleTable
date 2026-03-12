@@ -26,6 +26,7 @@ type SlotAdjustViewProps = {
   undoCount: number
   redoCount: number
   onRemoveStudent: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
+  onPackSort: (dates: string[]) => Promise<void>
   onClose: () => void
   onSelectionChange?: (sel: { slot: string; studentId: string } | null) => void
 }
@@ -207,6 +208,7 @@ export default function SlotAdjustView({
   undoCount,
   redoCount,
   onRemoveStudent,
+  onPackSort,
   onClose,
   onSelectionChange,
 }: SlotAdjustViewProps) {
@@ -382,6 +384,15 @@ export default function SlotAdjustView({
           })()}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            className="btn secondary"
+            type="button"
+            disabled={busy}
+            onClick={() => void runBusy(() => onPackSort(currentWeek))}
+            title="今表示中の週だけ、同じコマ内で2人生徒の行を上に詰めます"
+          >
+            詰めて並び替え
+          </button>
           <button
             className="btn secondary"
             type="button"

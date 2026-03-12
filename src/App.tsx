@@ -7965,6 +7965,42 @@ const AdminPage = () => {
     })
   }
 
+  const createEmptyAssignment = (): Assignment => ({ teacherId: '', studentIds: [], subject: '' })
+
+  const packSortAssignments = async (dates: string[]): Promise<void> => {
+    if (dates.length === 0) return
+    const dateSet = new Set(dates)
+    await updateAssignments((current) => {
+      let changed = false
+      const nextAssignments = { ...current.assignments }
+
+      for (const [slot, assignments] of Object.entries(current.assignments)) {
+        const [date] = slot.split('_')
+        if (!dateSet.has(date)) continue
+
+        const packed = assignments
+          .filter((assignment) => assignment.studentIds.length > 0 || !!assignment.teacherId || !!assignment.isGroupLesson)
+          .map((assignment, index) => ({ assignment, index }))
+          .sort((left, right) => {
+            const countDiff = right.assignment.studentIds.length - left.assignment.studentIds.length
+            if (countDiff !== 0) return countDiff
+            return left.index - right.index
+          })
+          .map(({ assignment }) => assignment)
+
+        const sameLength = packed.length === assignments.length
+        const sameOrder = sameLength && packed.every((assignment, index) => assignment === assignments[index])
+        if (sameOrder) continue
+
+        changed = true
+        if (packed.length === 0) delete nextAssignments[slot]
+        else nextAssignments[slot] = packed
+      }
+
+      return changed ? { ...current, assignments: nextAssignments } : current
+    })
+  }
+
   const addSlotAssignment = async (slot: string): Promise<void> => {
     await updateAssignments((current) => {
       const slotAssignments = [...(current.assignments[slot] ?? [])]
@@ -7973,7 +8009,7 @@ const AdminPage = () => {
         alert(`机の数(${deskCount})の上限に達しています。`)
         return current
       }
-      slotAssignments.push({ teacherId: '', studentIds: [], subject: '' })
+      slotAssignments.push(createEmptyAssignment())
       return {
         ...current,
         assignments: { ...current.assignments, [slot]: slotAssignments },
@@ -8167,14 +8203,10 @@ const AdminPage = () => {
       }
 
       // Move
-      srcAssignments.splice(sourceIdx, 1)
+      srcAssignments[sourceIdx] = createEmptyAssignment()
       targetAssignments.push(movedCopy)
       const nextAssignments = { ...current.assignments }
-      if (srcAssignments.length === 0) {
-        delete nextAssignments[sourceSlot]
-      } else {
-        nextAssignments[sourceSlot] = srcAssignments
-      }
+      nextAssignments[sourceSlot] = srcAssignments
       nextAssignments[targetSlot] = targetAssignments
 
       // Highlight moved pair as UPDATE
@@ -8343,7 +8375,7 @@ const AdminPage = () => {
 
       // Update source: if no students left, remove the assignment entirely
       if (updatedSrcStudentIds.length === 0) {
-        srcAssignments.splice(sourceIdx, 1)
+        srcAssignments[sourceIdx] = createEmptyAssignment()
       } else {
         // Remove moved student's regularMakeupInfo but keep isRegular for remaining students
         const updatedSrcMakeupInfo = { ...(srcAssignment.regularMakeupInfo ?? {}) }
@@ -8373,7 +8405,7 @@ const AdminPage = () => {
         const mergedAssignments = [...targetAssignments]
         // Apply source changes (student removed) to the merged array
         if (updatedSrcStudentIds.length === 0) {
-          mergedAssignments.splice(sourceIdx, 1)
+          mergedAssignments[sourceIdx] = createEmptyAssignment()
         } else {
           const updatedSrcMakeupInfo2 = { ...(srcAssignment.regularMakeupInfo ?? {}) }
           const updatedSrcSubstituteInfo2 = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
@@ -8392,11 +8424,7 @@ const AdminPage = () => {
         }
         nextAssignments[sourceSlot] = mergedAssignments
       } else {
-        if (srcAssignments.length === 0) {
-          delete nextAssignments[sourceSlot]
-        } else {
-          nextAssignments[sourceSlot] = srcAssignments
-        }
+        nextAssignments[sourceSlot] = srcAssignments
         nextAssignments[targetSlot] = targetAssignments
       }
 
@@ -8564,7 +8592,7 @@ service cloud.firestore {
               if (!assignment) return current
               const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
               if (remainingIds.length === 0) {
-                slotAssignments.splice(assignmentIdx, 1)
+                slotAssignments[assignmentIdx] = createEmptyAssignment()
               } else {
                 const nextSubjects = { ...assignment.studentSubjects }
                 delete nextSubjects[studentId]
@@ -8586,11 +8614,12 @@ service cloud.firestore {
               return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
             })
           }}
+          onPackSort={packSortAssignments}
           onUndo={handleUndo}
           onRedo={handleRedo}
           undoCount={undoCount}
           redoCount={redoCount}
-          onClose={() => setShowSlotAdjust(false)}
+          onClose={() => { slotAdjustSelectionRef.current = null; setShowSlotAdjust(false) }}
           onCreateStudent={async (name, grade) => {
             const id = createId()
             const student: Student = {
