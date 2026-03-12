@@ -726,7 +726,6 @@ export default function SlotAdjustView({
                                         const slotDow = getSlotDayOfWeek(slotKey)
                                         const slotNum = getSlotNumber(slotKey)
                                         const hasRegular = data.regularLessons.some(r => r.studentIds.includes(st.id) && r.dayOfWeek === slotDow && r.slotNumber === slotNum)
-                                        const hasRegularAny = data.regularLessons.some(r => r.studentIds.includes(st.id))
                                         return (
                                           <div
                                             key={st.id}
@@ -742,7 +741,6 @@ export default function SlotAdjustView({
                                           >
                                             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                                               {hasRegular && <span className="sa-picker-badge sa-picker-badge-slot">通常</span>}
-                                              {!hasRegular && hasRegularAny && <span className="sa-picker-badge sa-picker-badge-other">通常有</span>}
                                               {st.name} <span className="sa-picker-grade">({st.grade})</span>
                                             </span>
                                           </div>

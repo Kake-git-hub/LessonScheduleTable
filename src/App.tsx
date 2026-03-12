@@ -3984,8 +3984,11 @@ const AdminPage = () => {
       const existing = nextAssignments[slot]
       const slotRegularLessons = findRegularLessonsForSlot(data.regularLessons, slot)
 
+      // Skip manually modified slots — check ref for immediate synchronous protection
+      const isProtected = protectedManualSlots.has(slot) || protectedManualSlotsRef.current.has(slot)
+
       if (slotRegularLessons.length === 0) {
-        if (existing && existing.length > 0 && existing.every((a) => a.isRegular && !a.isGroupLesson)) {
+        if (!isProtected && existing && existing.length > 0 && existing.every((a) => a.isRegular && !a.isGroupLesson)) {
           delete nextAssignments[slot]
           changed = true
         }
@@ -3993,7 +3996,7 @@ const AdminPage = () => {
       }
 
       // Don't overwrite manual (non-regular) assignments or manually modified slots
-      if (protectedManualSlots.has(slot)) continue
+      if (isProtected) continue
       if (existing && existing.some((a) => hasMeaningfulManualAssignment(a))) continue
       // Don't overwrite slots where a regular lesson was manually adjusted.
       // regularMakeupInfo means a regular student was moved out.
