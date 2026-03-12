@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from 'react'
 import type { Assignment, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, getStudentSubject } from '../utils/assignments'
 import { hasAvailability, isStudentAvailable } from '../utils/constraints'
-import { teachableBaseSubjects } from '../utils/subjects'
+import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, gradeToLevel, teachableBaseSubjects } from '../utils/subjects'
 
 // ---- types ----
 
@@ -558,12 +558,9 @@ export default function SlotAdjustView({
                         }
                       }
 
-                      // Can open student picker: has teacher (assigned or available), has room, no selection active
-                      const hasTeacher = !!assignment?.teacherId || !!unassignedTeacherId
-                      const canPickStudent = isLecture && hasTeacher && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
+                      // Can open student picker: lecture day, has room, no selection active
+                      const canPickStudent = isLecture && studentIds.length < 2 && !selection && !assignment?.isGroupLesson
                       const isPickerOpen = studentPicker?.slot === slotKey && studentPicker?.deskIdx === deskIdx
-                      const effectiveTeacherId = assignment?.teacherId || unassignedTeacherId
-                      const effectiveTeacher = effectiveTeacherId ? instructors.find(t => t.id === effectiveTeacherId) : undefined
                       // Track whether the first student cell has rendered the picker already
                       let pickerRendered = false
 
@@ -591,8 +588,8 @@ export default function SlotAdjustView({
                         const pickerSelectedStudent = studentPicker?.selectedStudentId
                           ? data.students.find(s => s.id === studentPicker.selectedStudentId)
                           : undefined
-                        const pickerSubjects = pickerSelectedStudent && effectiveTeacher
-                          ? teachableBaseSubjects(effectiveTeacher.subjects ?? [], pickerSelectedStudent.grade)
+                        const pickerSubjects = pickerSelectedStudent
+                          ? [...BASE_SUBJECTS, ...(gradeToLevel(pickerSelectedStudent.grade) === '小' ? ELEMENTARY_COMBO_SUBJECTS : [])]
                           : []
 
                         return (
@@ -731,12 +728,8 @@ export default function SlotAdjustView({
                                             key={st.id}
                                             className="sa-picker-item"
                                             onClick={() => {
-                                              const subjects = effectiveTeacher ? teachableBaseSubjects(effectiveTeacher.subjects ?? [], st.grade) : []
-                                              if (subjects.length <= 1) {
-                                                setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id, selectedSubject: subjects[0] ?? '' })
-                                              } else {
-                                                setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id })
-                                              }
+                                              // Always show subject picker (all subjects)
+                                              setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id })
                                             }}
                                           >
                                             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
