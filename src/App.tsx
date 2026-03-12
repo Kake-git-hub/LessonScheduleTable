@@ -1412,7 +1412,7 @@ const useSessionData = (classroomId: string, sessionId: string) => {
           if (!current) return value
           const currentUpdatedAt = current.settings.updatedAt ?? current.settings.createdAt ?? 0
           const nextUpdatedAt = value.settings.updatedAt ?? value.settings.createdAt ?? 0
-          return nextUpdatedAt >= currentUpdatedAt ? value : current
+          return nextUpdatedAt > currentUpdatedAt ? value : current
         })
         setLoading(false)
       },
@@ -8558,25 +8558,61 @@ service cloud.firestore {
           }
           onAddStudent={(slot, idx, studentId, teacherId, subjectOverride, lessonType) => {
             markSlotsManual([slot])
-            const assign = (data.assignments[slot] ?? [])[idx]
-            if (assign) {
-              const pos = assign.studentIds.length
-              return setSlotStudent(slot, idx, pos, studentId).then(async () => {
-                if (subjectOverride) await setSlotSubject(slot, idx, subjectOverride, studentId)
-                if (lessonType) {
-                  await updateAssignments((current) => {
-                    const slotAssigns = [...(current.assignments[slot] ?? [])]
-                    const a = slotAssigns[idx]
-                    if (!a) return current
-                    slotAssigns[idx] = { ...a, manualRegularMark: { ...(a.manualRegularMark ?? {}), [studentId]: lessonType } }
-                    return { ...current, assignments: { ...current.assignments, [slot]: slotAssigns } }
-                  })
-                }
-              })
-            }
-            // No existing assignment — create new
             return updateAssignments((current) => {
               const slotAssignments = [...(current.assignments[slot] ?? [])]
+              const existingAssign = slotAssignments[idx]
+              if (existingAssign) {
+                // --- Existing assignment: add student (single atomic update) ---
+                const oldSig = assignmentSignature(existingAssign)
+                const pos = existingAssign.studentIds.length
+                const prevIds = [...existingAssign.studentIds]
+                prevIds[pos] = studentId
+                const newStudentIds = prevIds.filter(Boolean)
+
+                const teacher = current.teachers.find(t => t.id === existingAssign.teacherId)
+                const prevStudentSubjects = existingAssign.studentSubjects ?? {}
+                const newStudentSubjects: Record<string, string> = {}
+                for (const sid of newStudentIds) {
+                  if (sid === studentId && !prevStudentSubjects[sid]) {
+                    const st = current.students.find(s => s.id === sid)
+                    const viable = st ? teachableBaseSubjects(teacher?.subjects ?? [], st.grade) : []
+                    newStudentSubjects[sid] = viable[0] ?? existingAssign.subject
+                  } else {
+                    const existingSubj = prevStudentSubjects[sid] ?? existingAssign.subject
+                    const st = current.students.find(s => s.id === sid)
+                    const ok = st ? canTeachSubject(teacher?.subjects ?? [], st.grade, existingSubj) : false
+                    if (ok) {
+                      newStudentSubjects[sid] = existingSubj
+                    } else {
+                      const viable = st ? teachableBaseSubjects(teacher?.subjects ?? [], st.grade) : []
+                      newStudentSubjects[sid] = viable[0] ?? existingSubj
+                    }
+                  }
+                }
+                // Apply subject override
+                if (subjectOverride) {
+                  newStudentSubjects[studentId] = subjectOverride
+                }
+                const primarySubject = newStudentIds.length > 0
+                  ? (newStudentSubjects[newStudentIds[0]] ?? existingAssign.subject)
+                  : existingAssign.subject
+
+                slotAssignments[idx] = {
+                  ...existingAssign,
+                  studentIds: newStudentIds,
+                  subject: primarySubject,
+                  studentSubjects: newStudentIds.length > 0 ? newStudentSubjects : {},
+                  ...(lessonType ? { manualRegularMark: { ...(existingAssign.manualRegularMark ?? {}), [studentId]: lessonType } } : {}),
+                }
+                const newSig = assignmentSignature(slotAssignments[idx])
+                const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
+                return {
+                  ...current,
+                  assignments: { ...current.assignments, [slot]: slotAssignments },
+                  autoAssignHighlights: nextHL,
+                }
+              }
+              // --- No existing assignment — create new ---
               const deskCount = current.settings.deskCount ?? 0
               if (deskCount > 0 && slotAssignments.length >= deskCount) return current
               const student = current.students.find(s => s.id === studentId)
