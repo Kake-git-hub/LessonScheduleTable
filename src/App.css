@@ -1606,6 +1606,30 @@ tr.sa-slot-first td {
   font-weight: 600;
   border-bottom: 1px solid #e2e8f0;
 }
+.sa-ctx-menu {
+  z-index: 200;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  min-width: 100px;
+  overflow: hidden;
+}
+.sa-ctx-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sa-ctx-item:hover {
+  background: #eff6ff;
+}
+.sa-ctx-danger {
+  color: #dc2626;
+}
+.sa-ctx-danger:hover {
+  background: #fef2f2;
+}
 .range-cal-day {
   font-size: 13px;
   padding: 5px 0;

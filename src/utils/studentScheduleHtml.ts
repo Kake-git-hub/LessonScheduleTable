@@ -476,8 +476,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
         const expected = expectedRegularCounts[sub]
         const expectedLabel = expected != null ? `(${expected})` : ''
         const mismatch = expected != null && actual !== expected
-        const cls = mismatch ? ' class="count-mismatch"' : ''
-        regularTableHtml += `<tr><td class="count-label"${cls}>${escapeHtml(sub)}</td><td class="count-val"${cls}>${actual}${expectedLabel}</td></tr>`
+        const cls = mismatch ? ' count-mismatch' : ''
+        regularTableHtml += `<tr><td class="count-label${cls}">${escapeHtml(sub)}</td><td class="count-val${cls}">${actual}${expectedLabel}</td></tr>`
       }
     } else {
       regularTableHtml += '<tr><td class="count-label">&nbsp;</td><td class="count-val"></td></tr>'
@@ -489,22 +489,26 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     let hasLectureRows = false
     let lectureTotalDesired = 0
     for (const sub of lectureSubjects) {
-      if (lectureCounts[sub]) {
-        const desired = student.subjectSlots[sub]
+      const actual = lectureCounts[sub] ?? 0
+      const desired = student.subjectSlots[sub]
+      const isGroup = !!groupCounts[sub]
+      if (actual > 0 || (desired != null && desired > 0 && !isGroup)) {
         const desiredLabel = desired != null ? `(${desired})` : ''
         if (desired != null) lectureTotalDesired += desired
-        const mismatch = desired != null && lectureCounts[sub] !== desired
-        const cls = mismatch ? ' class="count-mismatch"' : ''
-        lectureTableHtml += `<tr><td class="count-label"${cls}>${escapeHtml(sub)}</td><td class="count-val"${cls}>${lectureCounts[sub]}${desiredLabel}</td></tr>`
+        const mismatch = desired != null && actual !== desired
+        const cls = mismatch ? ' count-mismatch' : ''
+        lectureTableHtml += `<tr><td class="count-label${cls}">${escapeHtml(sub)}</td><td class="count-val${cls}">${actual}${desiredLabel}</td></tr>`
         hasLectureRows = true
       }
     }
-    if (individualTotal > 0) {
+    {
       const totalDesiredLabel = lectureTotalDesired > 0 ? `(${lectureTotalDesired})` : ''
       const totalMismatch = lectureTotalDesired > 0 && individualTotal !== lectureTotalDesired
-      const totalCls = totalMismatch ? ' class="count-mismatch"' : ''
-      lectureTableHtml += `<tr><td class="count-label"${totalCls}>個別計</td><td class="count-val"${totalCls}>${individualTotal}${totalDesiredLabel}</td></tr>`
-      hasLectureRows = true
+      const totalCls = totalMismatch ? ' count-mismatch' : ''
+      if (individualTotal > 0 || lectureTotalDesired > 0) {
+        lectureTableHtml += `<tr><td class="count-label${totalCls}">個別計</td><td class="count-val${totalCls}">${individualTotal}${totalDesiredLabel}</td></tr>`
+        hasLectureRows = true
+      }
     }
     for (const sub of Object.keys(groupCounts).sort()) {
       lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}<br><span class="small">集団</span></td><td class="count-val">${groupCounts[sub]}</td></tr>`
@@ -882,7 +886,7 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
     const { regularCounts, lectureCounts, groupCounts, individualTotal } = countLessons(assignmentMap)
     const expectedRegularCounts = countExpectedRegularLessons(student, data.regularLessons, dates, data.settings.holidays)
     const regularSubjects = [...new Set([...Object.keys(regularCounts), ...Object.keys(expectedRegularCounts)])].sort()
-    const lectureSubjects = [...new Set([...Object.keys(lectureCounts), ...Object.keys(groupCounts)])].sort()
+    const lectureSubjects = [...new Set([...Object.keys(lectureCounts), ...Object.keys(groupCounts), ...Object.keys(student.subjectSlots)])].sort()
     const unavailableSet = buildUnavailableSet(student, dates, slotsPerDay, data.settings.holidays)
     const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
 
@@ -993,14 +997,16 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
     const lectureRows: { label: string; val: string }[] = []
     let lectureTotalDesiredXls = 0
     for (const sub of lectureSubjects) {
-      if (lectureCounts[sub]) {
-        const desired = student.subjectSlots[sub]
+      const actual = lectureCounts[sub] ?? 0
+      const desired = student.subjectSlots[sub]
+      const isGroup = !!groupCounts[sub]
+      if (actual > 0 || (desired != null && desired > 0 && !isGroup)) {
         const desiredLabel = desired != null ? `(${desired})` : ''
         if (desired != null) lectureTotalDesiredXls += desired
-        lectureRows.push({ label: sub, val: `${lectureCounts[sub]}${desiredLabel}` })
+        lectureRows.push({ label: sub, val: `${actual}${desiredLabel}` })
       }
     }
-    if (individualTotal > 0) {
+    if (individualTotal > 0 || lectureTotalDesiredXls > 0) {
       const totalDesiredLabel = lectureTotalDesiredXls > 0 ? `(${lectureTotalDesiredXls})` : ''
       lectureRows.push({ label: '個別計', val: `${individualTotal}${totalDesiredLabel}` })
     }

@@ -47,6 +47,17 @@ type StudentPickerInfo = {
   selectedSubject?: string
   /** When true, picker shows new student creation form */
   creatingStudent?: boolean
+  /** When set, editing an existing student (remove old + add new on confirm) */
+  editingStudentId?: string
+}
+
+type ContextMenuInfo = {
+  x: number
+  y: number
+  slot: string
+  deskIdx: number
+  studentId: string
+  studentName: string
 }
 
 const GRADE_OPTIONS = ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3', '高1', '高2', '高3']
@@ -216,6 +227,7 @@ export default function SlotAdjustView({
   const [weekIdx, setWeekIdx] = useState(0)
   const [busy, setBusy] = useState(false)
   const [studentPicker, setStudentPicker] = useState<StudentPickerInfo | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuInfo | null>(null)
   const [newStudentName, setNewStudentName] = useState('')
   const [newStudentGrade, setNewStudentGrade] = useState('中1')
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -299,13 +311,16 @@ export default function SlotAdjustView({
   )
 
   const handleAddStudent = useCallback(
-    async (slot: string, deskIdx: number, studentId: string, teacherId?: string, subject?: string, lessonType?: 'regular' | 'makeup') => {
+    async (slot: string, deskIdx: number, studentId: string, teacherId?: string, subject?: string, lessonType?: 'regular' | 'makeup', editingStudentId?: string) => {
       setStudentPicker(null)
       await runBusy(async () => {
+        if (editingStudentId) {
+          await onRemoveStudent(slot, deskIdx, editingStudentId)
+        }
         await onAddStudent(slot, deskIdx, studentId, teacherId, subject, lessonType)
       })
     },
-    [onAddStudent, runBusy],
+    [onAddStudent, onRemoveStudent, runBusy],
   )
 
   // Notify parent when selection changes (for schedule HTML highlighting)
@@ -326,6 +341,15 @@ export default function SlotAdjustView({
     return () => win.removeEventListener('keydown', handler)
   }, [studentPicker])
 
+  // Close context menu on any click
+  useEffect(() => {
+    if (!contextMenu) return
+    const handler = () => setContextMenu(null)
+    const doc = containerRef.current?.ownerDocument ?? document
+    doc.addEventListener('mousedown', handler)
+    return () => doc.removeEventListener('mousedown', handler)
+  }, [contextMenu])
+
   // Build list of students for the picker
   const pickerStudents: Student[] = useMemo(() => {
     if (!studentPicker) return []
@@ -335,6 +359,14 @@ export default function SlotAdjustView({
     )
     return data.students.filter(s => !existingIds.has(s.id))
   }, [studentPicker, data.assignments, data.students])
+
+  // Resolve teachable subjects for a given slot/desk/student (used by context menu edit)
+  const effectiveTeacherForCtx = useCallback((slot: string, deskIdx: number, student: Student): string[] => {
+    const assign = (data.assignments[slot] ?? [])[deskIdx]
+    const tId = assign?.teacherId
+    const teacher = tId ? instructors.find(t => t.id === tId) : undefined
+    return teacher ? teachableBaseSubjects(teacher.subjects ?? [], student.grade) : []
+  }, [data.assignments, instructors])
 
   // Click outside to close student picker
   useEffect(() => {
@@ -550,8 +582,9 @@ export default function SlotAdjustView({
                         const isEmpty = !sId
                         const showDest = selection && canAcceptHere && !isS1Source && !isS2Source && (isSecondSlot ? studentIds.length < 2 : studentIds.length <= 1)
                         const showPicker = isEmpty && canPickStudent
-                        // Only render the picker dropdown once per desk (on the first empty cell)
-                        const shouldRenderPicker = isPickerOpen && showPicker && !pickerRendered
+                        const isEditingHere = isPickerOpen && !!studentPicker?.editingStudentId && studentPicker.editingStudentId === sId
+                        // Only render the picker dropdown once per desk (on the first empty cell), or when editing this cell
+                        const shouldRenderPicker = (isPickerOpen && showPicker && !pickerRendered) || isEditingHere
                         if (shouldRenderPicker) pickerRendered = true
 
                         // Subject selection sub-picker
@@ -579,14 +612,7 @@ export default function SlotAdjustView({
                             onContextMenu={(e) => {
                               if (!sId || !student || busy || !assignment) return
                               e.preventDefault()
-                              const win = containerRef.current?.ownerDocument?.defaultView ?? window
-                              const ok = win.confirm(`${student.name} をこのコマから削除しますか？`)
-                              if (ok) {
-                                void runBusy(async () => {
-                                  await onRemoveStudent(slotKey, deskIdx, sId)
-                                  setSelection(null)
-                                })
-                              }
+                              setContextMenu({ x: e.clientX, y: e.clientY, slot: slotKey, deskIdx, studentId: sId, studentName: student.name })
                             }}
                             title={student ? `${student.name} (${student.grade}) ${subject}` : selection && canAcceptHere ? 'ここに移動' : showPicker ? 'クリックで生徒を追加' : ''}
                             style={{ position: 'relative', overflow: shouldRenderPicker ? 'visible' : undefined }}
@@ -652,7 +678,7 @@ export default function SlotAdjustView({
                                 ) : studentPicker?.selectedStudentId && studentPicker?.selectedSubject !== undefined ? (
                                   <>
                                     <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                      <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: studentPicker.selectedStudentId })}>◀</button>
+                                      <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: studentPicker.selectedStudentId, editingStudentId: studentPicker.editingStudentId })}>◀</button>
                                       種別を選択
                                     </div>
                                     <div className="sa-picker-list">
@@ -660,7 +686,7 @@ export default function SlotAdjustView({
                                         <div
                                           key={lt}
                                           className="sa-picker-item"
-                                          onClick={() => void handleAddStudent(slotKey, deskIdx, studentPicker.selectedStudentId!, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, studentPicker.selectedSubject || undefined, lt === 'lecture' ? undefined : lt)}
+                                          onClick={() => void handleAddStudent(slotKey, deskIdx, studentPicker.selectedStudentId!, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, studentPicker.selectedSubject || undefined, lt === 'lecture' ? undefined : lt, studentPicker.editingStudentId)}
                                         >
                                           {lt === 'regular' ? '通常' : lt === 'makeup' ? '振替' : '講習'}
                                         </div>
@@ -670,7 +696,7 @@ export default function SlotAdjustView({
                                 ) : pickerSelectedStudent ? (
                                   <>
                                     <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                      <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx })}>◀</button>
+                                      <button type="button" className="sa-picker-back" onClick={() => { if (studentPicker.editingStudentId) { setStudentPicker(null) } else { setStudentPicker({ slot: slotKey, deskIdx }) } }}>◀</button>
                                       {pickerSelectedStudent.name} の科目
                                     </div>
                                     <div className="sa-picker-list">
@@ -678,7 +704,7 @@ export default function SlotAdjustView({
                                         <div
                                           key={subj}
                                           className="sa-picker-item"
-                                          onClick={() => setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: pickerSelectedStudent.id, selectedSubject: subj })}
+                                          onClick={() => setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: pickerSelectedStudent.id, selectedSubject: subj, editingStudentId: studentPicker.editingStudentId })}
                                         >
                                           {subj}
                                         </div>
@@ -753,6 +779,48 @@ export default function SlotAdjustView({
           </tbody>
         </table>
       </div>
+      {contextMenu && (
+        <div
+          className="sa-ctx-menu"
+          style={{ position: 'fixed', left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div
+            className="sa-ctx-item"
+            onClick={() => {
+              const { slot, deskIdx, studentId } = contextMenu
+              setContextMenu(null)
+              const st = data.students.find(s => s.id === studentId)
+              if (!st) return
+              const subjects = effectiveTeacherForCtx(slot, deskIdx, st)
+              if (subjects.length <= 1) {
+                setStudentPicker({ slot, deskIdx, selectedStudentId: studentId, selectedSubject: subjects[0] ?? '', editingStudentId: studentId })
+              } else {
+                setStudentPicker({ slot, deskIdx, selectedStudentId: studentId, editingStudentId: studentId })
+              }
+            }}
+          >
+            編集
+          </div>
+          <div
+            className="sa-ctx-item sa-ctx-danger"
+            onClick={() => {
+              const { slot, deskIdx, studentId, studentName } = contextMenu
+              setContextMenu(null)
+              const win = containerRef.current?.ownerDocument?.defaultView ?? window
+              const ok = win.confirm(`${studentName} をこのコマから削除しますか？`)
+              if (ok) {
+                void runBusy(async () => {
+                  await onRemoveStudent(slot, deskIdx, studentId)
+                  setSelection(null)
+                })
+              }
+            }}
+          >
+            削除
+          </div>
+        </div>
+      )}
     </div>
   )
 }
