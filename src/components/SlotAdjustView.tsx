@@ -638,7 +638,7 @@ export default function SlotAdjustView({
                                       </button>
                                     </div>
                                   </>
-                                ) : studentPicker?.selectedSubject && studentPicker?.selectedStudentId ? (
+                                ) : studentPicker?.selectedStudentId && studentPicker?.selectedSubject !== undefined ? (
                                   <>
                                     <div className="sa-picker-title" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                                       <button type="button" className="sa-picker-back" onClick={() => setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: studentPicker.selectedStudentId })}>◀</button>
@@ -649,7 +649,7 @@ export default function SlotAdjustView({
                                         <div
                                           key={lt}
                                           className="sa-picker-item"
-                                          onClick={() => void handleAddStudent(slotKey, deskIdx, studentPicker.selectedStudentId!, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, studentPicker.selectedSubject, lt === 'lecture' ? undefined : lt)}
+                                          onClick={() => void handleAddStudent(slotKey, deskIdx, studentPicker.selectedStudentId!, !assignment?.teacherId ? unassignedTeacherId || undefined : undefined, studentPicker.selectedSubject || undefined, lt === 'lecture' ? undefined : lt)}
                                         >
                                           {lt === 'regular' ? '通常' : lt === 'makeup' ? '振替' : '講習'}
                                         </div>
@@ -697,7 +697,7 @@ export default function SlotAdjustView({
                                             onClick={() => {
                                               const subjects = effectiveTeacher ? teachableBaseSubjects(effectiveTeacher.subjects ?? [], st.grade) : []
                                               if (subjects.length <= 1) {
-                                                setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id, selectedSubject: subjects[0] })
+                                                setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id, selectedSubject: subjects[0] ?? '' })
                                               } else {
                                                 setStudentPicker({ slot: slotKey, deskIdx, selectedStudentId: st.id })
                                               }

@@ -4020,6 +4020,12 @@ const AdminPage = () => {
         continue
       }
 
+      // Don't overwrite if all expected students already exist in current regular assignments
+      // (teacher may have been changed by auto-assign Phase 6 or manual editing; extra students may have been added)
+      if (existingRegulars.length > 0 && [...expectedStudentIds].every((sid) => existingRegularStudentIds.has(sid))) {
+        continue
+      }
+
       // Preserve any non-regular assignments already in the slot (e.g. special students added)
       const nonRegularExisting = (existing ?? []).filter((a) => !a.isRegular || a.isGroupLesson)
       nextAssignments[slot] = [...nonRegularExisting, ...expectedRegulars]
@@ -8498,6 +8504,7 @@ service cloud.firestore {
             moveStudentToSlot(sourceSlot, sourceIdx, studentId, targetSlot, targetIdx, { skipAvailCheck: true, preferTeacherId: targetTeacherId })
           }
           onAddStudent={(slot, idx, studentId, teacherId, subjectOverride, lessonType) => {
+            markSlotsManual([slot])
             const assign = (data.assignments[slot] ?? [])[idx]
             if (assign) {
               const pos = assign.studentIds.length
@@ -8537,6 +8544,7 @@ service cloud.firestore {
             })
           }}
           onRemoveStudent={async (slot, assignmentIdx, studentId) => {
+            markSlotsManual([slot])
             await updateAssignments((current) => {
               const slotAssignments = [...(current.assignments[slot] ?? [])]
               const assignment = slotAssignments[assignmentIdx]

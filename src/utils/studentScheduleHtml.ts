@@ -1,6 +1,6 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
-import { getStudentRegularLessonStatus } from './constraints'
+import { constraintFor, getStudentRegularLessonStatus, isStudentAvailable } from './constraints'
 import XLSX from 'xlsx-js-style'
 
 const SLOT_TIME_LABELS = [
@@ -371,6 +371,23 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
       }
     }
 
+    // Build constraint violation set for this student
+    const violationSlots = new Set<string>()
+    for (const date of dates) {
+      for (let s = 1; s <= slotsPerDay; s++) {
+        const key = `${date}_${s}`
+        const entry = assignmentMap[key]
+        if (!entry || entry.isGroupLesson) continue
+        // Student unavailable but assigned (not holiday)
+        if (!isStudentAvailable(student, key) && !holidaySet.has(date)) { violationSlots.add(key); continue }
+        // Incompatible teacher-student pair
+        const slotAssigns = data.assignments[key] ?? []
+        for (const a of slotAssigns) {
+          if (a.studentIds.includes(student.id) && a.teacherId && constraintFor(data.constraints, a.teacherId, student.id) === 'incompatible') { violationSlots.add(key); break }
+        }
+      }
+    }
+
     // Slot rows
     let slotRows = ''
     for (let s = 1; s <= slotsPerDay; s++) {
@@ -382,7 +399,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
         const isUnavailable = unavailableSet.has(key)
         if (entry && !entry.isGroupLesson) {
           const regularLabel = (entry.isRegular || entry.isMakeup) ? '<br><span class="regular-tag">通常</span>' : ''
-          slotRows += `<td class="cell" data-slot="${key}">${escapeHtml(entry.subject)}${regularLabel}</td>`
+          const vClass = violationSlots.has(key) ? ' violation' : ''
+          slotRows += `<td class="cell${vClass}" data-slot="${key}">${escapeHtml(entry.subject)}${regularLabel}</td>`
         } else if (isUnavailable) {
           slotRows += `<td class="cell unavailable" data-slot="${key}"></td>`
         } else {
@@ -399,7 +417,9 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
         const actual = regularCounts[sub] ?? 0
         const expected = expectedRegularCounts[sub]
         const expectedLabel = expected != null ? `(${expected})` : ''
-        regularTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${actual}${expectedLabel}</td></tr>`
+        const mismatch = expected != null && actual !== expected
+        const cls = mismatch ? ' class="count-mismatch"' : ''
+        regularTableHtml += `<tr><td class="count-label"${cls}>${escapeHtml(sub)}</td><td class="count-val"${cls}>${actual}${expectedLabel}</td></tr>`
       }
     } else {
       regularTableHtml += '<tr><td class="count-label">&nbsp;</td><td class="count-val"></td></tr>'
@@ -415,13 +435,17 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
         const desired = student.subjectSlots[sub]
         const desiredLabel = desired != null ? `(${desired})` : ''
         if (desired != null) lectureTotalDesired += desired
-        lectureTableHtml += `<tr><td class="count-label">${escapeHtml(sub)}</td><td class="count-val">${lectureCounts[sub]}${desiredLabel}</td></tr>`
+        const mismatch = desired != null && lectureCounts[sub] !== desired
+        const cls = mismatch ? ' class="count-mismatch"' : ''
+        lectureTableHtml += `<tr><td class="count-label"${cls}>${escapeHtml(sub)}</td><td class="count-val"${cls}>${lectureCounts[sub]}${desiredLabel}</td></tr>`
         hasLectureRows = true
       }
     }
     if (individualTotal > 0) {
       const totalDesiredLabel = lectureTotalDesired > 0 ? `(${lectureTotalDesired})` : ''
-      lectureTableHtml += `<tr><td class="count-label">個別計</td><td class="count-val">${individualTotal}${totalDesiredLabel}</td></tr>`
+      const totalMismatch = lectureTotalDesired > 0 && individualTotal !== lectureTotalDesired
+      const totalCls = totalMismatch ? ' class="count-mismatch"' : ''
+      lectureTableHtml += `<tr><td class="count-label"${totalCls}>個別計</td><td class="count-val"${totalCls}>${individualTotal}${totalDesiredLabel}</td></tr>`
       hasLectureRows = true
     }
     for (const sub of Object.keys(groupCounts).sort()) {
@@ -472,7 +496,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 授業日程表</h1>
           </div>
           <div class="student-info">
-            <div>期間: ${escapeHtml(periodStr)}</div>
+            <div><span class="page-number no-print">${idx + 1}ページ　</span>期間: ${escapeHtml(periodStr)}</div>
             <div class="student-name">生徒名: ${escapeHtml(student.name)} (${escapeHtml(student.grade)})</div>
           </div>
         </div>
@@ -611,6 +635,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     z-index: 2;
   }
   .student-name { font-size: 14px; }
+  .page-number { font-size: 11px; font-weight: normal; color: #666; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
   .period { font-weight: bold; }
 
@@ -628,6 +653,9 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
   .holiday-col { background: #e5e7eb; }
   .regular-tag { font-size: 7px; color: #000; }
   .group-cell { background: #fef3c7; font-size: 7px; }
+  .violation { color: #dc2626; }
+  .count-mismatch { color: #dc2626; }
+  @media print { .violation { color: #000; } .count-mismatch { color: #000; } }
 
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
 

@@ -1,6 +1,6 @@
 import type { Assignment, RegularLesson, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
-import { getStudentRegularLessonStatus } from './constraints'
+import { constraintFor, getStudentRegularLessonStatus, isStudentAvailable } from './constraints'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -214,6 +214,24 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
       }
     }
 
+    // Build constraint violation set for this teacher
+    const violationSlots = new Set<string>()
+    for (const date of dates) {
+      for (let s = 1; s <= slotsPerDay; s++) {
+        const key = `${date}_${s}`
+        const entry = assignmentMap[key]
+        if (!entry || entry.isGroupLesson) continue
+        // Teacher unavailable but assigned
+        if (unavailableSet.has(key)) { violationSlots.add(key); continue }
+        // Check student availability and incompatible pairs
+        for (const st of entry.students) {
+          const student = data.students.find(x => x.id === st.id)
+          if (student && !isStudentAvailable(student, key) && !holidaySet.has(date)) { violationSlots.add(key); break }
+          if (constraintFor(data.constraints, teacher.id, st.id) === 'incompatible') { violationSlots.add(key); break }
+        }
+      }
+    }
+
     // Slot rows
     let slotRows = ''
     for (let s = 1; s <= slotsPerDay; s++) {
@@ -224,6 +242,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
         const entry = assignmentMap[key]
         const isUnavailable = unavailableSet.has(key)
         const isHoliday = holidaySet.has(date)
+        const hasViolation = violationSlots.has(key)
         if (entry) {
           const studentIds = entry.students.map(st => st.id).join(',')
           if (entry.isGroupLesson) {
@@ -234,7 +253,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
               const subTag = st.isSubstitute ? '<span class="substitute-tag">\u4EE3\u884C</span>' : ''
               return `<span class="student-line">${escapeHtml(st.name)}<br>${escapeHtml(st.grade)}${escapeHtml(st.subject)}${tag}${subTag}</span>`
             }).join('<hr class="cell-divider">')
-            slotRows += `<td class="cell assigned-cell" data-slot="${key}" data-student-ids="${studentIds}">${lines}</td>`
+            slotRows += `<td class="cell assigned-cell${hasViolation ? ' violation' : ''}" data-slot="${key}" data-student-ids="${studentIds}">${lines}</td>`
           }
         } else if (isUnavailable || isHoliday) {
           slotRows += `<td class="cell unavailable" data-slot="${key}"></td>`
@@ -262,8 +281,8 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
             <h1>R${reiwaYear}.${escapeHtml(sessionName)} 講師日程表</h1>
           </div>
           <div class="teacher-info">
-            <div>期間: ${escapeHtml(periodStr)}</div>
-            <div class="teacher-name">講師名: ${escapeHtml(teacher.name)}　<span class="page-number">${idx + 1}ページ目 / 全${teachers.length}ページ</span></div>
+            <div><span class="page-number no-print">${idx + 1}ページ　</span>期間: ${escapeHtml(periodStr)}</div>
+            <div class="teacher-name">講師名: ${escapeHtml(teacher.name)}</div>
             <div class="teacher-subjects">担当科目: ${escapeHtml(teacher.subjects.join(', '))}</div>
           </div>
         </div>
@@ -367,6 +386,8 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
   .group-cell { background: #fef3c7; font-size: 7px; font-weight: bold; }
   .student-line { display: block; }
   .cell-divider { border: none; border-top: 1px dashed #999; margin: 1px 0; }
+  .violation { color: #dc2626; }
+  @media print { .violation { color: #000; } }
 
   .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
   .teacher-notes-area { flex: 1; display: flex; flex-direction: column; }
