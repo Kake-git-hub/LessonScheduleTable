@@ -3252,6 +3252,7 @@ const AdminPage = () => {
   const dataRef = useRef<SessionData | null>(null)
   const studentScheduleWindowRef = useRef<Window | null>(null)
   const teacherScheduleWindowRef = useRef<Window | null>(null)
+  const slotAdjustSelectionRef = useRef<{ slot: string; studentId: string } | null>(null)
   // Track slots manually modified since the last auto-assign to decide whether rerunning is meaningful.
   const [manuallyModifiedSlots, setManuallyModifiedSlots] = useState<Set<string>>(new Set())
   // Track slots that should stay protected from regular auto-fill even after auto-assign reruns.
@@ -3633,6 +3634,16 @@ const AdminPage = () => {
     sessionTableSorts.students,
   ), [data?.students, sessionTableSorts.students])
 
+  // Helper to apply slot-adjust selection highlights to a schedule window's document
+  const applyScheduleHighlights = (win: Window | null, sel: { slot: string; studentId: string } | null) => {
+    if (!win || win.closed) return
+    const doc = win.document
+    doc.querySelectorAll('.sa-hl-source').forEach(el => { el.classList.remove('sa-hl-source') })
+    if (!sel) return
+    doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => { el.classList.add('sa-hl-source') })
+    doc.querySelectorAll(`.page[data-student-id="${sel.studentId}"] td[data-slot="${sel.slot}"]`).forEach(el => { el.classList.add('sa-hl-source') })
+  }
+
   // Refresh student schedule window when assignments change (real-time sync)
   useEffect(() => {
     const win = studentScheduleWindowRef.current
@@ -3644,6 +3655,7 @@ const AdminPage = () => {
       sortedStudents: sessionStudentRows,
       targetWindow: win,
     })
+    applyScheduleHighlights(win, slotAdjustSelectionRef.current)
   }, [data?.assignments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh teacher schedule window when assignments change (real-time sync)
@@ -3656,6 +3668,7 @@ const AdminPage = () => {
       getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '',
       targetWindow: win,
     })
+    applyScheduleHighlights(win, slotAdjustSelectionRef.current)
   }, [data?.assignments]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const persist = async (next: SessionData): Promise<void> => {
@@ -8494,7 +8507,7 @@ service cloud.firestore {
   return (
     <div className="app-shell">
       {showSlotAdjust && (
-        <WindowPortal title="コマ調整" onClose={() => setShowSlotAdjust(false)}>
+        <WindowPortal title="コマ調整" onClose={() => { slotAdjustSelectionRef.current = null; setShowSlotAdjust(false) }}>
         <SlotAdjustView
           data={data}
           instructors={instructors}
@@ -8588,25 +8601,9 @@ service cloud.firestore {
             return id
           }}
           onSelectionChange={(sel) => {
-            // Helper to apply highlights to a window's document
-            const applyHighlights = (win: Window | null) => {
-              if (!win || win.closed) return
-              const doc = win.document
-              doc.querySelectorAll('.sa-hl-source').forEach(el => {
-                el.classList.remove('sa-hl-source')
-              })
-              if (!sel) return
-              // Highlight source slot (yellow) in teacher schedule
-              doc.querySelectorAll(`td[data-slot="${sel.slot}"]`).forEach(el => {
-                el.classList.add('sa-hl-source')
-              })
-              // Highlight source slot (yellow) in student schedule (only matching student page)
-              doc.querySelectorAll(`.page[data-student-id="${sel.studentId}"] td[data-slot="${sel.slot}"]`).forEach(el => {
-                el.classList.add('sa-hl-source')
-              })
-            }
-            applyHighlights(teacherScheduleWindowRef.current)
-            applyHighlights(studentScheduleWindowRef.current)
+            slotAdjustSelectionRef.current = sel
+            applyScheduleHighlights(teacherScheduleWindowRef.current, sel)
+            applyScheduleHighlights(studentScheduleWindowRef.current, sel)
           }}
         />
         </WindowPortal>

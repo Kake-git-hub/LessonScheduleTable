@@ -1458,8 +1458,6 @@ tr.sa-slot-first td {
 .sa-student.sa-dest {
   cursor: pointer;
   background: #bbf7d0;
-  outline: 2px solid #22c55e;
-  outline-offset: -2px;
 }
 .sa-student.sa-dest:hover {
   background: #86efac;

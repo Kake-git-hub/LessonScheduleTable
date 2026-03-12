@@ -504,7 +504,7 @@ export default function SlotAdjustView({
                       if (selection && isLecture) {
                         isAvailDest = isStudentAvailableForSlot(selection.studentId, slotKey)
                         const alreadyInSlot = isStudentInSlot(selection.studentId, slotKey, selection.slot, selection.assignmentIdx)
-                        if (!alreadyInSlot) {
+                        if (isAvailDest && !alreadyInSlot) {
                           if (assignment && studentIds.length < 2 && !assignment.isGroupLesson) {
                             canAcceptHere = true
                           } else if (!assignment) {
