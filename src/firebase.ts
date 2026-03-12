@@ -294,7 +294,7 @@ export const saveSession = async (classroomId: string, sessionId: string, data: 
   const createdAt = data.settings.createdAt ?? now
   const next: SessionData = stripUndefinedDeep(normalizeSessionData({
     ...data,
-    settings: { ...data.settings, createdAt, updatedAt: now },
+    settings: { ...data.settings, createdAt, updatedAt: data.settings.updatedAt || now },
   }))
   await setDoc(classroomSessionRef(classroomId, sessionId), next)
 }

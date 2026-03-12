@@ -3285,14 +3285,17 @@ const AdminPage = () => {
     const isMendanSession = data.settings.sessionType === 'mendan'
     loadMasterData(classroomId).then((master) => {
       if (!master) return
+      const currentData = dataRef.current
+      if (!currentData) return
       const needsUpdate =
-        JSON.stringify(data.constraints) !== JSON.stringify(master.constraints) ||
-        JSON.stringify(data.regularLessons) !== JSON.stringify(isMendanSession ? [] : master.regularLessons)
+        JSON.stringify(currentData.constraints) !== JSON.stringify(master.constraints) ||
+        JSON.stringify(currentData.regularLessons) !== JSON.stringify(isMendanSession ? [] : master.regularLessons)
       if (!needsUpdate) return
       const next: SessionData = {
-        ...data,
+        ...currentData,
         constraints: master.constraints,
         regularLessons: isMendanSession ? [] : master.regularLessons,
+        settings: { ...currentData.settings, updatedAt: Date.now() },
       }
       setData(next)
       saveSession(classroomId, sessionId, next).catch(() => { /* ignore */ })
@@ -3921,11 +3924,14 @@ const AdminPage = () => {
     void (async () => {
       const master = await loadMasterData(classroomId)
       if (!master) return
-      const next = buildSessionDataFromMaster(data, master)
-      const changed = hasSessionMasterChanges(data, next)
+      const currentData = dataRef.current
+      if (!currentData) return
+      const next = buildSessionDataFromMaster(currentData, master)
+      const changed = hasSessionMasterChanges(currentData, next)
       if (changed) {
-        setData(next)
-        await saveSession(classroomId, sessionId, next)
+        const nextWithTimestamp = { ...next, settings: { ...next.settings, updatedAt: Date.now() } }
+        setData(nextWithTimestamp)
+        await saveSession(classroomId, sessionId, nextWithTimestamp)
       }
     })()
   }, [authorized, buildSessionDataFromMaster, classroomId, data, hasSessionMasterChanges, sessionId])
@@ -8215,7 +8221,7 @@ const AdminPage = () => {
       }
 
       // Move
-      srcAssignments[sourceIdx] = createEmptyAssignment()
+      srcAssignments.splice(sourceIdx, 1)
       targetAssignments.push(movedCopy)
       const nextAssignments = { ...current.assignments }
       nextAssignments[sourceSlot] = srcAssignments
@@ -8387,7 +8393,7 @@ const AdminPage = () => {
 
       // Update source: if no students left, remove the assignment entirely
       if (updatedSrcStudentIds.length === 0) {
-        srcAssignments[sourceIdx] = createEmptyAssignment()
+        srcAssignments.splice(sourceIdx, 1)
       } else {
         // Remove moved student's regularMakeupInfo but keep isRegular for remaining students
         const updatedSrcMakeupInfo = { ...(srcAssignment.regularMakeupInfo ?? {}) }
@@ -8417,7 +8423,7 @@ const AdminPage = () => {
         const mergedAssignments = [...targetAssignments]
         // Apply source changes (student removed) to the merged array
         if (updatedSrcStudentIds.length === 0) {
-          mergedAssignments[sourceIdx] = createEmptyAssignment()
+          mergedAssignments.splice(sourceIdx, 1)
         } else {
           const updatedSrcMakeupInfo2 = { ...(srcAssignment.regularMakeupInfo ?? {}) }
           const updatedSrcSubstituteInfo2 = { ...(srcAssignment.regularSubstituteInfo ?? {}) }
@@ -8446,9 +8452,9 @@ const AdminPage = () => {
 
       // Get updated source assignment to compute its new signature
       const finalSrcAssignments = nextAssignments[sourceSlot] ?? []
-      // For same-slot moves where source was deleted, sourceIdx may be out of bounds
-      const updatedSrcAssignment = sourceIdx < finalSrcAssignments.length ? finalSrcAssignments[sourceIdx] : undefined
-      const newSrcSig = updatedSrcAssignment ? assignmentSignature(updatedSrcAssignment) : null
+      // When source was spliced out (no students left), there's no replacement assignment
+      const newSrcSig = updatedSrcStudentIds.length === 0 ? null
+        : (sourceIdx < finalSrcAssignments.length ? assignmentSignature(finalSrcAssignments[sourceIdx]) : null)
 
       // Migrate source assignment highlights from old sig to new sig
       nextHL = migrateHighlightSig(nextHL, sourceSlot, oldSrcSig, newSrcSig)
@@ -8640,7 +8646,7 @@ service cloud.firestore {
               if (!assignment) return current
               const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
               if (remainingIds.length === 0) {
-                slotAssignments[assignmentIdx] = createEmptyAssignment()
+                slotAssignments.splice(assignmentIdx, 1)
               } else {
                 const nextSubjects = { ...assignment.studentSubjects }
                 delete nextSubjects[studentId]

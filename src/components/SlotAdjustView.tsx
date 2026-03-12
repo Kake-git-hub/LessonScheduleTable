@@ -601,7 +601,9 @@ export default function SlotAdjustView({
                               if (sId && !selection) {
                                 handleStudentClick(slotKey, deskIdx, sId)
                               } else if (selection && canAcceptHere && !isSource) {
-                                void handleDestinationClick(slotKey, assignment ? deskIdx : undefined, !assignment ? unassignedTeacherId || undefined : undefined)
+                                // Treat ghost assignments (no teacher, no students) as empty — create new assignment with auto-teacher
+                                const isRealAssignment = assignment && (assignment.teacherId || assignment.studentIds.length > 0)
+                                void handleDestinationClick(slotKey, isRealAssignment ? deskIdx : undefined, !isRealAssignment ? unassignedTeacherId || undefined : undefined)
                               } else if (showPicker) {
                                 setStudentPicker(isPickerOpen ? null : { slot: slotKey, deskIdx })
                               }
