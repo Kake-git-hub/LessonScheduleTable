@@ -26,7 +26,7 @@ import type {
 import { buildSlotKeys, formatShortDate, mendanTimeLabel, personKey, slotLabel } from './utils/schedule'
 import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, TEACHER_SUBJECTS, canTeachSubject, teachableBaseSubjects, teacherHasSubject, getSubjectBase, isKnownTeacherSubject, normalizeTeacherSubject, normalizeTeacherSubjects } from './utils/subjects'
 import { downloadEmailReceiptPdf, downloadSubmissionReceiptPdf, exportSchedulePdf } from './utils/pdf'
-import { openStudentScheduleHtml, exportStudentScheduleExcel } from './utils/studentScheduleHtml'
+import { openStudentScheduleHtml } from './utils/studentScheduleHtml'
 import { openTeacherScheduleHtml } from './utils/teacherScheduleHtml'
 import { constraintFor, getStudentRegularLessonStatus, hasAvailability, isStudentAvailable, isStudentAvailableForRegularLesson, isParentAvailableForMendan } from './utils/constraints'
 import { getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, buildEffectiveAssignments, getStudentSubject, countStudentSubjectLoad, assignmentSignature, hasMeaningfulManualAssignment, findRegularLessonsForSlot, getDatesInRange, getRegularSubjectProgress, normalizeAssignment } from './utils/assignments'
@@ -9061,14 +9061,6 @@ service cloud.firestore {
                 onClick={() => { teacherScheduleWindowRef.current = openTeacherScheduleHtml({ data, getStudentName: (id) => data.students.find((s) => s.id === id)?.name ?? id, getStudentGrade: (id) => data.students.find((s) => s.id === id)?.grade ?? '' }) }}
               >
                 📄 講師日程表
-              </button>
-              <button
-                className="btn secondary"
-                type="button"
-                style={{ display: 'none' }}
-                onClick={() => exportStudentScheduleExcel({ data, getTeacherName: (id) => instructors.find((t) => t.id === id)?.name ?? id, sortedStudents: sessionStudentRows })}
-              >
-                📊 生徒日程Excel
               </button>
               <button className="btn secondary" type="button" onClick={copyAssignmentAnalysis}>
                 📊 解析データ
