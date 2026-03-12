@@ -1,6 +1,7 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
 import { constraintFor, getStudentRegularLessonStatus } from './constraints'
+import { generateQrSvg } from './qrcode'
 import { evaluateConstraintCards } from './slotConstraints'
 import { canTeachSubject } from './subjects'
 
@@ -18,6 +19,8 @@ type StudentScheduleParams = {
   data: SessionData
   getTeacherName: (id: string) => string
   sessionId?: string
+  classroomId?: string
+  baseUrl?: string
   sortedStudents?: Student[]
 }
 
@@ -302,7 +305,7 @@ function setupStudentScheduleWindow(targetWindow: Window, sessionId?: string): v
 
 /** Generate the HTML content for all student schedules */
 export function openStudentScheduleHtml(params: StudentScheduleParams & { targetWindow?: Window | null }): Window | null {
-  const { data, sessionId, targetWindow } = params
+  const { data, sessionId, classroomId, baseUrl, targetWindow } = params
   const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
     if (!targetWindow) alert('講習期間が未設定です')
@@ -545,6 +548,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     }
     const furikaeTableHtml = `<table class="furikae-table"><tr><th colspan="3">振替授業</th></tr>${furikaeRowsHtml}</table>`
 
+    // QR code for student input URL
+    let qrHtml = ''
+    if (classroomId && sessionId && baseUrl) {
+      const inputUrl = `${baseUrl}/#/c/${classroomId}/availability/${sessionId}/student/${student.id}`
+      qrHtml = `<div class="qr-code">${generateQrSvg(inputUrl, 52)}</div>`
+    }
+
     const pageBreak = idx < students.length - 1 ? ' page-break' : ''
 
     return `
@@ -559,7 +569,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
           </div>
           <div class="student-info">
             <div><span class="page-number no-print">${idx + 1}ページ　</span>期間: ${escapeHtml(periodStr)}</div>
-            <div class="student-name">生徒名: ${escapeHtml(student.name)} (${escapeHtml(student.grade)})</div>
+            <div class="student-name-row">${qrHtml}<span class="student-name">生徒名: ${escapeHtml(student.name)} (${escapeHtml(student.grade)})</span></div>
           </div>
         </div>
 
@@ -697,6 +707,9 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     z-index: 2;
   }
   .student-name { font-size: 14px; }
+  .student-name-row { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .qr-code { flex-shrink: 0; line-height: 0; }
+  .qr-code svg { display: block; }
   .page-number { font-size: 11px; font-weight: normal; color: #666; }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; }
   .period { font-weight: bold; }

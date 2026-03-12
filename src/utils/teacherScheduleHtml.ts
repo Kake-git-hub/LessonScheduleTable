@@ -1,6 +1,7 @@
 import type { Assignment, RegularLesson, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
 import { constraintFor, getStudentRegularLessonStatus } from './constraints'
+import { generateQrSvg } from './qrcode'
 import { evaluateConstraintCards } from './slotConstraints'
 import { canTeachSubject } from './subjects'
 
@@ -18,6 +19,9 @@ type TeacherScheduleParams = {
   data: SessionData
   getStudentName: (id: string) => string
   getStudentGrade: (id: string) => string
+  classroomId?: string
+  sessionId?: string
+  baseUrl?: string
 }
 
 /** Get all dates in the range INCLUDING holidays */
@@ -152,7 +156,7 @@ function countTeacherSlots(assignmentMap: Record<string, SlotEntry>): { regular:
 
 /** Generate the HTML content for all teacher schedules */
 export function openTeacherScheduleHtml(params: TeacherScheduleParams & { targetWindow?: Window | null }): Window | null {
-  const { data, getStudentName, getStudentGrade, targetWindow } = params
+  const { data, getStudentName, getStudentGrade, classroomId, sessionId, baseUrl, targetWindow } = params
   const dates = getAllDatesInRange(data.settings)
   if (dates.length === 0) {
     if (!targetWindow) alert('講習期間が未設定です')
@@ -182,6 +186,13 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
     const assignmentMap = buildTeacherAssignmentMap(teacher, data.assignments, data.regularLessons, dates, data.students, getStudentName, getStudentGrade)
     const unavailableSet = buildTeacherUnavailableSet(teacher, data.availability, dates, slotsPerDay, data.settings.holidays)
     const counts = countTeacherSlots(assignmentMap)
+
+    // QR code for teacher input URL
+    let qrHtml = ''
+    if (classroomId && sessionId && baseUrl) {
+      const inputUrl = `${baseUrl}/#/c/${classroomId}/availability/${sessionId}/teacher/${teacher.id}`
+      qrHtml = `<div class="qr-code">${generateQrSvg(inputUrl, 52)}</div>`
+    }
 
     // Period display
     const startParts = data.settings.startDate.split('-')
@@ -337,7 +348,7 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
           </div>
           <div class="teacher-info">
             <div><span class="page-number no-print">${idx + 1}ページ　</span>期間: ${escapeHtml(periodStr)}</div>
-            <div class="teacher-name">講師名: ${escapeHtml(teacher.name)}</div>
+            <div class="teacher-name-row">${qrHtml}<span class="teacher-name">講師名: ${escapeHtml(teacher.name)}</span></div>
             <div class="teacher-subjects">担当科目: ${escapeHtml(teacher.subjects.join(', '))}</div>
           </div>
         </div>
@@ -418,6 +429,9 @@ export function openTeacherScheduleHtml(params: TeacherScheduleParams & { target
     font-weight: bold;
   }
   .teacher-name { font-size: 14px; }
+  .teacher-name-row { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .qr-code { flex-shrink: 0; line-height: 0; }
+  .qr-code svg { display: block; }
   .page-number { font-size: 11px; font-weight: normal; color: #666; margin-left: 8px; }
   .teacher-subjects { font-size: 10px; font-weight: normal; color: #555; }
   .regular-info { font-size: 9px; color: #555; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
