@@ -473,7 +473,8 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     if (regularSubjects.length > 0) {
       for (const sub of regularSubjects) {
         const actual = regularCounts[sub] ?? 0
-        const expected = expectedRegularCounts[sub]
+        const hasExpected = expectedRegularCounts[sub] != null
+        const expected = hasExpected ? (expectedRegularCounts[sub] ?? 0) : (actual > 0 ? 0 : undefined)
         const expectedLabel = expected != null ? `(${expected})` : ''
         const mismatch = expected != null && actual !== expected
         const cls = mismatch ? ' count-mismatch' : ''
@@ -490,7 +491,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     let lectureTotalDesired = 0
     for (const sub of lectureSubjects) {
       const actual = lectureCounts[sub] ?? 0
-      const desired = student.subjectSlots[sub]
+      const desired = student.subjectSlots[sub] ?? (actual > 0 ? 0 : undefined)
       const isGroup = !!groupCounts[sub]
       if (actual > 0 || (desired != null && desired > 0 && !isGroup)) {
         const desiredLabel = desired != null ? `(${desired})` : ''
@@ -503,7 +504,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     }
     {
       const totalDesiredLabel = lectureTotalDesired > 0 ? `(${lectureTotalDesired})` : ''
-      const totalMismatch = lectureTotalDesired > 0 && individualTotal !== lectureTotalDesired
+      const totalMismatch = (lectureTotalDesired > 0 || individualTotal > 0) && individualTotal !== lectureTotalDesired
       const totalCls = totalMismatch ? ' count-mismatch' : ''
       if (individualTotal > 0 || lectureTotalDesired > 0) {
         lectureTableHtml += `<tr><td class="count-label${totalCls}">個別計</td><td class="count-val${totalCls}">${individualTotal}${totalDesiredLabel}</td></tr>`
@@ -994,21 +995,21 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
     // Columns: 0=振替from, 1=→, 2=振替to, 3=gap, 4=通常label, 5=通常val, 6=gap, 7=講習label, 8=講習val
     const furikaeCount = Math.max(5, furikaeEntries.length)
     const regularCount = Math.max(1, regularSubjects.length)
-    const lectureRows: { label: string; val: string }[] = []
+    const lectureRows: { label: string; val: string; mismatch?: boolean }[] = []
     let lectureTotalDesiredXls = 0
     for (const sub of lectureSubjects) {
       const actual = lectureCounts[sub] ?? 0
-      const desired = student.subjectSlots[sub]
+      const desired = student.subjectSlots[sub] ?? (actual > 0 ? 0 : undefined)
       const isGroup = !!groupCounts[sub]
       if (actual > 0 || (desired != null && desired > 0 && !isGroup)) {
         const desiredLabel = desired != null ? `(${desired})` : ''
         if (desired != null) lectureTotalDesiredXls += desired
-        lectureRows.push({ label: sub, val: `${actual}${desiredLabel}` })
+        lectureRows.push({ label: sub, val: `${actual}${desiredLabel}`, mismatch: desired != null && actual !== desired })
       }
     }
     if (individualTotal > 0 || lectureTotalDesiredXls > 0) {
       const totalDesiredLabel = lectureTotalDesiredXls > 0 ? `(${lectureTotalDesiredXls})` : ''
-      lectureRows.push({ label: '個別計', val: `${individualTotal}${totalDesiredLabel}` })
+      lectureRows.push({ label: '個別計', val: `${individualTotal}${totalDesiredLabel}`, mismatch: (lectureTotalDesiredXls > 0 || individualTotal > 0) && individualTotal !== lectureTotalDesiredXls })
     }
     for (const sub of Object.keys(groupCounts).sort()) {
       lectureRows.push({ label: `${sub}(集団)`, val: `${groupCounts[sub]}` })
@@ -1053,10 +1054,13 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
       if (i < regularSubjects.length) {
         const sub = regularSubjects[i]
         const actual = regularCounts[sub] ?? 0
-        const expected = expectedRegularCounts[sub]
+        const hasExpected = expectedRegularCounts[sub] != null
+        const expected = hasExpected ? (expectedRegularCounts[sub] ?? 0) : (actual > 0 ? 0 : undefined)
         const valStr = expected != null ? `${actual}(${expected})` : `${actual}`
-        row[4] = { v: sub, t: 's', s: cellStyle }
-        row[5] = { v: valStr, t: 's', s: cellStyle }
+        const mismatch = expected != null && actual !== expected
+        const mismatchStyle = mismatch ? { ...cellStyle, font: { ...(cellStyle.font ?? {}), color: { rgb: 'DC2626' } } } : cellStyle
+        row[4] = { v: sub, t: 's', s: mismatchStyle }
+        row[5] = { v: valStr, t: 's', s: mismatchStyle }
       } else if (i < regularCount) {
         row[4] = { v: '', t: 's', s: cellStyle }
         row[5] = { v: '', t: 's', s: cellStyle }
@@ -1066,8 +1070,9 @@ export function exportStudentScheduleExcel(params: StudentScheduleParams): void 
       row[6] = { v: '', t: 's' }
       // 講習回数
       if (i < lectureRows.length) {
-        row[7] = { v: lectureRows[i].label, t: 's', s: cellStyle }
-        row[8] = { v: lectureRows[i].val || '', t: 's', s: cellStyle }
+        const mismatchStyle = lectureRows[i].mismatch ? { ...cellStyle, font: { ...(cellStyle.font ?? {}), color: { rgb: 'DC2626' } } } : cellStyle
+        row[7] = { v: lectureRows[i].label, t: 's', s: mismatchStyle }
+        row[8] = { v: lectureRows[i].val || '', t: 's', s: mismatchStyle }
       } else {
         row[7] = { v: '', t: 's' }; row[8] = { v: '', t: 's' }
       }
