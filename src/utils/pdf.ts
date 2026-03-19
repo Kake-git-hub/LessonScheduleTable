@@ -114,14 +114,15 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
   }
 
-  const buildStudentPdfCell = (assignment: Assignment | undefined, studentId: string | undefined): StudentPdfCell => {
+  const buildStudentPdfCell = (assignment: Assignment | undefined, studentId: string | undefined, displayedDate: string): StudentPdfCell => {
     if (!assignment || !studentId) return { text: '', compareKey: '' }
 
     const studentName = normalizePdfDisplayText(getStudentName(studentId))
     const studentGrade = normalizePdfDisplayText(getStudentGrade(studentId))
     const studentSubject = normalizePdfDisplayText(getStudentSubject(assignment, studentId))
-    const makeupDateLabel = assignment.regularMakeupInfo?.[studentId]?.date
-      ? formatMonthDay(assignment.regularMakeupInfo[studentId].date!)
+    const makeupOriginDate = assignment.regularMakeupInfo?.[studentId]?.date
+    const makeupDateLabel = makeupOriginDate && makeupOriginDate !== displayedDate
+      ? formatMonthDay(makeupOriginDate)
       : ''
     const text = `${studentName}\n${studentGrade}${studentSubject}${makeupDateLabel}`
 
@@ -190,8 +191,8 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     return {
       teacher: assignment?.teacherId ? normalizePdfDisplayText(getTeacherName(assignment.teacherId)) : '',
       teacherCompareKey: assignment?.teacherId ?? '',
-      student1: buildStudentPdfCell(assignment, assignment?.studentIds[0]),
-      student2: buildStudentPdfCell(assignment, assignment?.studentIds[1]),
+      student1: buildStudentPdfCell(assignment, assignment?.studentIds[0], date),
+      student2: buildStudentPdfCell(assignment, assignment?.studentIds[1], date),
     }
   }
 

@@ -130,12 +130,18 @@ function formatSlotTime(slotNumber: number): string {
   return SLOT_TIME_LABELS[slotNumber - 1] ?? `${slotNumber}限`
 }
 
-function getStudentDetailText(assignment: Assignment | undefined, studentId: string | undefined, studentGrade: string | undefined): string {
+function getStudentDetailText(
+  assignment: Assignment | undefined,
+  studentId: string | undefined,
+  studentGrade: string | undefined,
+  displayedDate: string,
+): string {
   if (!assignment || !studentId) return studentGrade ?? ''
 
   const subject = getStudentSubject(assignment, studentId)
-  const makeupDateLabel = assignment.regularMakeupInfo?.[studentId]?.date
-    ? formatMonthDay(assignment.regularMakeupInfo[studentId].date!)
+  const makeupOriginDate = assignment.regularMakeupInfo?.[studentId]?.date
+  const makeupDateLabel = makeupOriginDate && makeupOriginDate !== displayedDate
+    ? formatMonthDay(makeupOriginDate)
     : ''
 
   return `${studentGrade ?? ''}${subject}${makeupDateLabel}`
@@ -543,8 +549,8 @@ export default function SlotAdjustView({
                       const s2 = s2Id ? data.students.find((s) => s.id === s2Id) : undefined
                       const s1Subject = assignment && s1Id ? getStudentSubject(assignment, s1Id) : ''
                       const s2Subject = assignment && s2Id ? getStudentSubject(assignment, s2Id) : ''
-                      const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade)
-                      const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade)
+                      const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade, date)
+                      const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade, date)
 
                       // Star badges
                       const s1Badge = assignment && s1Id ? getStudentBadge(data, assignment, s1Id, slotKey, isMendan) : null
