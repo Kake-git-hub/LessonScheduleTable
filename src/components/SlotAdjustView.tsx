@@ -3,6 +3,7 @@ import type { Assignment, SessionData, Student, Teacher } from '../types'
 import { findRegularLessonsForSlot, getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek, getStudentSubject } from '../utils/assignments'
 import { hasAvailability, isStudentAvailable } from '../utils/constraints'
 import { BASE_SUBJECTS, ELEMENTARY_COMBO_SUBJECTS, gradeToLevel, teachableBaseSubjects } from '../utils/subjects'
+import { formatMonthDay } from '../utils/schedule'
 
 // ---- types ----
 
@@ -127,6 +128,17 @@ const SLOT_TIME_LABELS = [
 
 function formatSlotTime(slotNumber: number): string {
   return SLOT_TIME_LABELS[slotNumber - 1] ?? `${slotNumber}限`
+}
+
+function getStudentDetailText(assignment: Assignment | undefined, studentId: string | undefined, studentGrade: string | undefined): string {
+  if (!assignment || !studentId) return studentGrade ?? ''
+
+  const subject = getStudentSubject(assignment, studentId)
+  const makeupDateLabel = assignment.regularMakeupInfo?.[studentId]?.date
+    ? formatMonthDay(assignment.regularMakeupInfo[studentId].date!)
+    : ''
+
+  return `${studentGrade ?? ''}${subject}${makeupDateLabel}`
 }
 
 function hasInstructorAvailabilityLocal(
@@ -531,6 +543,8 @@ export default function SlotAdjustView({
                       const s2 = s2Id ? data.students.find((s) => s.id === s2Id) : undefined
                       const s1Subject = assignment && s1Id ? getStudentSubject(assignment, s1Id) : ''
                       const s2Subject = assignment && s2Id ? getStudentSubject(assignment, s2Id) : ''
+                      const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade)
+                      const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade)
 
                       // Star badges
                       const s1Badge = assignment && s1Id ? getStudentBadge(data, assignment, s1Id, slotKey, isMendan) : null
@@ -625,7 +639,7 @@ export default function SlotAdjustView({
                                   </span>
                                 )}
                                 <span className="sa-student-name">{student.name}</span>
-                                <span className="sa-student-detail">{student.grade}{subject}</span>
+                                <span className="sa-student-detail">{isSecondSlot ? s2Detail : s1Detail}</span>
                               </div>
                             ) : showPicker ? (
                               <span className="sa-add-hint">＋</span>

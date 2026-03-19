@@ -1,4 +1,4 @@
-import { buildSlotKeys, formatShortDate, slotLabel, mendanTimeLabel, personKey } from '../schedule'
+import { buildSlotKeys, formatMonthDay, formatShortDate, slotLabel, mendanTimeLabel, personKey } from '../schedule'
 
 describe('buildSlotKeys', () => {
   it('returns empty array when startDate is missing', () => {
@@ -19,22 +19,22 @@ describe('buildSlotKeys', () => {
   it('generates correct keys for a 2-day range with 3 slots/day', () => {
     const settings = { startDate: '2026-07-21', endDate: '2026-07-22', slotsPerDay: 3, holidays: [] as string[], name: '', adminPassword: '' }
     expect(buildSlotKeys(settings)).toEqual([
-      '2026-07-21_1', '2026-07-21_2', '2026-07-21_3',
-      '2026-07-22_1', '2026-07-22_2', '2026-07-22_3',
+      '2026-07-21_0', '2026-07-21_1', '2026-07-21_2', '2026-07-21_3',
+      '2026-07-22_0', '2026-07-22_1', '2026-07-22_2', '2026-07-22_3',
     ])
   })
 
   it('excludes holidays', () => {
     const settings = { startDate: '2026-07-21', endDate: '2026-07-23', slotsPerDay: 2, holidays: ['2026-07-22'], name: '', adminPassword: '' }
     expect(buildSlotKeys(settings)).toEqual([
-      '2026-07-21_1', '2026-07-21_2',
-      '2026-07-23_1', '2026-07-23_2',
+      '2026-07-21_0', '2026-07-21_1', '2026-07-21_2',
+      '2026-07-23_0', '2026-07-23_1', '2026-07-23_2',
     ])
   })
 
   it('handles single-day range', () => {
     const settings = { startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 1, holidays: [] as string[], name: '', adminPassword: '' }
-    expect(buildSlotKeys(settings)).toEqual(['2026-07-21_1'])
+    expect(buildSlotKeys(settings)).toEqual(['2026-07-21_0', '2026-07-21_1'])
   })
 
   it('returns empty when all days are holidays', () => {
@@ -62,6 +62,12 @@ describe('formatShortDate', () => {
   it('shows correct day-of-week kanji for Sunday', () => {
     // 2026-07-19 is a Sunday (日)
     expect(formatShortDate('2026-07-19')).toBe('7/19(日)')
+  })
+})
+
+describe('formatMonthDay', () => {
+  it('formats an ISO date without weekday', () => {
+    expect(formatMonthDay('2026-03-23')).toBe('3/23')
   })
 })
 

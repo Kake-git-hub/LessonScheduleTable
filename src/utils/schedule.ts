@@ -38,10 +38,16 @@ export const buildSlotKeys = (settings: SessionData['settings']): string[] => {
 
 const DAY_NAMES = ['日', '月', '火', '水', '木', '金', '土']
 
+/** Format ISO date "YYYY-MM-DD" → "M/D" */
+export const formatMonthDay = (iso: string): string => {
+  const d = new Date(`${iso}T00:00:00`)
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 /** Format ISO date "YYYY-MM-DD" → "M/D(曜)" */
 export const formatShortDate = (iso: string): string => {
   const d = new Date(`${iso}T00:00:00`)
-  return `${d.getMonth() + 1}/${d.getDate()}(${DAY_NAMES[d.getDay()]})`
+  return `${formatMonthDay(iso)}(${DAY_NAMES[d.getDay()]})`
 }
 
 export const slotLabel = (slotKey: string, isMendan = false, startHour = 10): string => {

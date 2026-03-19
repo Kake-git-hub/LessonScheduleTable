@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable'
 import html2canvas from 'html2canvas'
 import type { Assignment } from '../types'
 import { getJapaneseFontUrl, waitForJapaneseFontReady } from './japaneseFont'
+import { formatMonthDay } from './schedule'
 
 const normalizePdfDisplayText = (value: string): string => {
   return value
@@ -119,7 +120,10 @@ export async function exportSchedulePdf(params: SchedulePdfParams): Promise<void
     const studentName = normalizePdfDisplayText(getStudentName(studentId))
     const studentGrade = normalizePdfDisplayText(getStudentGrade(studentId))
     const studentSubject = normalizePdfDisplayText(getStudentSubject(assignment, studentId))
-    const text = `${studentName}\n${studentGrade}${studentSubject}`
+    const makeupDateLabel = assignment.regularMakeupInfo?.[studentId]?.date
+      ? formatMonthDay(assignment.regularMakeupInfo[studentId].date!)
+      : ''
+    const text = `${studentName}\n${studentGrade}${studentSubject}${makeupDateLabel}`
 
     // Star1 (slot type): green=regular, yellow=makeup
     let star1Fill: [number, number, number] | undefined
