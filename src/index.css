@@ -3,7 +3,8 @@
 }
 
 :root {
-  font-family: 'Segoe UI', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+  font-family: 'LessonScheduleJapanese', 'BIZ UDPGothic', 'BIZ UDP Gothic', 'Segoe UI', 'Yu Gothic',
+    'YuGothic', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
     -apple-system, BlinkMacSystemFont, 'Meiryo', sans-serif;
   line-height: 1.6;
   font-weight: 400;

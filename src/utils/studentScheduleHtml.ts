@@ -4,6 +4,7 @@ import { constraintFor, getStudentRegularLessonStatus } from './constraints'
 import { generateQrSvg } from './qrcode'
 import { evaluateConstraintCards } from './slotConstraints'
 import { canTeachSubject } from './subjects'
+import { getJapaneseFontFaceCss, JAPANESE_FONT_FAMILY } from './japaneseFont'
 
 const SLOT_TIME_LABELS = [
   '13:00～14:30',
@@ -612,12 +613,13 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
 <meta charset="UTF-8">
 <title>生徒日程表 - ${escapeHtml(sessionName)}</title>
 <style>
+  ${getJapaneseFontFaceCss(baseUrl)}
   @page {
     size: 297mm 210mm;
     margin: 8mm;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif; font-size: 10px; color: #333; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: ${JAPANESE_FONT_FAMILY}; font-size: 10px; color: #333; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   .page {
     width: calc(297mm - 16mm);

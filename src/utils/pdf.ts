@@ -2,19 +2,10 @@ import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import html2canvas from 'html2canvas'
 import type { Assignment } from '../types'
-
-const PDF_TEXT_FALLBACK_MAP: Record<string, string> = {
-  '﨑': '崎',
-  '髙': '高',
-  '濵': '浜',
-  '神': '神',
-  '塚': '塚',
-  '羽': '羽',
-}
+import { getJapaneseFontUrl, waitForJapaneseFontReady } from './japaneseFont'
 
 const normalizePdfDisplayText = (value: string): string => {
-  const normalized = value.normalize('NFKC')
-  return [...normalized].map((char) => PDF_TEXT_FALLBACK_MAP[char] ?? char).join('')
+  return value
 }
 
 // ---------- Japanese font loading ----------
@@ -34,27 +25,16 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 async function loadJapaneseFont(doc: jsPDF): Promise<void> {
   if (!cachedFontBase64) {
-    // Try bundled font first, then CDN fallbacks (must be static TrueType TTF, NOT variable fonts)
-    const base = import.meta.env.BASE_URL ?? '/'
-    const urls = [
-      `${base}fonts/SawarabiGothic-Regular.ttf`,
-      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/sawarabigothic/SawarabiGothic-Regular.ttf',
-      'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/mplusrounded1c/MPLUSRounded1c-Regular.ttf',
-    ]
     let buf: ArrayBuffer | null = null
-    for (const url of urls) {
-      try {
-        const res = await fetch(url)
-        if (res.ok) {
-          buf = await res.arrayBuffer()
-          if (buf.byteLength > 10000) break // sanity check: font should be >10KB
-          buf = null
-        }
-      } catch {
-        // try next
+    try {
+      const res = await fetch(getJapaneseFontUrl())
+      if (res.ok) {
+        buf = await res.arrayBuffer()
       }
+    } catch {
+      // handled below
     }
-    if (!buf) {
+    if (!buf || buf.byteLength <= 10000) {
       throw new Error('日本語フォントの読み込みに失敗しました。ネットワーク接続を確認してください。')
     }
     cachedFontBase64 = arrayBufferToBase64(buf)
@@ -832,6 +812,7 @@ export async function downloadSubmissionReceiptPdf(params: SubmissionReceiptPdfP
   // Capture screenshot of the form if element provided
   if (captureElement) {
     try {
+      await waitForJapaneseFontReady(document)
       const canvas = await html2canvas(captureElement, {
         scale: 1.5,
         useCORS: true,
