@@ -521,6 +521,7 @@ export default function SlotAdjustView({
                       const slotKey = `${date}_${slotNumber}`
                       const slotAssigns = data.assignments[slotKey] ?? []
                       const assignment = isLecture ? slotAssigns[deskIdx] : undefined
+                      const slotRestPlaceholders = data.restPlaceholders?.[slotKey] ?? []
                       const teacher = assignment?.teacherId
                         ? instructors.find((t) => t.id === assignment.teacherId)
                         : undefined
@@ -547,15 +548,21 @@ export default function SlotAdjustView({
                       }
 
                       const studentIds = assignment?.studentIds ?? []
-                      const s1Id = studentIds[0]
-                      const s2Id = studentIds[1]
+                      const leftRestPlaceholder = slotRestPlaceholders.find((entry) => entry.deskIdx === deskIdx && entry.seatIndex === 0)
+                      const rightRestPlaceholder = slotRestPlaceholders.find((entry) => entry.deskIdx === deskIdx && entry.seatIndex === 1)
+                      const displayStudentIds: Array<string | undefined> = (() => {
+                        if (studentIds.length === 1 && leftRestPlaceholder && !rightRestPlaceholder) return [undefined, studentIds[0]]
+                        if (studentIds.length === 1 && rightRestPlaceholder && !leftRestPlaceholder) return [studentIds[0], undefined]
+                        return [studentIds[0], studentIds[1]]
+                      })()
+                      const s1Id = displayStudentIds[0]
+                      const s2Id = displayStudentIds[1]
                       const s1 = s1Id ? data.students.find((s) => s.id === s1Id) : undefined
                       const s2 = s2Id ? data.students.find((s) => s.id === s2Id) : undefined
                       const s1Subject = assignment && s1Id ? getStudentSubject(assignment, s1Id) : ''
                       const s2Subject = assignment && s2Id ? getStudentSubject(assignment, s2Id) : ''
                       const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade, date)
                       const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade, date)
-                      const slotRestPlaceholders = data.restPlaceholders?.[slotKey] ?? []
                       const slotAttendanceMarks = new Set(data.attendanceMarks?.[slotKey] ?? [])
 
                       // Star badges
