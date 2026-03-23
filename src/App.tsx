@@ -8800,7 +8800,14 @@ service cloud.firestore {
 
               const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
               if (remainingIds.length === 0) {
-                slotAssignments.splice(assignmentIdx, 1)
+                slotAssignments[assignmentIdx] = {
+                  ...assignment,
+                  studentIds: [],
+                  studentSubjects: undefined,
+                  regularMakeupInfo: undefined,
+                  regularSubstituteInfo: undefined,
+                  manualRegularMark: undefined,
+                }
               } else {
                 const nextSubjects = { ...assignment.studentSubjects }
                 delete nextSubjects[studentId]
