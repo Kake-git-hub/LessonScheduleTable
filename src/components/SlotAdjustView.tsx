@@ -553,6 +553,7 @@ export default function SlotAdjustView({
                       const s2Subject = assignment && s2Id ? getStudentSubject(assignment, s2Id) : ''
                       const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade, date)
                       const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade, date)
+                      const slotRestPlaceholders = data.restPlaceholders?.[slotKey] ?? []
 
                       // Star badges
                       const s1Badge = assignment && s1Id ? getStudentBadge(data, assignment, s1Id, slotKey, isMendan) : null
@@ -598,6 +599,7 @@ export default function SlotAdjustView({
                         cellKey: string,
                         isSecondSlot: boolean,
                       ) => {
+                        const restPlaceholder = slotRestPlaceholders.find((entry) => entry.deskIdx === deskIdx && entry.seatIndex === (isSecondSlot ? 1 : 0))
                         const isEmpty = !sId
                         const showDest = selection && canAcceptHere && !isS1Source && !isS2Source && (isSecondSlot ? studentIds.length < 2 : studentIds.length <= 1)
                         const showPicker = isEmpty && canPickStudent
@@ -625,7 +627,7 @@ export default function SlotAdjustView({
                               } else if (selection && canAcceptHere && !isSource) {
                                 // Treat ghost assignments (no teacher, no students) as empty — create new assignment with auto-teacher
                                 const isRealAssignment = assignment && (assignment.teacherId || assignment.studentIds.length > 0)
-                                void handleDestinationClick(slotKey, isRealAssignment ? deskIdx : undefined, !isRealAssignment ? unassignedTeacherId || undefined : undefined)
+                                void handleDestinationClick(slotKey, deskIdx, !isRealAssignment ? unassignedTeacherId || undefined : undefined)
                               } else if (showPicker) {
                                 setStudentPicker(isPickerOpen ? null : { slot: slotKey, deskIdx })
                               }
@@ -648,6 +650,12 @@ export default function SlotAdjustView({
                                 )}
                                 <span className="sa-student-name">{student.name}</span>
                                 <span className="sa-student-detail">{isSecondSlot ? s2Detail : s1Detail}</span>
+                              </div>
+                            ) : restPlaceholder ? (
+                              <div className="sa-rest-placeholder">
+                                <span className="sa-add-hint sa-add-hint-rest">＋</span>
+                                <span className="sa-rest-name">{restPlaceholder.studentName}</span>
+                                <span className="sa-rest-detail">{restPlaceholder.detailText}</span>
                               </div>
                             ) : showPicker ? (
                               <span className="sa-add-hint">＋</span>

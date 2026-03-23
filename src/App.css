@@ -1472,6 +1472,12 @@ tr.sa-slot-first td {
   align-items: center;
   gap: 0;
 }
+.sa-rest-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
 .sa-student-name {
   font-weight: 600;
   font-size: 10px;
@@ -1484,6 +1490,17 @@ tr.sa-slot-first td {
 }
 .sa-student.sa-selected .sa-student-detail {
   color: #dbeafe;
+}
+.sa-rest-name {
+  font-weight: 500;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #94a3b8;
+}
+.sa-rest-detail {
+  font-size: 8px;
+  line-height: 1.2;
+  color: #cbd5e1;
 }
 /* Star badges in slot adjust */
 .sa-badge-row {
@@ -1527,6 +1544,10 @@ tr.sa-slot-first td {
   color: #94a3b8;
   font-size: 12px;
   font-weight: 600;
+}
+.sa-add-hint-rest {
+  color: #60a5fa;
+  line-height: 1;
 }
 .sa-pickable:hover .sa-add-hint {
   color: #3b82f6;

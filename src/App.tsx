@@ -19,6 +19,7 @@ import type {
   RegularMakeupInfo,
   SessionData,
   SessionSettings,
+  SlotRestPlaceholder,
   StudentAbsenceRecord,
   Student,
   SubmissionLogEntry,
@@ -1393,6 +1394,38 @@ const createTemplateSession = (): SessionData => {
     assignments: {},
     regularLessons,
     groupLessons: [],
+  }
+}
+
+const clearRestPlaceholderSeat = (
+  placeholders: Record<string, SlotRestPlaceholder[]> | undefined,
+  slot: string,
+  deskIdx: number,
+  seatIndex?: 0 | 1,
+): Record<string, SlotRestPlaceholder[]> | undefined => {
+  if (!placeholders) return placeholders
+  const slotEntries = placeholders[slot] ?? []
+  const nextSlotEntries = slotEntries.filter((entry) => entry.deskIdx !== deskIdx || (seatIndex !== undefined && entry.seatIndex !== seatIndex))
+  if (nextSlotEntries.length === slotEntries.length) return placeholders
+  const nextPlaceholders = { ...placeholders }
+  if (nextSlotEntries.length > 0) nextPlaceholders[slot] = nextSlotEntries
+  else delete nextPlaceholders[slot]
+  return nextPlaceholders
+}
+
+const upsertRestPlaceholderSeat = (
+  placeholders: Record<string, SlotRestPlaceholder[]> | undefined,
+  slot: string,
+  placeholder: SlotRestPlaceholder,
+): Record<string, SlotRestPlaceholder[]> => {
+  const slotEntries = placeholders?.[slot] ?? []
+  const nextSlotEntries = [
+    ...slotEntries.filter((entry) => !(entry.deskIdx === placeholder.deskIdx && entry.seatIndex === placeholder.seatIndex)),
+    placeholder,
+  ].sort((left, right) => left.deskIdx - right.deskIdx || left.seatIndex - right.seatIndex)
+  return {
+    ...(placeholders ?? {}),
+    [slot]: nextSlotEntries,
   }
 }
 
@@ -3853,6 +3886,7 @@ const AdminPage = () => {
     assignments: Record<string, Assignment[]>
     actualResults: Record<string, ActualResult[]>
     absenceRecords: Record<string, StudentAbsenceRecord[]>
+    restPlaceholders: Record<string, SlotRestPlaceholder[]>
   }
 
   const cloneAssignmentsForPdfComparison = (assignments: Record<string, Assignment[]>): Record<string, Assignment[]> => JSON.parse(JSON.stringify(assignments ?? {}))
@@ -3861,6 +3895,7 @@ const AdminPage = () => {
     assignments: cloneAssignmentsForPdfComparison(current.assignments),
     actualResults: current.actualResults ?? {},
     absenceRecords: current.absenceRecords ?? {},
+    restPlaceholders: current.restPlaceholders ?? {},
   }))
 
   const undoStackRef = useRef<SchedulingSnapshot[]>([])
@@ -3890,7 +3925,7 @@ const AdminPage = () => {
     redoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults, absenceRecords: prev.absenceRecords })
+    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults, absenceRecords: prev.absenceRecords, restPlaceholders: prev.restPlaceholders })
   }
 
   const handleRedo = async (): Promise<void> => {
@@ -3900,7 +3935,7 @@ const AdminPage = () => {
     undoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults, absenceRecords: next.absenceRecords })
+    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults, absenceRecords: next.absenceRecords, restPlaceholders: next.restPlaceholders })
   }
 
   const createSession = async (): Promise<void> => {
@@ -8477,17 +8512,22 @@ const AdminPage = () => {
         const details = { ...(nextHL.changeDetails ?? {}) }
         if (!details[targetSlot]) details[targetSlot] = {}
         const studentName = student?.name ?? studentId
+        const targetDeskIdx = targetIdx ?? finalTargetAssignments.findIndex((assignment) => assignment.studentIds.includes(studentId))
+        const targetSeatIndex: 0 | 1 = movedTargetAssignment.studentIds.indexOf(studentId) === 1 ? 1 : 0
+        const nextRestPlaceholders = targetDeskIdx >= 0
+          ? clearRestPlaceholderSeat(current.restPlaceholders, targetSlot, targetDeskIdx, targetSeatIndex)
+          : current.restPlaceholders
         // Regular student move → 振替 badge, otherwise → 変更 badge
         if (studentMakeupInfo) {
           const makeupSigs = { ...(nextHL.makeup ?? {}) }
           makeupSigs[targetSlot] = [...(makeupSigs[targetSlot] ?? []), sig]
           details[targetSlot][sig] = `振替: ${studentName} (${sourceSlot} → ${targetSlot})`
-          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, makeup: makeupSigs, changeDetails: details } }
+          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, makeup: makeupSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders }
         }
         const changedSigs = { ...(nextHL.changed ?? {}) }
         changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
         details[targetSlot][sig] = `生徒移動: ${studentName} (${sourceSlot} → ${targetSlot})`
-        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, changed: changedSigs, changeDetails: details } }
+        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, changed: changedSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders }
       }
 
       return { ...current, assignments: nextAssignments, autoAssignHighlights: nextHL }
@@ -8618,10 +8658,12 @@ service cloud.firestore {
                 }
                 const newSig = assignmentSignature(slotAssignments[idx])
                 const nextHL = migrateHighlightSig(current.autoAssignHighlights ?? {}, slot, oldSig, newSig)
+                const nextRestPlaceholders = clearRestPlaceholderSeat(current.restPlaceholders, slot, idx, pos as 0 | 1)
                 return {
                   ...current,
                   assignments: { ...current.assignments, [slot]: slotAssignments },
                   autoAssignHighlights: nextHL,
+                  restPlaceholders: nextRestPlaceholders,
                 }
               }
               // --- No existing assignment — create new ---
@@ -8641,7 +8683,8 @@ service cloud.firestore {
                 newAssign.manualRegularMark = { [studentId]: lessonType }
               }
               slotAssignments.push(newAssign)
-              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
+              const nextRestPlaceholders = clearRestPlaceholderSeat(current.restPlaceholders, slot, idx)
+              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments }, restPlaceholders: nextRestPlaceholders }
             })
           }}
           onRemoveStudent={async (slot, assignmentIdx, studentId) => {
@@ -8702,6 +8745,15 @@ service cloud.firestore {
                 lessonCategory,
                 subject: getStudentSubject(assignment, studentId),
               }
+              const studentInfo = current.students.find((entry) => entry.id === studentId)
+              const seatIndex: 0 | 1 = assignment.studentIds.indexOf(studentId) === 1 ? 1 : 0
+              const placeholder: SlotRestPlaceholder = {
+                deskIdx: assignmentIdx,
+                seatIndex,
+                studentId,
+                studentName: studentInfo?.name ?? studentId,
+                detailText: `${studentInfo?.grade ?? ''}${getStudentSubject(assignment, studentId)}`,
+              }
 
               const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
               if (remainingIds.length === 0) {
@@ -8741,6 +8793,7 @@ service cloud.firestore {
                   ...(current.absenceRecords ?? {}),
                   [studentId]: nextStudentAbsences,
                 },
+                restPlaceholders: upsertRestPlaceholderSeat(current.restPlaceholders, slot, placeholder),
               }
             })
           }}

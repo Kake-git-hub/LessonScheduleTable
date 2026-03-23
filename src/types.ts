@@ -90,6 +90,14 @@ export type StudentAbsenceRecord = {
   subject: string
 }
 
+export type SlotRestPlaceholder = {
+  deskIdx: number
+  seatIndex: 0 | 1
+  studentId: string
+  studentName: string
+  detailText: string
+}
+
 export type Assignment = {
   teacherId: string
   studentIds: string[]
@@ -215,6 +223,8 @@ export type SessionData = {
   protectedManualSlots?: string[]
   /** Per-student absence history recorded from slot adjustment actions. */
   absenceRecords?: Record<string, StudentAbsenceRecord[]>
+  /** Per-slot placeholders for students marked as resting in slot adjustment view. */
+  restPlaceholders?: Record<string, SlotRestPlaceholder[]>
 }
 
 export type MasterData = {
