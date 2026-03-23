@@ -19,6 +19,7 @@ import type {
   RegularMakeupInfo,
   SessionData,
   SessionSettings,
+  SlotAttendanceMark,
   SlotRestPlaceholder,
   StudentAbsenceRecord,
   Student,
@@ -1427,6 +1428,30 @@ const upsertRestPlaceholderSeat = (
     ...(placeholders ?? {}),
     [slot]: nextSlotEntries,
   }
+}
+
+const addAttendanceMark = (
+  marks: SlotAttendanceMark | undefined,
+  slot: string,
+  studentId: string,
+): SlotAttendanceMark => ({
+  ...(marks ?? {}),
+  [slot]: Array.from(new Set([...(marks?.[slot] ?? []), studentId])),
+})
+
+const removeAttendanceMark = (
+  marks: SlotAttendanceMark | undefined,
+  slot: string,
+  studentId: string,
+): SlotAttendanceMark | undefined => {
+  if (!marks) return marks
+  const currentSlotMarks = marks[slot] ?? []
+  const nextSlotMarks = currentSlotMarks.filter((id) => id !== studentId)
+  if (nextSlotMarks.length === currentSlotMarks.length) return marks
+  const nextMarks = { ...marks }
+  if (nextSlotMarks.length > 0) nextMarks[slot] = nextSlotMarks
+  else delete nextMarks[slot]
+  return nextMarks
 }
 
 const useSessionData = (classroomId: string, sessionId: string) => {
@@ -3887,6 +3912,7 @@ const AdminPage = () => {
     actualResults: Record<string, ActualResult[]>
     absenceRecords: Record<string, StudentAbsenceRecord[]>
     restPlaceholders: Record<string, SlotRestPlaceholder[]>
+    attendanceMarks: SlotAttendanceMark
   }
 
   const cloneAssignmentsForPdfComparison = (assignments: Record<string, Assignment[]>): Record<string, Assignment[]> => JSON.parse(JSON.stringify(assignments ?? {}))
@@ -3896,6 +3922,7 @@ const AdminPage = () => {
     actualResults: current.actualResults ?? {},
     absenceRecords: current.absenceRecords ?? {},
     restPlaceholders: current.restPlaceholders ?? {},
+    attendanceMarks: current.attendanceMarks ?? {},
   }))
 
   const undoStackRef = useRef<SchedulingSnapshot[]>([])
@@ -3925,7 +3952,7 @@ const AdminPage = () => {
     redoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults, absenceRecords: prev.absenceRecords, restPlaceholders: prev.restPlaceholders })
+    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults, absenceRecords: prev.absenceRecords, restPlaceholders: prev.restPlaceholders, attendanceMarks: prev.attendanceMarks })
   }
 
   const handleRedo = async (): Promise<void> => {
@@ -3935,7 +3962,7 @@ const AdminPage = () => {
     undoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults, absenceRecords: next.absenceRecords, restPlaceholders: next.restPlaceholders })
+    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults, absenceRecords: next.absenceRecords, restPlaceholders: next.restPlaceholders, attendanceMarks: next.attendanceMarks })
   }
 
   const createSession = async (): Promise<void> => {
@@ -8517,20 +8544,21 @@ const AdminPage = () => {
         const nextRestPlaceholders = targetDeskIdx >= 0
           ? clearRestPlaceholderSeat(current.restPlaceholders, targetSlot, targetDeskIdx, targetSeatIndex)
           : current.restPlaceholders
+        const nextAttendanceMarks = removeAttendanceMark(current.attendanceMarks, sourceSlot, studentId)
         // Regular student move → 振替 badge, otherwise → 変更 badge
         if (studentMakeupInfo) {
           const makeupSigs = { ...(nextHL.makeup ?? {}) }
           makeupSigs[targetSlot] = [...(makeupSigs[targetSlot] ?? []), sig]
           details[targetSlot][sig] = `振替: ${studentName} (${sourceSlot} → ${targetSlot})`
-          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, makeup: makeupSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders }
+          return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, makeup: makeupSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders, attendanceMarks: nextAttendanceMarks }
         }
         const changedSigs = { ...(nextHL.changed ?? {}) }
         changedSigs[targetSlot] = [...(changedSigs[targetSlot] ?? []), sig]
         details[targetSlot][sig] = `生徒移動: ${studentName} (${sourceSlot} → ${targetSlot})`
-        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, changed: changedSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders }
+        return { ...current, assignments: nextAssignments, autoAssignHighlights: { ...nextHL, changed: changedSigs, changeDetails: details }, restPlaceholders: nextRestPlaceholders, attendanceMarks: nextAttendanceMarks }
       }
 
-      return { ...current, assignments: nextAssignments, autoAssignHighlights: nextHL }
+      return { ...current, assignments: nextAssignments, autoAssignHighlights: nextHL, attendanceMarks: removeAttendanceMark(current.attendanceMarks, sourceSlot, studentId) }
     })
   }
 
@@ -8664,6 +8692,7 @@ service cloud.firestore {
                   assignments: { ...current.assignments, [slot]: slotAssignments },
                   autoAssignHighlights: nextHL,
                   restPlaceholders: nextRestPlaceholders,
+                  attendanceMarks: removeAttendanceMark(current.attendanceMarks, slot, studentId),
                 }
               }
               // --- No existing assignment — create new ---
@@ -8684,8 +8713,15 @@ service cloud.firestore {
               }
               slotAssignments.push(newAssign)
               const nextRestPlaceholders = clearRestPlaceholderSeat(current.restPlaceholders, slot, idx)
-              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments }, restPlaceholders: nextRestPlaceholders }
+              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments }, restPlaceholders: nextRestPlaceholders, attendanceMarks: removeAttendanceMark(current.attendanceMarks, slot, studentId) }
             })
+          }}
+          onMarkStudentAttended={async (slot, _assignmentIdx, studentId) => {
+            markSlotsManual([slot])
+            await updateAssignments((current) => ({
+              ...current,
+              attendanceMarks: addAttendanceMark(current.attendanceMarks, slot, studentId),
+            }))
           }}
           onRemoveStudent={async (slot, assignmentIdx, studentId) => {
             markSlotsManual([slot])
@@ -8716,7 +8752,7 @@ service cloud.firestore {
               }
               const nextAssignments = { ...current.assignments, [slot]: slotAssignments }
               if (slotAssignments.length === 0) delete nextAssignments[slot]
-              return { ...current, assignments: nextAssignments }
+              return { ...current, assignments: nextAssignments, attendanceMarks: removeAttendanceMark(current.attendanceMarks, slot, studentId) }
             })
           }}
           onMarkStudentRest={async (slot, assignmentIdx, studentId) => {
@@ -8794,6 +8830,7 @@ service cloud.firestore {
                   [studentId]: nextStudentAbsences,
                 },
                 restPlaceholders: upsertRestPlaceholderSeat(current.restPlaceholders, slot, placeholder),
+                attendanceMarks: removeAttendanceMark(current.attendanceMarks, slot, studentId),
               }
             })
           }}

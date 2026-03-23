@@ -98,6 +98,8 @@ export type SlotRestPlaceholder = {
   detailText: string
 }
 
+export type SlotAttendanceMark = Record<string, string[]>
+
 export type Assignment = {
   teacherId: string
   studentIds: string[]
@@ -225,6 +227,8 @@ export type SessionData = {
   absenceRecords?: Record<string, StudentAbsenceRecord[]>
   /** Per-slot placeholders for students marked as resting in slot adjustment view. */
   restPlaceholders?: Record<string, SlotRestPlaceholder[]>
+  /** Per-slot student IDs rendered in the attended/faded style in slot adjustment view. */
+  attendanceMarks?: SlotAttendanceMark
 }
 
 export type MasterData = {

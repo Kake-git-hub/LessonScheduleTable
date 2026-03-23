@@ -1452,6 +1452,9 @@ tr.sa-slot-first td {
   background: #3b82f6 !important;
   color: #fff;
 }
+.sa-student.sa-student-attended {
+  color: #94a3b8;
+}
 .sa-student.sa-avail {
   background: #dcfce7;
 }
@@ -1487,6 +1490,13 @@ tr.sa-slot-first td {
   font-size: 8px;
   color: #64748b;
   line-height: 1.2;
+}
+.sa-student.sa-student-attended .sa-student-name {
+  color: #94a3b8;
+  font-weight: 500;
+}
+.sa-student.sa-student-attended .sa-student-detail {
+  color: #cbd5e1;
 }
 .sa-student.sa-selected .sa-student-detail {
   color: #dbeafe;

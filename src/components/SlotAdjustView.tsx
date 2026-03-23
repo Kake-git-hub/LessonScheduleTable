@@ -27,6 +27,7 @@ type SlotAdjustViewProps = {
   undoCount: number
   redoCount: number
   onRemoveStudent: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
+  onMarkStudentAttended: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
   onMarkStudentRest: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
   onPackSort: (dates: string[]) => Promise<void>
   onClose: () => void
@@ -238,6 +239,7 @@ export default function SlotAdjustView({
   undoCount,
   redoCount,
   onRemoveStudent,
+  onMarkStudentAttended,
   onMarkStudentRest,
   onPackSort,
   onClose,
@@ -554,6 +556,7 @@ export default function SlotAdjustView({
                       const s1Detail = getStudentDetailText(assignment, s1Id, s1?.grade, date)
                       const s2Detail = getStudentDetailText(assignment, s2Id, s2?.grade, date)
                       const slotRestPlaceholders = data.restPlaceholders?.[slotKey] ?? []
+                      const slotAttendanceMarks = new Set(data.attendanceMarks?.[slotKey] ?? [])
 
                       // Star badges
                       const s1Badge = assignment && s1Id ? getStudentBadge(data, assignment, s1Id, slotKey, isMendan) : null
@@ -600,6 +603,7 @@ export default function SlotAdjustView({
                         isSecondSlot: boolean,
                       ) => {
                         const restPlaceholder = slotRestPlaceholders.find((entry) => entry.deskIdx === deskIdx && entry.seatIndex === (isSecondSlot ? 1 : 0))
+                        const isAttendedMarked = !!sId && slotAttendanceMarks.has(sId)
                         const isEmpty = !sId
                         const showDest = selection && canAcceptHere && !isS1Source && !isS2Source && (isSecondSlot ? studentIds.length < 2 : studentIds.length <= 1)
                         const showPicker = isEmpty && canPickStudent
@@ -619,7 +623,7 @@ export default function SlotAdjustView({
                         return (
                           <td
                             key={cellKey}
-                            className={`sa-student${inactiveClass}${availClass}${isSource ? ' sa-selected' : ''}${showDest ? ' sa-dest' : ''}${showPicker ? ' sa-pickable' : ''}`}
+                            className={`sa-student${inactiveClass}${availClass}${isSource ? ' sa-selected' : ''}${showDest ? ' sa-dest' : ''}${showPicker ? ' sa-pickable' : ''}${isAttendedMarked ? ' sa-student-attended' : ''}`}
                             onClick={() => {
                               if (!isLecture || busy) return
                               if (sId && !selection) {
@@ -824,6 +828,23 @@ export default function SlotAdjustView({
             }}
           >
             編集
+          </div>
+          <div
+            className="sa-ctx-item"
+            onClick={() => {
+              const { slot, deskIdx, studentId, studentName } = contextMenu
+              setContextMenu(null)
+              const win = containerRef.current?.ownerDocument?.defaultView ?? window
+              const ok = win.confirm(`${studentName} をこのコマで出席表示にしますか？`)
+              if (ok) {
+                void runBusy(async () => {
+                  await onMarkStudentAttended(slot, deskIdx, studentId)
+                  setSelection(null)
+                })
+              }
+            }}
+          >
+            出席
           </div>
           <div
             className="sa-ctx-item"
