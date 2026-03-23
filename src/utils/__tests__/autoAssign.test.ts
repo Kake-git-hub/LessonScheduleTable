@@ -168,6 +168,54 @@ describe('buildIncrementalAutoAssignments', () => {
     expect(blockReasonLabel(result.diagnostics[0].primaryBottleneck)).toBe('科目が合う講師がいない')
   })
 
+  it('reports allTeachersOccupied when suitable teachers are already assigned', async () => {
+    // Only one teacher (t1) teaching 数, two slots but deskCount allows 2.
+    // s1 and s2 are incompatible (can't pair together), so t1 gets assigned to s1.
+    // s2's diagnostic should show allTeachersOccupied for that slot.
+    const data = makeSessionData({
+      teachers: [makeTeacher({ id: 't1', subjects: ['数'] })],
+      students: [
+        makeStudent({ id: 's1', name: '生徒A', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 1000 }),
+        makeStudent({ id: 's2', name: '生徒B', subjects: ['数'], subjectSlots: { 数: 1 }, submittedAt: 2000 }),
+      ],
+      settings: { name: '夏期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 1, holidays: [], deskCount: 2 },
+      constraints: [{ id: 'c1', personAId: 's1', personBId: 's2', personAType: 'student' as const, personBType: 'student' as const, type: 'incompatible' as const }],
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'student:s1': ['2026-07-21_1'],
+        'student:s2': ['2026-07-21_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1'])
+    const unassigned = result.diagnostics.find((d) => d.blockReasons.allTeachersOccupied > 0)
+    expect(unassigned).toBeDefined()
+    expect(blockReasonLabel('allTeachersOccupied')).toBe('適合講師が他の生徒に割当済')
+  })
+
+  it('reports noRemainingSubjectTeacher when free teachers cannot teach remaining subjects', async () => {
+    // t1 teaches 英 only. Student wants 数 (remaining) but t1 can't teach 数.
+    // Student has subjects: ['数','英'], subjectSlots: { 数: 1 } so 数 has remaining demand.
+    // t1 is available and passes all checks for student.subjects (英 matches), but remaining demand is 数 only.
+    const data = makeSessionData({
+      teachers: [makeTeacher({ id: 't1', subjects: ['英'] })],
+      students: [makeStudent({ id: 's1', subjects: ['数', '英'], subjectSlots: { 数: 1 } })],
+      availability: {
+        'teacher:t1': ['2026-07-21_1'],
+        'student:s1': ['2026-07-21_1'],
+      },
+    })
+
+    const result = await buildIncrementalAutoAssignments(data, ['2026-07-21_1'])
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0].blockReasons.noRemainingSubjectTeacher).toBeGreaterThan(0)
+    expect(blockReasonLabel('noRemainingSubjectTeacher')).toBe('残需要科目に対応できる空き講師なし')
+  })
+
+  it('reports demandAlreadyMet with updated label for deprioritized slots', async () => {
+    expect(blockReasonLabel('demandAlreadyMet')).toBe('割当可能だが他の生徒が優先された')
+  })
+
   it('keeps regular substitute assignments on rerun even when special demand is zero', async () => {
     const data = makeSessionData({
       settings: { name: '春期講習', adminPassword: 'admin', startDate: '2026-07-21', endDate: '2026-07-21', slotsPerDay: 3, holidays: [] },
