@@ -133,12 +133,19 @@ function collectAbsenceHistoryEntries(
   data: SessionData,
   student: Student,
   dates: string[],
-): { whenLabel: string; subjectLabel: string }[] {
+): { whenLabel: string; detailLabel: string }[] {
   return collectStudentAbsenceHistoryEntries(data.absenceRecords, student.id, dates).map((entry) => {
     const dow = DAY_OF_WEEK_LABELS[entry.dayOfWeek]
+    const lessonCategoryLabel = entry.lessonCategory === 'regular'
+      ? '通常'
+      : entry.lessonCategory === 'makeup'
+        ? '振替'
+        : entry.lessonCategory === 'lecture'
+          ? '講習'
+          : ''
     return {
       whenLabel: `${Number(entry.date.split('-')[1])}/${Number(entry.date.split('-')[2])}(${dow})${entry.slotNumber}限`,
-      subjectLabel: entry.subject,
+      detailLabel: lessonCategoryLabel ? `${lessonCategoryLabel} ${entry.subject}` : entry.subject,
     }
   })
 }
@@ -554,7 +561,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
     let absenceRowsHtml = ''
     for (let i = 0; i < absenceRowCount; i++) {
       const entry = absenceEntries[i]
-      absenceRowsHtml += `<tr><td class="absence-cell">${entry ? escapeHtml(entry.whenLabel) : ''}</td><td class="absence-cell absence-subject">${entry ? escapeHtml(entry.subjectLabel) : ''}</td></tr>`
+      absenceRowsHtml += `<tr><td class="absence-cell">${entry ? escapeHtml(entry.whenLabel) : ''}</td><td class="absence-cell absence-detail">${entry ? escapeHtml(entry.detailLabel) : ''}</td></tr>`
     }
     const absenceTableHtml = `<table class="absence-table"><tr><th colspan="2">休み実績</th></tr>${absenceRowsHtml}</table>`
 
@@ -758,17 +765,17 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
   .count-mismatch { color: #dc2626; }
   @media print { .violation { color: #000; } .count-mismatch { color: #000; } }
 
-  .bottom-area { display: flex; gap: 8px; margin-top: 6px; }
+  .bottom-area { display: flex; gap: 6px; margin-top: 6px; }
 
   .notes-area {
-    flex: 0 0 576px;
-    width: 576px;
+    flex: 0 0 500px;
+    width: 500px;
     display: flex;
     gap: 4px;
   }
   .notes-col {
-    flex: 0 0 286px;
-    width: 286px;
+    flex: 0 0 248px;
+    width: 248px;
     display: flex;
     flex-direction: column;
   }
@@ -789,27 +796,27 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
   @media print { .notes-label { display: none; } }
 
   .bottom-right { flex: 1; display: flex; justify-content: flex-end; }
-  .bottom-right-top { display: flex; gap: 6px; align-items: flex-start; }
+  .bottom-right-top { display: flex; gap: 4px; align-items: flex-start; }
 
-  .count-table { border-collapse: collapse; font-size: 9px; width: 90px; }
+  .count-table { border-collapse: collapse; font-size: 9px; width: 84px; }
   .count-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .count-table td { border: 1px solid #333; padding: 1px 6px; text-align: center; }
   .count-label { text-align: left !important; white-space: nowrap; }
   .count-val { width: 28px; }
   .small { font-size: 7px; }
 
-  .absence-table { border-collapse: collapse; font-size: 9px; width: 122px; }
+  .absence-table { border-collapse: collapse; font-size: 8px; width: 128px; }
   .absence-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .absence-table td { border: 1px solid #333; padding: 1px 4px; text-align: center; height: 18px; }
-  .absence-cell { width: 76px; }
-  .absence-subject { width: 40px; }
+  .absence-cell { width: 56px; }
+  .absence-detail { width: 68px; font-size: 7.5px; white-space: nowrap; }
 
-  .furikae-table { border-collapse: collapse; font-size: 9px; width: 170px; }
+  .furikae-table { border-collapse: collapse; font-size: 9px; width: 156px; }
   .furikae-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
   .furikae-table td { border: 1px solid #333; padding: 1px 4px; text-align: center; }
-  .furikae-cell { width: 70px; height: 18px; font-size: 8px; }
+  .furikae-cell { width: 64px; height: 18px; font-size: 8px; }
   .furikae-cell:focus { outline: 1px solid #2563eb; }
-  .furikae-arrow { width: 20px; font-weight: bold; }
+  .furikae-arrow { width: 16px; font-weight: bold; }
 
   .toolbar {
     position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: #fff;

@@ -8684,12 +8684,22 @@ service cloud.firestore {
               if (!assignment) return current
 
               const [date] = slot.split('_')
+              const regularLessonsAtSlot = findRegularLessonsForSlot(current.regularLessons, slot)
+              const manualMark = assignment.manualRegularMark?.[studentId]
+              const lessonCategory: StudentAbsenceRecord['lessonCategory'] = assignment.regularMakeupInfo?.[studentId] || manualMark === 'makeup'
+                ? 'makeup'
+                : assignment.regularSubstituteInfo?.[studentId]
+                    || manualMark === 'regular'
+                    || (assignment.isRegular && regularLessonsAtSlot.some((lesson) => lesson.studentIds.includes(studentId)))
+                  ? 'regular'
+                  : 'lecture'
               const absenceRecord: StudentAbsenceRecord = {
                 slot,
                 date,
                 dayOfWeek: getSlotDayOfWeek(slot),
                 slotNumber: getSlotNumber(slot),
                 teacherId: assignment.teacherId,
+                lessonCategory,
                 subject: getStudentSubject(assignment, studentId),
               }
 

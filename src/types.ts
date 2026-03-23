@@ -86,6 +86,7 @@ export type StudentAbsenceRecord = {
   dayOfWeek: number
   slotNumber: number
   teacherId: string
+  lessonCategory?: 'regular' | 'makeup' | 'lecture'
   subject: string
 }
 
