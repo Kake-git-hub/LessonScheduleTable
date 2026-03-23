@@ -27,6 +27,7 @@ type SlotAdjustViewProps = {
   undoCount: number
   redoCount: number
   onRemoveStudent: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
+  onMarkStudentRest: (slot: string, assignmentIdx: number, studentId: string) => Promise<void>
   onPackSort: (dates: string[]) => Promise<void>
   onClose: () => void
   onSelectionChange?: (sel: { slot: string; studentId: string } | null) => void
@@ -237,6 +238,7 @@ export default function SlotAdjustView({
   undoCount,
   redoCount,
   onRemoveStudent,
+  onMarkStudentRest,
   onPackSort,
   onClose,
   onSelectionChange,
@@ -814,6 +816,23 @@ export default function SlotAdjustView({
             }}
           >
             編集
+          </div>
+          <div
+            className="sa-ctx-item"
+            onClick={() => {
+              const { slot, deskIdx, studentId, studentName } = contextMenu
+              setContextMenu(null)
+              const win = containerRef.current?.ownerDocument?.defaultView ?? window
+              const ok = win.confirm(`${studentName} をこのコマで休みにしますか？`)
+              if (ok) {
+                void runBusy(async () => {
+                  await onMarkStudentRest(slot, deskIdx, studentId)
+                  setSelection(null)
+                })
+              }
+            }}
+          >
+            休み
           </div>
           <div
             className="sa-ctx-item sa-ctx-danger"

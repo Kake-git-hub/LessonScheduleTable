@@ -1,5 +1,5 @@
 import type { Assignment, GroupLesson, RegularLesson, SessionData, Student } from '../types'
-import { findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
+import { collectStudentAbsenceHistoryEntries, findRegularLessonsForSlot, getIsoDayOfWeek, getSlotNumber, getStudentSubject } from './assignments'
 import { constraintFor, getStudentRegularLessonStatus } from './constraints'
 import { generateQrSvg } from './qrcode'
 import { evaluateConstraintCards } from './slotConstraints'
@@ -127,6 +127,20 @@ function collectFurikaeEntries(
     }
   }
   return entries
+}
+
+function collectAbsenceHistoryEntries(
+  data: SessionData,
+  student: Student,
+  dates: string[],
+): { whenLabel: string; subjectLabel: string }[] {
+  return collectStudentAbsenceHistoryEntries(data.absenceRecords, student.id, dates).map((entry) => {
+    const dow = DAY_OF_WEEK_LABELS[entry.dayOfWeek]
+    return {
+      whenLabel: `${Number(entry.date.split('-')[1])}/${Number(entry.date.split('-')[2])}(${dow})${entry.slotNumber}限`,
+      subjectLabel: entry.subject,
+    }
+  })
 }
 
 /** Count regular, lecture (individual), and group lesson counts by subject */
@@ -535,6 +549,15 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
       } catch { /* */ }
     }
 
+    const absenceEntries = collectAbsenceHistoryEntries(data, student, dates)
+    const absenceRowCount = Math.max(5, absenceEntries.length)
+    let absenceRowsHtml = ''
+    for (let i = 0; i < absenceRowCount; i++) {
+      const entry = absenceEntries[i]
+      absenceRowsHtml += `<tr><td class="absence-cell">${entry ? escapeHtml(entry.whenLabel) : ''}</td><td class="absence-cell absence-subject">${entry ? escapeHtml(entry.subjectLabel) : ''}</td></tr>`
+    }
+    const absenceTableHtml = `<table class="absence-table"><tr><th colspan="2">休み実績</th></tr>${absenceRowsHtml}</table>`
+
     // 振替授業 table - pre-fill with actual makeup data, editable
     const furikaeEntries = collectFurikaeEntries(student, data.assignments, dates)
     const furikaeRowCount = Math.max(5, furikaeEntries.length)
@@ -598,6 +621,7 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
           </div>
           <div class="bottom-right">
             <div class="bottom-right-top">
+              ${absenceTableHtml}
               ${furikaeTableHtml}
               ${regularTableHtml}
               ${lectureTableHtml}
@@ -773,6 +797,12 @@ export function openStudentScheduleHtml(params: StudentScheduleParams & { target
   .count-label { text-align: left !important; white-space: nowrap; }
   .count-val { width: 28px; }
   .small { font-size: 7px; }
+
+  .absence-table { border-collapse: collapse; font-size: 9px; width: 122px; }
+  .absence-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }
+  .absence-table td { border: 1px solid #333; padding: 1px 4px; text-align: center; height: 18px; }
+  .absence-cell { width: 76px; }
+  .absence-subject { width: 40px; }
 
   .furikae-table { border-collapse: collapse; font-size: 9px; width: 170px; }
   .furikae-table th { border: 1px solid #333; padding: 2px 6px; text-align: center; background: #f5f5f5; font-weight: bold; }

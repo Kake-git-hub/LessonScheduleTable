@@ -1,6 +1,7 @@
 import {
   getSlotNumber, getIsoDayOfWeek, getSlotDayOfWeek,
   allAssignments, buildEffectiveAssignments, getStudentSubject,
+  collectStudentAbsenceHistoryEntries,
   countTeacherLoad, getTeacherAssignedDates, getTeacherSlotNumbersOnDate,
   getTeacherPrevSlotStudentIds,
   countStudentSlotsOnDate, getStudentNonGroupSlotNumbersOnDate, getStudentSlotNumbersOnDate, countStudentAssignedDates,
@@ -95,6 +96,32 @@ describe('buildEffectiveAssignments', () => {
     const result = buildEffectiveAssignments(assignments, actualResults)
     expect(result['2026-07-21_1'][0].studentIds).toEqual(['s1'])
     expect(result['2026-07-21_1'][0].studentSubjects).toEqual({ s1: '数' })
+  })
+})
+
+describe('collectStudentAbsenceHistoryEntries', () => {
+  it('returns student absence history sorted by date and slot', () => {
+    const result = collectStudentAbsenceHistoryEntries({
+      s1: [
+        { slot: '2026-07-22_2', date: '2026-07-22', dayOfWeek: 3, slotNumber: 2, teacherId: 't1', subject: '英' },
+        { slot: '2026-07-21_3', date: '2026-07-21', dayOfWeek: 2, slotNumber: 3, teacherId: 't2', subject: '数' },
+        { slot: '2026-07-21_1', date: '2026-07-21', dayOfWeek: 2, slotNumber: 1, teacherId: 't1', subject: '国' },
+      ],
+    }, 's1')
+
+    expect(result.map((entry) => entry.slot)).toEqual(['2026-07-21_1', '2026-07-21_3', '2026-07-22_2'])
+  })
+
+  it('filters absence history to schedule dates', () => {
+    const result = collectStudentAbsenceHistoryEntries({
+      s1: [
+        { slot: '2026-07-21_1', date: '2026-07-21', dayOfWeek: 2, slotNumber: 1, teacherId: 't1', subject: '数' },
+        { slot: '2026-08-01_2', date: '2026-08-01', dayOfWeek: 6, slotNumber: 2, teacherId: 't1', subject: '英' },
+      ],
+    }, 's1', ['2026-07-21'])
+
+    expect(result).toHaveLength(1)
+    expect(result[0].slot).toBe('2026-07-21_1')
   })
 })
 

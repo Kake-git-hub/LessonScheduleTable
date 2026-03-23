@@ -1,4 +1,4 @@
-import type { ActualResult, Assignment, RegularLesson, RegularMakeupInfo, SessionData } from '../types'
+import type { ActualResult, Assignment, RegularLesson, RegularMakeupInfo, SessionData, StudentAbsenceRecord } from '../types'
 import { getStudentRegularLessonStatus, hasAvailability } from './constraints'
 import { canTeachSubject } from './subjects'
 
@@ -130,6 +130,22 @@ export const buildEffectiveAssignments = (
     }
   }
   return effective
+}
+
+export const collectStudentAbsenceHistoryEntries = (
+  absenceRecords: Record<string, StudentAbsenceRecord[]> | undefined,
+  studentId: string,
+  dates?: string[],
+): StudentAbsenceRecord[] => {
+  const entries = absenceRecords?.[studentId] ?? []
+  const dateSet = dates ? new Set(dates) : null
+  return [...entries]
+    .filter((entry) => !dateSet || dateSet.has(entry.date))
+    .sort((left, right) => {
+      if (left.date !== right.date) return left.date.localeCompare(right.date)
+      if (left.slotNumber !== right.slotNumber) return left.slotNumber - right.slotNumber
+      return left.subject.localeCompare(right.subject, 'ja')
+    })
 }
 
 export const isStudentRegularSubstituteAssignment = (assignment: Assignment, studentId: string): boolean =>

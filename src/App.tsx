@@ -19,6 +19,7 @@ import type {
   RegularMakeupInfo,
   SessionData,
   SessionSettings,
+  StudentAbsenceRecord,
   Student,
   SubmissionLogEntry,
   Teacher,
@@ -3851,6 +3852,7 @@ const AdminPage = () => {
   type SchedulingSnapshot = {
     assignments: Record<string, Assignment[]>
     actualResults: Record<string, ActualResult[]>
+    absenceRecords: Record<string, StudentAbsenceRecord[]>
   }
 
   const cloneAssignmentsForPdfComparison = (assignments: Record<string, Assignment[]>): Record<string, Assignment[]> => JSON.parse(JSON.stringify(assignments ?? {}))
@@ -3858,6 +3860,7 @@ const AdminPage = () => {
   const cloneSchedulingSnapshot = (current: SessionData): SchedulingSnapshot => JSON.parse(JSON.stringify({
     assignments: cloneAssignmentsForPdfComparison(current.assignments),
     actualResults: current.actualResults ?? {},
+    absenceRecords: current.absenceRecords ?? {},
   }))
 
   const undoStackRef = useRef<SchedulingSnapshot[]>([])
@@ -3887,7 +3890,7 @@ const AdminPage = () => {
     redoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults })
+    await persist({ ...current, assignments: prev.assignments, actualResults: prev.actualResults, absenceRecords: prev.absenceRecords })
   }
 
   const handleRedo = async (): Promise<void> => {
@@ -3897,7 +3900,7 @@ const AdminPage = () => {
     undoStackRef.current.push(cloneSchedulingSnapshot(current))
     setUndoCount(undoStackRef.current.length)
     setRedoCount(redoStackRef.current.length)
-    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults })
+    await persist({ ...current, assignments: next.assignments, actualResults: next.actualResults, absenceRecords: next.absenceRecords })
   }
 
   const createSession = async (): Promise<void> => {
@@ -8668,7 +8671,67 @@ service cloud.firestore {
                   manualRegularMark: Object.keys(nextManual).length ? nextManual : undefined,
                 }
               }
-              return { ...current, assignments: { ...current.assignments, [slot]: slotAssignments } }
+              const nextAssignments = { ...current.assignments, [slot]: slotAssignments }
+              if (slotAssignments.length === 0) delete nextAssignments[slot]
+              return { ...current, assignments: nextAssignments }
+            })
+          }}
+          onMarkStudentRest={async (slot, assignmentIdx, studentId) => {
+            markSlotsManual([slot])
+            await updateAssignments((current) => {
+              const slotAssignments = [...(current.assignments[slot] ?? [])]
+              const assignment = slotAssignments[assignmentIdx]
+              if (!assignment) return current
+
+              const [date] = slot.split('_')
+              const absenceRecord: StudentAbsenceRecord = {
+                slot,
+                date,
+                dayOfWeek: getSlotDayOfWeek(slot),
+                slotNumber: getSlotNumber(slot),
+                teacherId: assignment.teacherId,
+                subject: getStudentSubject(assignment, studentId),
+              }
+
+              const remainingIds = assignment.studentIds.filter((id) => id !== studentId)
+              if (remainingIds.length === 0) {
+                slotAssignments.splice(assignmentIdx, 1)
+              } else {
+                const nextSubjects = { ...assignment.studentSubjects }
+                delete nextSubjects[studentId]
+                const nextMakeup = { ...assignment.regularMakeupInfo }
+                delete nextMakeup[studentId]
+                const nextSubstitute = { ...assignment.regularSubstituteInfo }
+                delete nextSubstitute[studentId]
+                const nextManual = { ...assignment.manualRegularMark }
+                delete nextManual[studentId]
+                slotAssignments[assignmentIdx] = {
+                  ...assignment,
+                  studentIds: remainingIds,
+                  studentSubjects: Object.keys(nextSubjects).length ? nextSubjects : undefined,
+                  regularMakeupInfo: Object.keys(nextMakeup).length ? nextMakeup : undefined,
+                  regularSubstituteInfo: Object.keys(nextSubstitute).length ? nextSubstitute : undefined,
+                  manualRegularMark: Object.keys(nextManual).length ? nextManual : undefined,
+                }
+              }
+
+              const nextAssignments = { ...current.assignments, [slot]: slotAssignments }
+              if (slotAssignments.length === 0) delete nextAssignments[slot]
+
+              const previousStudentAbsences = current.absenceRecords?.[studentId] ?? []
+              const nextStudentAbsences = [
+                ...previousStudentAbsences.filter((entry) => entry.slot !== slot),
+                absenceRecord,
+              ]
+
+              return {
+                ...current,
+                assignments: nextAssignments,
+                absenceRecords: {
+                  ...(current.absenceRecords ?? {}),
+                  [studentId]: nextStudentAbsences,
+                },
+              }
             })
           }}
           onPackSort={packSortAssignments}

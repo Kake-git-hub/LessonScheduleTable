@@ -80,6 +80,15 @@ export type RegularMakeupInfo = {
   reasonKind?: 'actual-absence'
 }
 
+export type StudentAbsenceRecord = {
+  slot: string
+  date: string
+  dayOfWeek: number
+  slotNumber: number
+  teacherId: string
+  subject: string
+}
+
 export type Assignment = {
   teacherId: string
   studentIds: string[]
@@ -203,6 +212,8 @@ export type SessionData = {
   tierRates?: { A: number; B: number; C: number; D: number }
   /** Slots manually modified by the user — protected from regular-lesson auto-fill. */
   protectedManualSlots?: string[]
+  /** Per-student absence history recorded from slot adjustment actions. */
+  absenceRecords?: Record<string, StudentAbsenceRecord[]>
 }
 
 export type MasterData = {
