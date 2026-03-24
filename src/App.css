@@ -1367,6 +1367,7 @@
   flex: 1;
   overflow: auto;
   padding: 12px;
+  --sa-day-header-height: 28px;
 }
 .slot-adjust-grid table {
   border-collapse: separate;
@@ -1382,9 +1383,11 @@
 }
 .sa-header-row1 th {
   top: 0;
+  z-index: 4;
 }
 .slot-adjust-grid thead tr:nth-child(2) th {
-  top: 26px;
+  top: var(--sa-day-header-height);
+  z-index: 3;
 }
 .slot-adjust-grid th,
 .slot-adjust-grid td {
@@ -1403,7 +1406,9 @@
   background: #f1f5f9;
   font-weight: 700;
   font-size: 12px;
-  padding: 4px 2px;
+  line-height: 1.1;
+  height: var(--sa-day-header-height);
+  padding: 3px 2px 2px;
 }
 .sa-day-header.sa-day-inactive {
   background: #f9fafb;
@@ -1417,6 +1422,9 @@
   width: 70px;
   min-width: 60px;
   border-top: 1px solid #cbd5e1;
+  line-height: 1;
+  vertical-align: top;
+  padding: 1px 4px 3px;
 }
 .sa-sub-header.sa-day-inactive {
   color: #cbd5e1;
